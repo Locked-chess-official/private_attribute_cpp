@@ -1525,7 +1525,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 {
     static const char* invalid_name[] = {"__private_attrs__", "__slots__", "__getattribute__", "__getattr__",
         "__setattr__", "__delattr__", "__name__", "__module__", "__doc__", "__getstate__", "__setstate__", NULL};
-#if PY_VERSION_HEX < 0x030C0000
+#if PY_VERSION_HEX < 0x030D0000
     static char* kwlist[] = {"name", "bases", "attrs", "private_func", NULL};
 #else
     static const char* kwlist[] = {"name", "bases", "attrs", "private_func", NULL};
