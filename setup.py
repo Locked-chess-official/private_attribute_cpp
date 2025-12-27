@@ -11,7 +11,7 @@ else:
 
 module = Extension(
     'private_attribute',
-    sources=['private_attribute_cpp.cpp'],
+    sources=['private_attribute.cpp'],
     include_dirs=['.'],
     language='c++',
     extra_compile_args=extra_compile_args,
