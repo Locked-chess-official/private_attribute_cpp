@@ -22,6 +22,8 @@ readme = open('README.md').read()
 setup(
     name='private_attribute_cpp',
     version='1.0.0',
+    author="HuangHaoHua",
+    author_email="13140752715@example.com",
     description='A Python package that provides a way to define private attributes in C++ implementation.',
     ext_modules=[module],
     zip_safe=False,
@@ -30,4 +32,5 @@ setup(
     license="MIT",
     # add "private_attribute.pyi"
     package_data={'': ['private_attribute.pyi']},
+    url="https://github.com/Locked-chess-official/private_attribute_cpp"
 )
