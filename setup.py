@@ -4,10 +4,8 @@ import sysconfig
 
 if sys.platform == "win32":
     extra_compile_args = ['/std:c++17']
-    python_lib = [f"python{sys.version_info.major}{sys.version_info.minor}", "python3"]
 else:
     extra_compile_args = ['-std=c++17']
-    python_lib = []
 
 module = Extension(
     'private_attribute',
@@ -15,14 +13,13 @@ module = Extension(
     include_dirs=['.'],
     language='c++',
     extra_compile_args=extra_compile_args,
-    libraries=python_lib,
 )
 
 readme = open('README.md').read()
 
 setup(
     name='private_attribute_cpp',
-    version='1.0.1',
+    version='1.0.2',
     author="HuangHaoHua",
     author_email="13140752715@example.com",
     description='A Python package that provides a way to define private attributes in C++ implementation.',
