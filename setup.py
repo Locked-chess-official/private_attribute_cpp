@@ -1,5 +1,6 @@
 from setuptools import setup, Extension
 import sys
+import sysconfig
 
 if sys.platform == "win32":
     extra_compile_args = ['/std:c++17']
@@ -21,7 +22,7 @@ readme = open('README.md').read()
 
 setup(
     name='private_attribute_cpp',
-    version='1.0.0',
+    version='1.0.1',
     author="HuangHaoHua",
     author_email="13140752715@example.com",
     description='A Python package that provides a way to define private attributes in C++ implementation.',
@@ -32,5 +33,9 @@ setup(
     license="MIT",
     # add "private_attribute.pyi"
     package_data={'': ['private_attribute.pyi']},
+
+    include_package_data=False,
+    packages=[""],
+
     url="https://github.com/Locked-chess-official/private_attribute_cpp"
 )
