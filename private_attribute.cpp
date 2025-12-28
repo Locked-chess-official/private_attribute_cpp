@@ -661,11 +661,6 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
             std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
             std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
-            PyObject *exc_typ, *exc_value, *traceback;
-            PyErr_Fetch(&exc_typ, &exc_value, &traceback);
-            PyObject_SetAttrString(exc_value, "obj", obj);
-            PyObject_SetAttrString(exc_value, "name", PyUnicode_FromString(attr_name.c_str()));
-            PyErr_Restore(exc_typ, exc_value, traceback);
         }
         return python_obj;
     } else {
@@ -678,11 +673,6 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
     std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
     std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
     PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
-    PyObject *exc_typ, *exc_value, *traceback;
-    PyErr_Fetch(&exc_typ, &exc_value, &traceback);
-    PyObject_SetAttrString(exc_value, "obj", obj);
-    PyObject_SetAttrString(exc_value, "name", PyUnicode_FromString(attr_name.c_str()));
-    PyErr_Restore(exc_typ, exc_value, traceback);
     return NULL;
 }
 
@@ -712,7 +702,7 @@ type_getattr(PyObject* typ, std::string attr_name)
             std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
             if (::AllData::type_attr_dict[typ_id].find(typ_private_name) == ::AllData::type_attr_dict[typ_id].end()){
                 std::string type_name = ((PyTypeObject*)typ)->tp_name;
-                std::string exception_information = "AttributeError: type '" + type_name + "' object has no attribute '" + attr_name + "'";
+                std::string exception_information = "type '" + type_name + "' has no attribute '" + attr_name + "'";
                 PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
                 return NULL;
             }
@@ -797,7 +787,7 @@ id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
     {
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[typ_id][obj_id]);
         if (::AllData::all_object_attr[typ_id][obj_id].find(obj_private_name) != ::AllData::all_object_attr[typ_id][obj_id].end()) {
-            Py_DECREF(::AllData::all_object_attr[typ_id][obj_id][obj_private_name]);
+            Py_XDECREF(::AllData::all_object_attr[typ_id][obj_id][obj_private_name]);
         }
         ::AllData::all_object_attr[typ_id][obj_id][obj_private_name] = value;
     }
@@ -836,7 +826,7 @@ type_setattr(PyObject* typ, std::string attr_name, PyObject* value)
     {
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
         if (::AllData::type_attr_dict[typ_id].find(typ_private_name) != ::AllData::type_attr_dict[typ_id].end()) {
-            Py_DECREF(::AllData::type_attr_dict[typ_id][typ_private_name]);
+            Py_XDECREF(::AllData::type_attr_dict[typ_id][typ_private_name]);
         }
         ::AllData::type_attr_dict[typ_id][typ_private_name] = value;
     }
@@ -905,11 +895,6 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
             std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
             std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
-            PyObject *exc_typ, *exc_value, *traceback;
-            PyErr_Fetch(&exc_typ, &exc_value, &traceback);
-            PyObject_SetAttrString(exc_value, "obj", obj);
-            PyObject_SetAttrString(exc_value, "name", PyUnicode_FromString(attr_name.c_str()));
-            PyErr_Restore(exc_typ, exc_value, traceback);
             return -1;
         }
         PyObject* delete_obj = ::AllData::all_object_attr[typ_id][obj_id][obj_private_name];
@@ -950,14 +935,9 @@ type_delattr(PyObject* typ, std::string attr_name)
             std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
             std::string exception_information = "type '" + type_name + "' has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
-            PyObject *exc_typ, *exc_value, *traceback;
-            PyErr_Fetch(&exc_typ, &exc_value, &traceback);
-            PyObject_SetAttrString(exc_value, "name", PyUnicode_FromString(attr_name.c_str()));
-            PyObject_SetAttrString(exc_value, "obj", typ);
-            PyErr_Restore(exc_typ, exc_value, traceback);
             return -1;
         }
-        Py_DECREF(::AllData::type_attr_dict[typ_id][typ_private_name]);
+        Py_XDECREF(::AllData::type_attr_dict[typ_id][typ_private_name]);
         ::AllData::type_attr_dict[typ_id].erase(typ_private_name);
     }
     return 0;
@@ -996,9 +976,7 @@ PrivateWrap_doc(PyObject *obj, void *closure)
         return PyUnicode_FromString("PrivateWrap");
     }
     PyObject* doc = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__doc__");
-    if (doc) {
-        Py_INCREF(doc);
-    } else {
+    if (!doc) {
         PyErr_Clear();
         Py_RETURN_NONE;
     }
@@ -1012,9 +990,7 @@ PrivateWrap_module(PyObject *obj, void *closure)
         return PyUnicode_FromString("private_attribute_cpp");
     }
     PyObject* module = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__module__");
-    if (module) {
-        Py_INCREF(module);
-    } else {
+    if (!module){
         PyErr_Clear();
         return PyUnicode_FromString("private_attribute_cpp");
     }
@@ -1028,9 +1004,7 @@ PrivateWarp_name(PyObject* obj, void *closure)
         return PyUnicode_FromString("_PrivateWrap");
     }
     PyObject* name = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__name__");
-    if (name) {
-        Py_INCREF(name);
-    } else {
+    if (!name) {
         PyErr_Clear();
         return PyUnicode_FromString("_PrivateWrap");
     }
@@ -1044,9 +1018,7 @@ PrivateWrap_qualname(PyObject* obj, void *closure)
         return PyUnicode_FromString("_PrivateWrap");
     }
     PyObject* qualname = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__qualname__");
-    if (qualname) {
-        Py_INCREF(qualname);
-    } else {
+    if (!qualname) {
         PyErr_Clear();
         return PyUnicode_FromString("_PrivateWrap");
     }
@@ -1061,9 +1033,7 @@ PrivateWrap_annotate(PyObject* obj, void *closure)
         Py_RETURN_NONE;
     }
     PyObject* annotate = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__annotate__");
-    if (annotate) {
-        Py_INCREF(annotate);
-    } else {
+    if (!annotate) {
         PyErr_Clear();
         Py_RETURN_NONE;
     }
@@ -1078,9 +1048,7 @@ PrivateWrap_type_params(PyObject* obj, void *closure)
         Py_RETURN_NONE;
     }
     PyObject* type_params = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__type_params__");
-    if (type_params) {
-        Py_INCREF(type_params);
-    } else {
+    if (!type_params) {
         PyErr_Clear();
         Py_RETURN_NONE;
     }
@@ -1094,9 +1062,7 @@ PrivateWrap_GetAttr(PyObject* obj, PyObject* args) {
         return NULL;
     }
     PyObject* res = PyObject_GetAttr(((PrivateWrapObject*)obj)->result, name);
-    if (res) {
-        Py_INCREF(res);
-    } else {
+    if (!res) {
         return NULL;
     }
     return res;
@@ -1169,7 +1135,6 @@ PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list)
     self->func_list = list;
     Py_INCREF(list);
 
-    
     self->result = wrapped;
 
     return self;
@@ -1662,7 +1627,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
                 if (PyUnicode_Check(slot)) {
                     const char* slot_cstr = PyUnicode_AsUTF8(slot);
                     if (slot_cstr && attr_str == slot_cstr) {
-                        std::string error_msg = "attribute '" + attr_str + "' is already in '__slots__'";
+                        std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + attr_str + "'";
                         PyErr_SetString(PyExc_TypeError, error_msg.c_str());
                         Py_DECREF(slot_seq);
                         Py_DECREF(attrs_copy);
@@ -1676,6 +1641,11 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     }
 
     PyObject* type_args = PyTuple_Pack(3, name, bases, attrs_copy);
+    if (!type_args) {
+        Py_DECREF(attrs_copy);
+        Py_DECREF(new_hash_private_attrs);
+        return NULL;
+    }
     PyObject* new_type = PyType_Type.tp_new(type, type_args, NULL);
     Py_DECREF(type_args);
 
@@ -1914,7 +1884,6 @@ create_private_attr_base_simple(void)
     if (!base_type) {
         return NULL;
     }
-    ((PyTypeObject*)base_type)->tp_name = "PrivateAttrBase";
     return base_type;
 }
 
@@ -1925,20 +1894,25 @@ typedef struct PrivateModule{
 static PyObject*
 PrivateModule_get_PrivateWrapProxy(PyObject* /*self*/, void* /*closure*/)
 {
-    return (PyObject*)&PrivateWrapProxyType;
+    PyObject* PythonPrivateWrapProxy = (PyObject*)&PrivateWrapProxyType;
+    Py_INCREF(PythonPrivateWrapProxy);
+    return PythonPrivateWrapProxy;
 }
 
 // type PrivateAttrType
 static PyObject*
 PrivateModule_get_PrivateAttrType(PyObject* /*self*/, void* /*closure*/)
 {
-    return (PyObject*)&PrivateAttrType;
+    PyObject* PythonPrivateAttrType = (PyObject*)&PrivateAttrType;
+    Py_INCREF(PythonPrivateAttrType);
+    return PythonPrivateAttrType;
 }
 
 static PyObject*
 PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/)
 {
     static PyObject* PrivateAttrBase = create_private_attr_base_simple();
+    Py_INCREF(PrivateAttrBase);
     return PrivateAttrBase;
 }
 
