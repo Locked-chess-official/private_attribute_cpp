@@ -717,7 +717,7 @@ id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
     final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
     final_find_type = type_get_attr_long_long_guidance(typ_id, attr_name);
     if (final_find_type.status == -2) {
-        return NULL;
+        return -1;
     }
 
     std::string obj_private_name;
@@ -735,7 +735,7 @@ id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
             obj_private_name = custom_random_string(obj_id, attr_name, obj_need_call);
         } catch (RestorePythonException& e) {
             e.restore();
-            return NULL;
+            return -1;
         }
     } else {
         obj_private_name = default_random_string(obj_id, attr_name);
@@ -746,7 +746,7 @@ id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
 
     if (::AllData::all_object_attr.find(final_id) == ::AllData::all_object_attr.end()) {
         PyErr_SetString(PyExc_TypeError, "type not found");
-        return NULL;
+        return -1;
     }
     if (::AllData::all_object_attr[final_id].find(obj_id) == ::AllData::all_object_attr[final_id].end()) {
         ::AllData::all_object_attr[final_id][obj_id] = {};
@@ -895,7 +895,7 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
     final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
     final_find_type = type_get_attr_long_long_guidance(typ_id, attr_name);
     if (final_find_type.status == -2) {
-        return NULL;
+        return -1;
     }
 
     std::string obj_private_name;
@@ -913,7 +913,7 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
             obj_private_name = custom_random_string(obj_id, attr_name, obj_need_call);
         } catch (RestorePythonException& e) {
             e.restore();
-            return NULL;
+            return -1;
         }
     } else {
         obj_private_name = default_random_string(obj_id, attr_name);
@@ -924,7 +924,7 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
 
     if (::AllData::all_object_attr.find(final_id) == ::AllData::all_object_attr.end()) {
         PyErr_SetString(PyExc_TypeError, "type not found");
-        return NULL;
+        return -1;
     }
     if (::AllData::all_object_attr[final_id].find(obj_id) == ::AllData::all_object_attr[final_id].end()) {
         ::AllData::all_object_attr[final_id][obj_id] = {};
