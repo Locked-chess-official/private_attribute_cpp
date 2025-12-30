@@ -838,7 +838,7 @@ type_setattr(PyObject* typ, std::string attr_name, PyObject* value)
     } else {
         final_key = default_random_string(typ_id, attr_name);
     }
-    if (final_id == -1) {
+    if (final_id == 0) {
         PyErr_SetString(PyExc_TypeError, "type not found");
         return -1;
     }
@@ -978,7 +978,7 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[final_id][obj_id]);
         if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) == ::AllData::all_object_attr[final_id][obj_id].end()) {
             lock.release();
-            std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
+            std::string type_name = ((PyTypeObject*)typ)->tp_name;
             std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
             return -1;
@@ -1012,7 +1012,7 @@ type_delattr(PyObject* typ, std::string attr_name)
     } else {
         final_key = default_random_string(typ_id, attr_name);
     }
-    if (final_id == -1) {
+    if (final_id == 0) {
         PyErr_SetString(PyExc_TypeError, "type not found");
         return -1;
     }
@@ -1026,7 +1026,7 @@ type_delattr(PyObject* typ, std::string attr_name)
         }
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
         if (::AllData::type_attr_dict[typ_id].find(final_key) == ::AllData::type_attr_dict[typ_id].end()) {
-            std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
+            std::string type_name = ((PyTypeObject*)typ)->tp_name;
             std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
             return -1;
@@ -1050,7 +1050,7 @@ type_delattr(PyObject* typ, std::string attr_name)
         }
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
         if (::AllData::all_type_subclass_attr[final_id][typ_id].find(final_key) == ::AllData::all_type_subclass_attr[final_id][typ_id].end()) {
-            std::string type_name = PyUnicode_AsUTF8(PyObject_GetAttrString(typ, "__name__"));
+            std::string type_name = ((PyTypeObject*)typ)->tp_name;
             std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
             return -1;
@@ -1640,7 +1640,7 @@ type_set_attr_long_long_guidance(uintptr_t type_id, std::string name)
             }
         }
     }
-    return -1; // -1 means not found
+    return 0; // 0 means not found
 }
 
 static bool

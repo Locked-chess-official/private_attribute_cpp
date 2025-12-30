@@ -35,15 +35,9 @@ class MyClass(PrivateAttrBase, private_func=my_generate_func):     # 3 Inherit +
         inner(...)
         return heavy_computation(self.a, self.b, self.c, x)
 
-    @expensive_api_call.non_conflict_attr_name1                    # 6 Easy access to internal names
-    @expensive_api_call.non_conflict_attr_name2                    # 6 Easy use when the name has no conflict
-    @PrivateWrapProxy(lambda f: f)                                 # 5 dummy wrapper just to restore order
-    def expensive_api_call(self, x):                               # Second definition (will be wrapped)
-        return heavy_computation(self.a, self.b, self.c, x)
-
     # Fix decorator order + resolve name conflicts
-    @PrivateWrapProxy(expensive_api_call.result.conflicted_name2, expensive_api_call)    # 7 Chain .result to push decorators down
-    @PrivateWrapProxy(expensive_api_call.result.conflicted_name1, expensive_api_call)    # 7 Resolve conflict with internal names
+    @PrivateWrapProxy(expensive_api_call.result.name2, expensive_api_call)    # 6 Chain .result to push decorators down
+    @PrivateWrapProxy(expensive_api_call.result.name1, expensive_api_call)    # 6 Resolve conflict with internal names
     def expensive_api_call(self, x):         # Final real implementation
         return heavy_computation(self.a, self.b, self.c, x)
 
@@ -64,8 +58,7 @@ print(obj.expensive_api_call(10))   # works with all decorators applied
 | 3 | Pass private_func in class definition | Same as above   | Optional |
 | 4 | \_\_private_attrs\_\_ list | Declare which attributes are private | Yes |
 | 5 | @PrivateWrapProxy(...) | Make any decorator compatible with private attributes | When needed |
-| 6 | method.xxx | Normal api name proxy | Based on its api |
-| 7 | method.result.xxx chain + dummy wrap | Fix decorator order and name conflicts | When needed |
+| 6 | method.result.xxx chain + dummy wrap | Fix decorator order and name conflicts | When needed |
 
 ## Usage
 
