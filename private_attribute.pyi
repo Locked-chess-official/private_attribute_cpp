@@ -16,3 +16,7 @@ class PrivateWrapProxy:
 
 class PrivateAttrType(type):
     def __new__(cls, name: str, bases: tuple, attrs: PrivateAttrDict, private_func: Callable[[int, str], str]|None = None) -> PrivateAttrType: ...
+
+class PrivateAttrBase(metaclass=PrivateAttrType):
+    __slots__ = ()
+    __private_attrs__ = ()
