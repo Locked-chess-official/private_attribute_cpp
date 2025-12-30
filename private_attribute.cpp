@@ -2220,6 +2220,12 @@ static PyObject*
 PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/)
 {
     static PyObject* PrivateAttrBase = create_private_attr_base_simple();
+    if (!PrivateAttrBase) {
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_RuntimeError, "failed to create PrivateAttrBase");
+        }
+        return NULL;
+    }
     Py_INCREF(PrivateAttrBase);
     return PrivateAttrBase;
 }
@@ -2230,7 +2236,10 @@ PrivateModule_dir(PyObject* self)
     PyObject* parent_dir = PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self);
     if (!parent_dir) return NULL;
     PyObject* attr_list = PyList_New(0);
-    if (!attr_list) return NULL;
+    if (!attr_list) {
+        Py_DECREF(parent_dir);
+        return NULL;
+    }
     PyList_Append(attr_list, PyUnicode_FromString("PrivateWrapProxy"));
     PyList_Append(attr_list, PyUnicode_FromString("PrivateAttrType"));
     PyList_Append(attr_list, PyUnicode_FromString("PrivateAttrBase"));
