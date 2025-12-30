@@ -1763,6 +1763,18 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
     }
 }
 
+
+static std::string
+real_class_name(std::string name, std::string class_name)
+{
+    // if the name starts with "__" but does not end with "__", change to _ClassName__name
+    if (name.length() >= 2 && name.substr(0, 2) == "__" && name.substr(name.length() - 2) != "__") {
+        return "_" + class_name + name;
+    }
+    return name;
+}
+
+
 static PyObject*
 PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
 {
@@ -1788,6 +1800,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         PyErr_SetString(PyExc_TypeError, "name must be a string");
         return NULL;
     }
+    std::string class_name = PyUnicode_AsUTF8(name);
 
     if (!PyTuple_Check(bases)) {
         PyErr_SetString(PyExc_TypeError, "bases must be a tuple");
@@ -1855,6 +1868,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         }
 
         std::string attr_str = attr_cstr;
+        attr_str = real_class_name(attr_str, class_name);
 
         for (const char** p = invalid_name; *p != NULL; p++) {
             if (attr_str == *p) {
