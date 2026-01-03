@@ -475,7 +475,7 @@ type_getattr(PyObject* typ, std::string attr_name)
     }
     if (result) {
         if (PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")) {
-            PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", NULL, typ);
+            PyObject* python_result = PyObject_CallMethod(result, "__get__", "OO", Py_None, typ);
             return python_result;
         } else {
             Py_INCREF(result);
@@ -1946,7 +1946,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
         return type_getattr(cls, name_str);
     }
     Py_XDECREF(now_code);
-    return ((PyTypeObject*)cls)->tp_base->tp_getattro(cls, name);
+    return Py_TYPE(cls)->tp_base->tp_getattro(cls, name);
 }
 
 static int
@@ -1969,7 +1969,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
         return type_setattr(cls, name_str, value);
     }
     Py_XDECREF(now_code);
-    return ((PyTypeObject*)cls)->tp_base->tp_setattro(cls, name, value);
+    return Py_TYPE(cls)->tp_base->tp_setattro(cls, name, value);
 }
 
 static void
