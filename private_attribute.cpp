@@ -316,16 +316,14 @@ custom_random_string(uintptr_t obj_id, std::string attr_name, PyObject* func)
             return result;
         } else {
             lock.unlock();
-            PyObject* args;
-            PyObject* python_obj_id = PyLong_FromLong(obj_id);
-            PyObject* python_attr_name = PyUnicode_FromString(attr_name.c_str());
-            args = PyTuple_New(2);
-            PyTuple_SetItem(args, 0, python_obj_id);
-            PyTuple_SetItem(args, 1, python_attr_name);
+            PyObject* args = PyTuple_New(2);
+            PyTuple_SetItem(args, 0, PyLong_FromSize_t(static_cast<size_t>(obj_id)));
+            PyTuple_SetItem(args, 1, PyUnicode_FromString(attr_name.c_str()));
+
             PyObject* python_result = PyObject_CallObject((PyObject*)func, args);
+
+            // 清理
             Py_DECREF(args);
-            Py_DECREF(python_obj_id);
-            Py_DECREF(python_attr_name);
             if (python_result) {
                 if (!PyUnicode_Check(python_result)) {
                     Py_DECREF(python_result);
@@ -1603,6 +1601,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     // get "private_func" from kwds
     if (kwds && PyDict_Check(kwds)) {
         private_func = PyDict_GetItemString(kwds, "private_func");
+        Py_INCREF(private_func);
         base_kwds = PyDict_Copy(kwds);
         if (!base_kwds) {
             return NULL;
