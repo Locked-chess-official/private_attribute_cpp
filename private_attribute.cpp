@@ -322,7 +322,6 @@ custom_random_string(uintptr_t obj_id, std::string attr_name, PyObject* func)
 
             PyObject* python_result = PyObject_CallObject((PyObject*)func, args);
 
-            // 清理
             Py_DECREF(args);
             if (python_result) {
                 if (!PyUnicode_Check(python_result)) {
@@ -887,17 +886,7 @@ PrivateWrap_type_params(PyObject* obj, void *closure)
 }
 
 static PyObject*
-PrivateWrap_GetAttr(PyObject* obj, PyObject* args) {
-    PyObject* name;
-    if (!PyArg_ParseTuple(args, "O", &name)) {
-        return NULL;
-    }
-    PyObject* res = PyObject_GetAttr(((PrivateWrapObject*)obj)->result, name);
-    if (!res) {
-        return NULL;
-    }
-    return res;
-}
+PrivateWrap_GetAttr(PyObject* obj, PyObject* args);
 
 static PyGetSetDef PrivateWrap_getset[] = {
     {"result", (getter)PrivateWrap_result, NULL, "final result", NULL},
@@ -984,6 +973,24 @@ static PyObject*
 PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw)
 {
     return PyObject_Call(self->result, args, kw);
+}
+
+static PyObject*
+PrivateWrap_GetAttr(PyObject* obj, PyObject* args)
+{
+    if (!PyObject_TypeCheck(obj, &PrivateWrapType)) {
+        PyErr_SetString(PyExc_TypeError, "not a PrivateWrap object");
+        return NULL;
+    }
+    PyObject* name;
+    if (!PyArg_ParseTuple(args, "O", &name)) {
+        return NULL;
+    }
+    PyObject* res = PyObject_GetAttr(((PrivateWrapObject*)obj)->result, name);
+    if (!res) {
+        return NULL;
+    }
+    return res;
 }
 
 // ================================================================
@@ -1568,7 +1575,6 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
     }
 }
 
-
 static std::string
 real_class_name(std::string name, std::string class_name)
 {
@@ -1578,7 +1584,6 @@ real_class_name(std::string name, std::string class_name)
     }
     return name;
 }
-
 
 static PyObject*
 PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
@@ -1596,18 +1601,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     // only parse name, bases, attrs
     if (!PyArg_ParseTuple(args, "OOO", &name, &bases, &attrs)) {
         return NULL;
-    }
-
-    // get "private_func" from kwds
-    if (kwds && PyDict_Check(kwds)) {
-        private_func = PyDict_GetItemString(kwds, "private_func");
-        Py_INCREF(private_func);
-        base_kwds = PyDict_Copy(kwds);
-        if (!base_kwds) {
-            return NULL;
-        }
-        PyDict_DelItemString(base_kwds, "private_func");
-        PyErr_Clear();
     }
 
     if (!PyUnicode_Check(name)) {
@@ -1667,7 +1660,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 
         if (!PyUnicode_Check(attr)) {
             PyErr_SetString(PyExc_TypeError, "all items in '__private_attrs__' must be strings");
-            Py_DECREF(attr);
             Py_DECREF(attrs_copy);
             Py_DECREF(new_hash_private_attrs);
             return NULL;
@@ -1675,7 +1667,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 
         const char* attr_cstr = PyUnicode_AsUTF8(attr);
         if (!attr_cstr) {
-            Py_DECREF(attr);
             Py_DECREF(attrs_copy);
             Py_DECREF(new_hash_private_attrs);
             return NULL;
@@ -1687,7 +1678,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
             if (attr_str == *p) {
                 std::string error_msg = "invalid attribute name: '" + std::string(*p) + "'";
                 PyErr_SetString(PyExc_TypeError, error_msg.c_str());
-                Py_DECREF(attr);
                 Py_DECREF(attrs_copy);
                 Py_DECREF(new_hash_private_attrs);
                 return NULL;
@@ -1697,7 +1687,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         PyObject* hash_tuple = get_string_hash_tuple(attr_str);
         TwoStringTuple hash_tuple_key = get_string_hash_tuple2(attr_str);
         if (!hash_tuple) {
-            Py_DECREF(attr);
             Py_DECREF(attrs_copy);
             Py_DECREF(new_hash_private_attrs);
             return NULL;
@@ -1705,7 +1694,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         PyTuple_SET_ITEM(new_hash_private_attrs, i, hash_tuple);
         private_attrs_set.insert(hash_tuple_key);
         private_attrs_vector_string.insert(attr_str);
-        Py_DECREF(attr);
     }
 
     if (PyDict_SetItemString(attrs_copy, "__private_attrs__", new_hash_private_attrs) < 0) {
@@ -1803,18 +1791,34 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         Py_DECREF(new_hash_private_attrs);
         return NULL;
     }
+    // get "private_func" from kwds
+    if (kwds && PyDict_Check(kwds)) {
+        private_func = PyDict_GetItemString(kwds, "private_func");
+        if (private_func) {
+            Py_INCREF(private_func);
+        }
+        base_kwds = PyDict_Copy(kwds);
+        if (!base_kwds) {
+            Py_XDECREF(private_func);
+            return NULL;
+        }
+        PyDict_DelItemString(base_kwds, "private_func");
+        PyErr_Clear();
+    }
     PyObject* new_type = type->tp_base->tp_new(type, type_args, base_kwds);
     Py_DECREF(type_args);
 
     if (!new_type) {
         Py_DECREF(attrs_copy);
         Py_DECREF(new_hash_private_attrs);
+        Py_XDECREF(private_func);
         return NULL;
     }
     if (!PyObject_IsInstance(new_type, (PyObject*)type)) {
         Py_DECREF(attrs_copy);
         Py_DECREF(new_hash_private_attrs);
         Py_DECREF(new_type);
+        Py_XDECREF(private_func);
         PyErr_SetString(PyExc_TypeError, ("base type creation did not return an instance of '" + std::string(type->tp_name) + "'").c_str());
         return NULL;
     }
@@ -1866,6 +1870,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
                 Py_DECREF(attrs_copy);
                 Py_DECREF(new_hash_private_attrs);
                 Py_DECREF(new_type);
+                Py_XDECREF(private_func);
                 e.restore();
                 return NULL;
             }
@@ -1896,6 +1901,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
                     Py_DECREF(attrs_copy);
                     Py_DECREF(new_hash_private_attrs);
                     Py_DECREF(new_type);
+                    Py_XDECREF(private_func);
                     e.restore();
                     return NULL;
                 }
@@ -1907,7 +1913,6 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     }
     if (private_func) {
         ::AllData::type_need_call[type_id] = private_func;
-        Py_INCREF(private_func);
     }
 
     {
@@ -2190,7 +2195,7 @@ static PyTypeObject PrivateModuleType = {
 
 static PyModuleDef def = {
     PyModuleDef_HEAD_INIT,
-    "private_attribute_cpp",
+    "private_attribute",
     NULL,
     0,
     NULL,
