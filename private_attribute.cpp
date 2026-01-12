@@ -470,7 +470,7 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
         return result;
     }
     const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-    if (!type_name) {
+    if (type_name == NULL) {
         return NULL;
     }
     std::string string_type_name = type_name;
@@ -501,7 +501,7 @@ type_getattr(PyObject* typ, std::string attr_name)
         }
     }
     const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-    if (!type_name) {
+    if (type_name == NULL) {
         return NULL;
     }
     std::string string_type_name = type_name;
@@ -715,8 +715,8 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
         if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) == ::AllData::all_object_attr[final_id][obj_id].end()) {
             lock.release();
             const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-            if (!type_name) {
-                return NULL;
+            if (type_name == NULL) {
+                return -1;
             }
             std::string string_type_name = type_name;
             std::string exception_information = "'" + string_type_name + "' object has no attribute '" + attr_name + "'";
@@ -767,8 +767,8 @@ type_delattr(PyObject* typ, std::string attr_name)
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
         if (::AllData::type_attr_dict[typ_id].find(final_key) == ::AllData::type_attr_dict[typ_id].end()) {
             const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-            if (!type_name) {
-                return NULL;
+            if (type_name == NULL) {
+                return -1;
             }
             std::string string_type_name = type_name;
             std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
@@ -795,8 +795,8 @@ type_delattr(PyObject* typ, std::string attr_name)
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
         if (::AllData::all_type_subclass_attr[final_id][typ_id].find(final_key) == ::AllData::all_type_subclass_attr[final_id][typ_id].end()) {
             const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-            if (!type_name) {
-                return NULL;
+            if (type_name == NULL) {
+                return -1;
             }
             std::string string_type_name = type_name;
             std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
