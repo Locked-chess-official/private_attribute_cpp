@@ -97,6 +97,7 @@ namespace std {
 namespace {
     namespace AllData {
         static std::unordered_map<AllPyobjectAttrCacheKey, std::string> cache;
+        static std::unordered_set<std::string> all_exist_name;
         static std::unordered_map<uintptr_t, std::vector<AllPyobjectAttrCacheKey>> obj_attr_keys;
         static std::shared_mutex cache_mutex;
         namespace {
@@ -113,6 +114,10 @@ namespace {
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
         all_object_mutex, all_type_subclass_mutex;
         static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
+        // all type tp_getattro map
+        static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
+        // all type tp_setattro map
+        static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
         static std::vector<PyTypeObject*> all_register_new_metaclass;
     };
 };
@@ -234,25 +239,18 @@ default_random_string(uintptr_t obj_id, std::string attr_name)
                 return result;
             }
             while (true) {
-                bool need_break = true;
-                for (auto& [k, v]: ::AllData::cache) {
-                    if (v == result) {
-                        result = original_result + "_" + std::to_string(i);
-                        need_break = false;
-                        break;
-                    }
-                }
-                if (need_break) {
+                if (::AllData::all_exist_name.find(result) == ::AllData::all_exist_name.end()) {
                     break;
-                } else {
-                    i++;
                 }
+                result = original_result + "_" + std::to_string(i);
+                i++;
             }
             if (::AllData::obj_attr_keys.find(obj_id) == ::AllData::obj_attr_keys.end()) {
                 ::AllData::obj_attr_keys[obj_id] = {};
             }
             ::AllData::obj_attr_keys[obj_id].push_back(key);
             ::AllData::cache[key] = result;
+            ::AllData::all_exist_name.insert(result);
         }
     }
     return result;
@@ -342,25 +340,18 @@ custom_random_string(uintptr_t obj_id, std::string attr_name, PyObject* func)
                     return result;
                 }
                 while (true) {
-                    bool need_break = true;
-                    for (auto& [k, v]: ::AllData::cache) {
-                        if (v == result) {
-                            result = original_result + "_" + std::to_string(i);
-                            need_break = false;
-                            break;
-                        }
-                    }
-                    if (need_break) {
+                    if (::AllData::all_exist_name.find(result) == ::AllData::all_exist_name.end()) {
                         break;
-                    } else {
-                        i++;
                     }
+                    result = original_result + "_" + std::to_string(i);
+                    i++;
                 }
                 if (::AllData::obj_attr_keys.find(obj_id) == ::AllData::obj_attr_keys.end()) {
                     ::AllData::obj_attr_keys[obj_id] = {};
                 }
                 ::AllData::obj_attr_keys[obj_id].push_back(key);
                 ::AllData::cache[key] = result;
+                ::AllData::all_exist_name.insert(result);
             } else {
                 PyObject *type, *value, *traceback;
                 PyErr_Fetch(&type, &value, &traceback);
@@ -378,6 +369,8 @@ clear_obj(uintptr_t obj_id)
     auto it = ::AllData::obj_attr_keys.find(obj_id);
     if (it != ::AllData::obj_attr_keys.end()) {
         for (auto& key: it->second) {
+            std::string result = ::AllData::cache[key];
+            ::AllData::all_exist_name.erase(result);
             ::AllData::cache.erase(key);
         }
         ::AllData::obj_attr_keys.erase(it);
@@ -440,6 +433,15 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
         std::shared_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[final_id][obj_id]);
         if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) != ::AllData::all_object_attr[final_id][obj_id].end()) {
             PyObject* python_obj = ::AllData::all_object_attr[final_id][obj_id][obj_private_name];
+            if (!python_obj) {
+                PyErr_SetString(PyExc_SystemError, "attribute is NULL");
+                return NULL;
+            }
+            // if obj is a type, call result.__get__(None, obj)
+            if (PyType_Check(obj) && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")) {
+                PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", Py_None, obj);
+                return python_result;
+            }
             Py_XINCREF(python_obj);
             return python_obj;
         }
@@ -1055,7 +1057,7 @@ static void PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self);
 
 static PyTypeObject PrivateWrapProxyType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "PrivateWrapProxy",                     // tp_name
+    "private_attribute.PrivateWrapProxy",   // tp_name
     sizeof(PrivateWrapProxyObject),         // tp_basicsize
     0,                                      // tp_itemsize
     (destructor)PrivateWrapProxy_dealloc,   // tp_dealloc
@@ -1130,6 +1132,9 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
         }
     }
     Py_XDECREF(code);
+    if (::AllData::all_type_getattro.find(type_id) != ::AllData::all_type_getattro.end()){
+        return ::AllData::all_type_getattro[type_id](self, name);
+    }
     return PyObject_GenericGetAttr(self, name);
 }
 
@@ -1158,6 +1163,9 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
         }
     }
     Py_XDECREF(code);
+    if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()){
+        return ::AllData::all_type_setattro[typ_id](self, name, value);
+    }
     return PyObject_GenericSetAttr(self, name, value);
 }
 
@@ -1171,16 +1179,12 @@ PrivateAttr_tp_dealloc(PyObject* self)
         parent_ids = ::AllData::all_type_parent_id[typ_id];
     }
     uintptr_t id_self = (uintptr_t)self;
-    
-    {
-        if (PyObject_HasAttrString((PyObject* )typ, "__del__")) {
-            PyObject* del_func = PyObject_GetAttrString((PyObject* )typ, "__del__");
-            PyObject* result = PyObject_CallFunctionObjArgs(del_func, self, NULL);
-            Py_XDECREF(result);
-            Py_XDECREF(del_func);
-        }
-        typ->tp_free(self);
+    if (PyObject_CallFinalizerFromDealloc(self) < 0) {
+        return;
     }
+
+    typ->tp_free(self);
+
 
     {
         // first: clear ::AllData::all_object_attr and ::AllData::all_object_mutex on this typ_id
@@ -1825,6 +1829,8 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
+    if (type_instance->tp_getattro)::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
+    if (type_instance->tp_setattro)::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
     type_instance->tp_getattro = PrivateAttr_tp_getattro;
     type_instance->tp_setattro = PrivateAttr_tp_setattro;
     type_instance->tp_dealloc = PrivateAttr_tp_dealloc;
@@ -2029,6 +2035,12 @@ PrivateAttrType_del(PyObject* cls)
             }
         }
     }
+    if (::AllData::all_type_getattro.find(typ_id) != ::AllData::all_type_getattro.end()) {
+        ::AllData::all_type_getattro.erase(typ_id);
+    }
+    if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()) {
+        ::AllData::all_type_setattro.erase(typ_id);
+    }
     ::AllData::all_type_mutex.erase(typ_id);
     clear_obj(typ_id);
     (Py_TYPE(cls))->tp_free(cls);
@@ -2077,6 +2089,8 @@ create_private_attr_base_simple(void)
     if (!base_type) {
         return NULL;
     }
+    // set "__module__"
+    PyType_Type.tp_setattro(base_type, PyUnicode_FromString("__module__"), PyUnicode_FromString("private_attribute"));
     return base_type;
 }
 
