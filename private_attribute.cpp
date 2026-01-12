@@ -377,6 +377,20 @@ clear_obj(uintptr_t obj_id)
     }
 }
 
+static const char*
+get_name_from_tp_name(PyTypeObject* typ)
+{
+    const char* name = typ->tp_name;
+    if (name == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "tp_name is NULL");
+        return NULL;
+    }
+
+    const char *dot = strrchr(name, '.');
+    const char *final_name = dot ? dot + 1 : name;
+    return final_name;
+}
+
 static PyObject*
 id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
 {
@@ -425,7 +439,8 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
         result = final_object.result;
     }
 
-    if (result && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__") && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__set__")) {
+    if (result && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")
+    && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__set__")) {
         PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", obj, typ);
         return python_result;
     }
@@ -454,8 +469,12 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
         Py_INCREF(result);
         return result;
     }
-    std::string type_name = ((PyTypeObject*)typ)->tp_name;
-    std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
+    const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
+    if (!type_name) {
+        return NULL;
+    }
+    std::string string_type_name = type_name;
+    std::string exception_information = "'" + string_type_name + "' object has no attribute '" + attr_name + "'";
     PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
     return NULL;
 }
@@ -481,8 +500,12 @@ type_getattr(PyObject* typ, std::string attr_name)
             return result;
         }
     }
-    std::string type_name = ((PyTypeObject*)typ)->tp_name;
-    std::string message = "type '" + type_name + "' has no attribute '" + attr_name + "'";
+    const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
+    if (!type_name) {
+        return NULL;
+    }
+    std::string string_type_name = type_name;
+    std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
     PyErr_SetString(PyExc_AttributeError, message.c_str());
     return NULL;
 }
@@ -691,8 +714,12 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[final_id][obj_id]);
         if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) == ::AllData::all_object_attr[final_id][obj_id].end()) {
             lock.release();
-            std::string type_name = ((PyTypeObject*)typ)->tp_name;
-            std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
+            const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
+            if (!type_name) {
+                return NULL;
+            }
+            std::string string_type_name = type_name;
+            std::string exception_information = "'" + string_type_name + "' object has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
             return -1;
         }
@@ -739,9 +766,13 @@ type_delattr(PyObject* typ, std::string attr_name)
         }
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
         if (::AllData::type_attr_dict[typ_id].find(final_key) == ::AllData::type_attr_dict[typ_id].end()) {
-            std::string type_name = ((PyTypeObject*)typ)->tp_name;
-            std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
-            PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
+            const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
+            if (!type_name) {
+                return NULL;
+            }
+            std::string string_type_name = type_name;
+            std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
+            PyErr_SetString(PyExc_AttributeError, message.c_str());
             return -1;
         }
         PyObject* delete_obj = ::AllData::type_attr_dict[typ_id][final_key];
@@ -763,9 +794,13 @@ type_delattr(PyObject* typ, std::string attr_name)
         }
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
         if (::AllData::all_type_subclass_attr[final_id][typ_id].find(final_key) == ::AllData::all_type_subclass_attr[final_id][typ_id].end()) {
-            std::string type_name = ((PyTypeObject*)typ)->tp_name;
-            std::string exception_information = "'" + type_name + "' object has no attribute '" + attr_name + "'";
-            PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
+            const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
+            if (!type_name) {
+                return NULL;
+            }
+            std::string string_type_name = type_name;
+            std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
+            PyErr_SetString(PyExc_AttributeError, message.c_str());
             return -1;
         }
         PyObject* delete_obj = ::AllData::all_type_subclass_attr[final_id][typ_id][final_key];
@@ -2230,6 +2265,12 @@ PyInit_private_attribute(void)
     }
 
     PyObject* m = PyModule_Create(&def);
+    if (!m) {
+        return NULL;
+    }
+#ifdef Py_GIL_DISABLED
+    PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
+#endif
     Py_SET_TYPE(m, &PrivateModuleType);
     return m;
 }
