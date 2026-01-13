@@ -454,6 +454,7 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
             }
             // if obj is a type, call result.__get__(None, obj)
             if (PyType_Check(obj) && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")) {
+                lock.unlock();
                 PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", Py_None, obj);
                 return python_result;
             }
