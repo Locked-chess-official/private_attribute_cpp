@@ -923,9 +923,6 @@ PrivateWrap_type_params(PyObject* obj, void *closure)
     return type_params;
 }
 
-static PyObject*
-PrivateWrap_GetAttr(PyObject* obj, PyObject* name);
-
 static PyGetSetDef PrivateWrap_getset[] = {
     {"result", (getter)PrivateWrap_result, NULL, "final result", NULL},
     {"__wrapped__", (getter)PrivateWrap_result, NULL, "final result", NULL},
