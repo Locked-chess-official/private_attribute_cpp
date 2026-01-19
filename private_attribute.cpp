@@ -924,7 +924,7 @@ PrivateWrap_type_params(PyObject* obj, void *closure)
 }
 
 static PyObject*
-PrivateWrap_GetAttr(PyObject* obj, PyObject* args);
+PrivateWrap_GetAttr(PyObject* obj, PyObject* name);
 
 static PyGetSetDef PrivateWrap_getset[] = {
     {"result", (getter)PrivateWrap_result, NULL, "final result", NULL},
@@ -938,10 +938,19 @@ static PyGetSetDef PrivateWrap_getset[] = {
     {NULL}
 };
 
-static PyMethodDef PrivateWrap_methods[] = {
-    {"__getattr__", (PyCFunction)PrivateWrap_GetAttr, METH_VARARGS, NULL},
-    {NULL}
-};
+static PyObject *
+PrivateWrap_getattro(PyObject *obj, PyObject *name)
+{
+    PyObject *res = PyObject_GenericGetAttr(obj, name);
+    if (res != NULL) {
+        return res;
+    }
+
+    PyErr_Clear();
+
+    PrivateWrapObject *self = (PrivateWrapObject *)obj;
+    return PyObject_GetAttr(self->result, name);
+}
 
 static PyTypeObject PrivateWrapType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -960,7 +969,7 @@ static PyTypeObject PrivateWrapType = {
     0,                                 // tp_hash
     (ternaryfunc)PrivateWrap_call,     // tp_call
     0,                                 // tp_str
-    0,                                 // tp_getattro
+    PrivateWrap_getattro,              // tp_getattro
     0,                                 // tp_setattro
     0,                                 // tp_as_buffer
     Py_TPFLAGS_DEFAULT,                // tp_flags
@@ -971,7 +980,7 @@ static PyTypeObject PrivateWrapType = {
     0,                                 // tp_weaklistoffset
     0,                                 // tp_iter
     0,                                 // tp_iternext
-    PrivateWrap_methods,               // tp_methods
+    0,                                 // tp_methods
     0,                                 // tp_members
     PrivateWrap_getset,                // tp_getset
 };
@@ -1011,24 +1020,6 @@ static PyObject*
 PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw)
 {
     return PyObject_Call(self->result, args, kw);
-}
-
-static PyObject*
-PrivateWrap_GetAttr(PyObject* obj, PyObject* args)
-{
-    if (!PyObject_TypeCheck(obj, &PrivateWrapType)) {
-        PyErr_SetString(PyExc_TypeError, "not a PrivateWrap object");
-        return NULL;
-    }
-    PyObject* name;
-    if (!PyArg_ParseTuple(args, "O", &name)) {
-        return NULL;
-    }
-    PyObject* res = PyObject_GetAttr(((PrivateWrapObject*)obj)->result, name);
-    if (!res) {
-        return NULL;
-    }
-    return res;
 }
 
 // ================================================================
