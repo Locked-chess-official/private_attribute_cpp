@@ -1209,7 +1209,6 @@ PrivateAttr_tp_dealloc(PyObject* self)
 
     typ->tp_free(self);
 
-
     {
         // first: clear ::AllData::all_object_attr and ::AllData::all_object_mutex on this typ_id
         if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()){
@@ -1613,132 +1612,158 @@ real_class_name(std::string name, std::string class_name)
     return name;
 }
 
-static PyObject*
-PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
+struct PrivateAttrCreationData {
+    std::string class_name;
+    PyObject* attrs_copy = nullptr;
+    PyObject* new_hash_private_attrs = nullptr;
+    std::unordered_set<TwoStringTuple> private_attrs_set;
+    std::unordered_set<std::string> private_attrs_vector_string;
+    std::vector<uintptr_t> all_need_analyse_base;
+    std::unordered_map<std::string, PyObject*> need_remove_itself;
+    std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObject*>> need_remove_subclass;
+    PyObject* private_func = nullptr;
+    PyObject* base_kwds = nullptr;
+    PyObject* name = nullptr;
+    PyObject* bases = nullptr;
+    PyObject* attrs = nullptr;
+
+    void clear() {
+        if (attrs_copy) {
+            Py_DECREF(attrs_copy);
+            attrs_copy = nullptr;
+        }
+        if (new_hash_private_attrs) {
+            Py_DECREF(new_hash_private_attrs);
+            new_hash_private_attrs = nullptr;
+        }
+        if (private_func) {
+            Py_DECREF(private_func);
+            private_func = nullptr;
+        }
+        if (base_kwds) {
+            Py_DECREF(base_kwds);
+            base_kwds = nullptr;
+        }
+
+        for (auto& pair : need_remove_itself) {
+            Py_XDECREF(pair.second);
+        }
+        need_remove_itself.clear();
+
+        for (auto& outer_pair : need_remove_subclass) {
+            for (auto& inner_pair : outer_pair.second) {
+                Py_XDECREF(inner_pair.second);
+            }
+        }
+        need_remove_subclass.clear();
+    }
+    
+    ~PrivateAttrCreationData() {
+        clear();
+    }
+};
+
+static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObject* kwds, 
+                                      PrivateAttrCreationData& data) 
 {
     static const char* invalid_name[] = {"__private_attrs__", "__slots__", "__getattribute__", "__getattr__", "__init__",
         "__setattr__", "__delattr__", "__name__", "__module__", "__doc__", "__getstate__", "__setstate__",
         "__get__", "__set__", "__delete__", "__new__", "__set_name__", "__class__", NULL};
 
-    PyObject* name;
-    PyObject* bases;
-    PyObject* attrs;
-    PyObject* private_func = NULL;
-    PyObject* base_kwds = NULL;
-
     // only parse name, bases, attrs
-    if (!PyArg_ParseTuple(args, "OOO", &name, &bases, &attrs)) {
-        return NULL;
+    if (!PyArg_ParseTuple(args, "OOO", &data.name, &data.bases, &data.attrs)) {
+        return false;
     }
 
-    if (!PyUnicode_Check(name)) {
+    if (!PyUnicode_Check(data.name)) {
         PyErr_SetString(PyExc_TypeError, "name must be a string");
-        return NULL;
+        return false;
     }
-    std::string class_name = PyUnicode_AsUTF8(name);
+    data.class_name = PyUnicode_AsUTF8(data.name);
 
-    if (!PyTuple_Check(bases)) {
+    if (!PyTuple_Check(data.bases)) {
         PyErr_SetString(PyExc_TypeError, "bases must be a tuple");
-        return NULL;
+        return false;
     }
 
-    if (!PyDict_Check(attrs)) {
+    if (!PyDict_Check(data.attrs)) {
         PyErr_SetString(PyExc_TypeError, "attrs must be a dict");
-        return NULL;
+        return false;
     }
 
-    PyObject* __private_attrs__ = PyDict_GetItemString(attrs, "__private_attrs__");
+    PyObject* __private_attrs__ = PyDict_GetItemString(data.attrs, "__private_attrs__");
     if (!__private_attrs__) {
         PyErr_SetString(PyExc_TypeError, "'__private_attrs__' is needed for type 'PrivateAttrType'");
-        return NULL;
+        return false;
     }
 
     if (!PySequence_Check(__private_attrs__)) {
         PyErr_SetString(PyExc_TypeError, "'__private_attrs__' must be a sequence");
-        return NULL;
+        return false;
     }
 
-    PyObject* attrs_copy = PyDict_Copy(attrs);
-    if (!attrs_copy) {
-        return NULL;
+    data.attrs_copy = PyDict_Copy(data.attrs);
+    if (!data.attrs_copy) {
+        return false;
     }
 
     Py_ssize_t private_attr_len = PySequence_Length(__private_attrs__);
     if (private_attr_len < 0) {
-        Py_DECREF(attrs_copy);
-        return NULL;
+        return false;
     }
 
-    PyObject* new_hash_private_attrs = PyTuple_New(private_attr_len);
-    std::unordered_set<TwoStringTuple> private_attrs_set;
-    if (!new_hash_private_attrs) {
-        Py_DECREF(attrs_copy);
-        return NULL;
+    data.new_hash_private_attrs = PyTuple_New(private_attr_len);
+    if (!data.new_hash_private_attrs) {
+        return false;
     }
-
-    std::unordered_set<std::string> private_attrs_vector_string;
 
     for (Py_ssize_t i = 0; i < private_attr_len; i++) {
         PyObject* attr = PySequence_GetItem(__private_attrs__, i);
         if (!attr) {
-            Py_DECREF(attrs_copy);
-            Py_DECREF(new_hash_private_attrs);
-            return NULL;
+            return false;
         }
 
         if (!PyUnicode_Check(attr)) {
             PyErr_SetString(PyExc_TypeError, "all items in '__private_attrs__' must be strings");
-            Py_DECREF(attrs_copy);
-            Py_DECREF(new_hash_private_attrs);
-            return NULL;
+            return false;
         }
 
         const char* attr_cstr = PyUnicode_AsUTF8(attr);
         if (!attr_cstr) {
-            Py_DECREF(attrs_copy);
-            Py_DECREF(new_hash_private_attrs);
-            return NULL;
+            return false;
         }
 
-        std::string attr_str = real_class_name(attr_cstr, class_name);
+        std::string attr_str = real_class_name(attr_cstr, data.class_name);
 
         for (const char** p = invalid_name; *p != NULL; p++) {
             if (attr_str == *p) {
                 std::string error_msg = "invalid attribute name: '" + std::string(*p) + "'";
                 PyErr_SetString(PyExc_TypeError, error_msg.c_str());
-                Py_DECREF(attrs_copy);
-                Py_DECREF(new_hash_private_attrs);
-                return NULL;
+                return false;
             }
         }
 
         PyObject* hash_tuple = get_string_hash_tuple(attr_str);
         TwoStringTuple hash_tuple_key = get_string_hash_tuple2(attr_str);
         if (!hash_tuple) {
-            Py_DECREF(attrs_copy);
-            Py_DECREF(new_hash_private_attrs);
-            return NULL;
+            return false;
         }
-        PyTuple_SET_ITEM(new_hash_private_attrs, i, hash_tuple);
-        private_attrs_set.insert(hash_tuple_key);
-        private_attrs_vector_string.insert(attr_str);
+        PyTuple_SET_ITEM(data.new_hash_private_attrs, i, hash_tuple);
+        data.private_attrs_set.insert(hash_tuple_key);
+        data.private_attrs_vector_string.insert(attr_str);
     }
 
-    if (PyDict_SetItemString(attrs_copy, "__private_attrs__", new_hash_private_attrs) < 0) {
-        Py_DECREF(attrs_copy);
-        Py_DECREF(new_hash_private_attrs);
-        return NULL;
+    if (PyDict_SetItemString(data.attrs_copy, "__private_attrs__", data.new_hash_private_attrs) < 0) {
+        return false;
     }
 
-    PyObject* all_slots = PyDict_GetItemString(attrs_copy, "__slots__");
+    PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
     bool has_slots = (all_slots != NULL);
     
     if (has_slots) {
         PyObject* slot_seq = PySequence_Fast(all_slots, "__slots__ must be a sequence");
         if (!slot_seq) {
-            Py_DECREF(attrs_copy);
-            Py_DECREF(new_hash_private_attrs);
-            return NULL;
+            return false;
         }
 
         Py_ssize_t slot_len = PySequence_Fast_GET_SIZE(slot_seq);
@@ -1747,112 +1772,119 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
             PyObject* slot = PySequence_Fast_GET_ITEM(slot_seq, j);
             if (PyUnicode_Check(slot)) {
                 const char* slot_cstr = PyUnicode_AsUTF8(slot);
-                if (private_attrs_vector_string.find((std::string)slot_cstr) != private_attrs_vector_string.end()){
+                if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
                     std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + std::string(slot_cstr) + "'";
                     PyErr_SetString(PyExc_TypeError, error_msg.c_str());
                     Py_DECREF(slot_seq);
-                    Py_DECREF(attrs_copy);
-                    Py_DECREF(new_hash_private_attrs);
-                    return NULL;
+                    return false;
                 }
             }
         }
         Py_DECREF(slot_seq);
     }
 
-    std::vector<uintptr_t> all_need_analyse_base;
-    Py_ssize_t bases_len = PyTuple_GET_SIZE(bases);
+    Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases);
     for (Py_ssize_t i = 0; i < bases_len; i++) {
-        PyObject* base = PyTuple_GET_ITEM(bases, i);
+        PyObject* base = PyTuple_GET_ITEM(data.bases, i);
         if (!base || !PyType_Check(base) || !PyObject_IsInstance(base, (PyObject*)&PrivateAttrType)) {
             continue;
         }
-        all_need_analyse_base.push_back((uintptr_t)base);
+        data.all_need_analyse_base.push_back((uintptr_t)base);
     }
-    std::unordered_map<std::string, PyObject*> need_remove_itself; // key: attr name, value: attr value
-    std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObject*>> need_remove_subclass; // key: type id, value: key: attr name, value: attr value
-    std::function<uintptr_t(std::string)> need_remove_to_subclass = [&all_need_analyse_base](std::string attr_name){
-        for (auto& base: all_need_analyse_base) {
+    
+    std::function<uintptr_t(std::string)> need_remove_to_subclass = [&data](std::string attr_name){
+        for (auto& base: data.all_need_analyse_base) {
             if (type_private_attr(base, attr_name)) {
                 return type_set_attr_long_long_guidance(base, attr_name);
             }
         }
         return (uintptr_t)0;
     };
+    
     {
         Py_ssize_t pos = 0;
         PyObject* key, *value;
-        PyObject* forward_analyse = PyDict_Copy(attrs_copy);
+        PyObject* forward_analyse = PyDict_Copy(data.attrs_copy);
         while (PyDict_Next(forward_analyse, &pos, &key, &value)) {
-            std::string attr_name = real_class_name(PyUnicode_AsUTF8(key), class_name);
+            std::string attr_name = real_class_name(PyUnicode_AsUTF8(key), data.class_name);
             PyObject* need_value;
             if (PyObject_IsInstance(value, (PyObject*)&PrivateWrapType)) {
                 need_value = ((PrivateWrapObject*)value)->result;
             } else {
                 need_value = value;
             }
-            if (private_attrs_vector_string.find(attr_name) != private_attrs_vector_string.end()) {
+            if (data.private_attrs_vector_string.find(attr_name) != data.private_attrs_vector_string.end()) {
                 Py_INCREF(need_value);
-                std::string final_key;
-                need_remove_itself[attr_name] = need_value;
-                PyDict_DelItem(attrs_copy, key);
+                data.need_remove_itself[attr_name] = need_value;
+                PyDict_DelItem(data.attrs_copy, key);
                 continue;
             }
             uintptr_t need_remove_subclass_id = need_remove_to_subclass(attr_name);
             if (need_remove_subclass_id) {
-                if (need_remove_subclass.find(need_remove_subclass_id) == need_remove_subclass.end()) {
-                    need_remove_subclass[need_remove_subclass_id] = {};
+                if (data.need_remove_subclass.find(need_remove_subclass_id) == data.need_remove_subclass.end()) {
+                    data.need_remove_subclass[need_remove_subclass_id] = {};
                 }
                 Py_INCREF(need_value);
-                need_remove_subclass[need_remove_subclass_id][attr_name] = need_value;
-                PyDict_DelItem(attrs_copy, key);
+                data.need_remove_subclass[need_remove_subclass_id][attr_name] = need_value;
+                PyDict_DelItem(data.attrs_copy, key);
                 continue;
             }
-            if (value != need_value) PyDict_SetItem(attrs_copy, key, need_value);
+            if (value != need_value) PyDict_SetItem(data.attrs_copy, key, need_value);
         }
         Py_DECREF(forward_analyse);
     }
 
-    PyObject* type_args = PyTuple_Pack(3, name, bases, attrs_copy);
-    if (!type_args) {
-        Py_DECREF(attrs_copy);
-        Py_DECREF(new_hash_private_attrs);
-        return NULL;
-    }
     // get "private_func" from kwds
     if (kwds && PyDict_Check(kwds)) {
-        private_func = PyDict_GetItemString(kwds, "private_func");
-        if (private_func) {
-            Py_INCREF(private_func);
+        data.private_func = PyDict_GetItemString(kwds, "private_func");
+        if (data.private_func) {
+            Py_INCREF(data.private_func);
         }
-        base_kwds = PyDict_Copy(kwds);
-        if (!base_kwds) {
-            Py_XDECREF(private_func);
-            return NULL;
+        data.base_kwds = PyDict_Copy(kwds);
+        if (!data.base_kwds) {
+            return false;
         }
-        PyDict_DelItemString(base_kwds, "private_func");
+        PyDict_DelItemString(data.base_kwds, "private_func");
         PyErr_Clear();
     }
-    PyObject* new_type = type->tp_base->tp_new(type, type_args, base_kwds);
+    
+    return true;
+}
+
+static PyObject* PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
+{
+    PyObject* type_args = PyTuple_Pack(3, data.name, data.bases, data.attrs_copy);
+    if (!type_args) {
+        return nullptr;
+    }
+    
+    PyObject* new_type = type->tp_base->tp_new(type, type_args, data.base_kwds);
     Py_DECREF(type_args);
 
     if (!new_type) {
-        Py_DECREF(attrs_copy);
-        Py_DECREF(new_hash_private_attrs);
-        Py_XDECREF(private_func);
-        return NULL;
+        return nullptr;
     }
+    
     if (!PyObject_IsInstance(new_type, (PyObject*)type)) {
-        Py_DECREF(attrs_copy);
-        Py_DECREF(new_hash_private_attrs);
         Py_DECREF(new_type);
-        Py_XDECREF(private_func);
-        PyErr_SetString(PyExc_TypeError, ("base type creation did not return an instance of '" + std::string(type->tp_name) + "'").c_str());
-        return NULL;
+        PyErr_SetString(PyExc_TypeError, 
+                       ("base type creation did not return an instance of '" + 
+                        std::string(type->tp_name) + "'").c_str());
+        return nullptr;
     }
+    
+    return new_type;
+}
 
+static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
+{
+    if (!new_type) {
+        return false;
+    }
+    
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
+    
     if (type_instance->tp_getattro)::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
     if (type_instance->tp_setattro)::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
     type_instance->tp_getattro = PrivateAttr_tp_getattro;
@@ -1860,7 +1892,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     type_instance->tp_dealloc = PrivateAttr_tp_dealloc;
 
     ::AllData::type_attr_dict[type_id] = {};
-    ::AllData::all_type_attr_set[type_id] = private_attrs_set;
+    ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
 
     // iter mro and put in all_type_parent_id
     PyObject* mro = type_instance->tp_mro;
@@ -1881,6 +1913,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     ::AllData::all_object_attr[type_id] = {};
     ::AllData::all_type_subclass_attr[type_id] = {};
     ::AllData::all_type_subclass_mutex[type_id] = {};
+    
     for (uintptr_t i: mro_vector) {
         if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[i] = {};
@@ -1891,25 +1924,23 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         ::AllData::all_type_subclass_attr[i][type_id] = {};
         ::AllData::all_type_subclass_mutex[i][type_id] = std::make_shared<std::shared_mutex>();
     }
-    for (auto& [key, value]: need_remove_itself) {
+    
+    for (auto& [key, value]: data.need_remove_itself) {
         std::string final_key;
-        if (private_func) {
+        if (data.private_func) {
             try {
-                final_key = custom_random_string(type_id, key, private_func);
+                final_key = custom_random_string(type_id, key, data.private_func);
             } catch (RestorePythonException& e) {
-                Py_DECREF(attrs_copy);
-                Py_DECREF(new_hash_private_attrs);
-                Py_DECREF(new_type);
-                Py_XDECREF(private_func);
                 e.restore();
-                return NULL;
+                return false;
             }
         } else {
             final_key = default_random_string(type_id, key);
         }
         ::AllData::type_attr_dict[type_id][final_key] = value;
     }
-    for (auto& [i, map]: need_remove_subclass) {
+    
+    for (auto& [i, map]: data.need_remove_subclass) {
         if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[i] = {};
         }
@@ -1924,16 +1955,12 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
         }
         for (auto& [key, value]: map) {
             std::string final_key;
-            if (private_func) {
+            if (data.private_func) {
                 try {
-                    final_key = custom_random_string(type_id, key, private_func);
+                    final_key = custom_random_string(type_id, key, data.private_func);
                 } catch (RestorePythonException& e) {
-                    Py_DECREF(attrs_copy);
-                    Py_DECREF(new_hash_private_attrs);
-                    Py_DECREF(new_type);
-                    Py_XDECREF(private_func);
                     e.restore();
-                    return NULL;
+                    return false;
                 }
             } else {
                 final_key = default_random_string(type_id, key);
@@ -1941,22 +1968,43 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
             ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
         }
     }
-    if (private_func) {
-        ::AllData::type_need_call[type_id] = private_func;
+    
+    if (data.private_func) {
+        ::AllData::type_need_call[type_id] = data.private_func;
     }
 
     {
         PyObject* original_key;
         Py_ssize_t original_pos = 0;
         PyObject* original_value;
-        while (PyDict_Next(attrs, &original_pos, &original_key, &original_value)) {
+        while (PyDict_Next(data.attrs, &original_pos, &original_key, &original_value)) {
             std::unordered_set<uintptr_t> set;
             analyse_all_code(original_value, ::AllData::type_allowed_code[type_id], set);
         }
     }
+    
+    return true;
+}
 
-    Py_DECREF(attrs_copy);
-
+static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
+{
+    PrivateAttrCreationData data;
+    PyObject* new_type = nullptr;
+    
+    if (!PrivateAttrType_preprocess(type, args, kwds, data)) {
+        return nullptr;
+    }
+    
+    new_type = PrivateAttrType_create(type, data);
+    if (!new_type) {
+        return nullptr;
+    }
+    
+    if (!PrivateAttrType_postprocess(new_type, data)) {
+        Py_DECREF(new_type);
+        return nullptr;
+    }
+    
     return new_type;
 }
 
