@@ -826,7 +826,7 @@ static void PrivateWrap_dealloc(PrivateWrapObject *self);
 static PyObject* PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw);
 
 static PyObject *
-PrivateWrap_result(PyObject *obj, void *closure)
+PrivateWrap_result(PyObject *obj, void* /*closure*/)
 {
     if (!obj) {
         Py_RETURN_NONE;
@@ -838,7 +838,7 @@ PrivateWrap_result(PyObject *obj, void *closure)
 }
 
 static PyObject*
-PrivateWrap_doc(PyObject *obj, void *closure)
+PrivateWrap_doc(PyObject *obj, void* /*closure*/)
 {
     if (!obj) {
         return PyUnicode_FromString("PrivateWrap");
@@ -852,21 +852,21 @@ PrivateWrap_doc(PyObject *obj, void *closure)
 }
 
 static PyObject*
-PrivateWrap_module(PyObject *obj, void *closure)
+PrivateWrap_module(PyObject *obj, void* /*closure*/)
 {
     if (!obj) {
-        return PyUnicode_FromString("private_attribute_cpp");
+        return PyUnicode_FromString("private_attribute");
     }
     PyObject* module = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__module__");
     if (!module){
         PyErr_Clear();
-        return PyUnicode_FromString("private_attribute_cpp");
+        return PyUnicode_FromString("private_attribute");
     }
     return module;
 }
 
 static PyObject*
-PrivateWarp_name(PyObject* obj, void *closure)
+PrivateWarp_name(PyObject* obj, void* /*closure*/)
 {
     if (!obj) {
         return PyUnicode_FromString("_PrivateWrap");
@@ -880,7 +880,7 @@ PrivateWarp_name(PyObject* obj, void *closure)
 }
 
 static PyObject*
-PrivateWrap_qualname(PyObject* obj, void *closure)
+PrivateWrap_qualname(PyObject* obj, void* /*closure*/)
 {
     if (!obj) {
         return PyUnicode_FromString("_PrivateWrap");
@@ -895,7 +895,7 @@ PrivateWrap_qualname(PyObject* obj, void *closure)
 
 // __annotate__
 static PyObject*
-PrivateWrap_annotate(PyObject* obj, void *closure)
+PrivateWrap_annotate(PyObject* obj, void* /*closure*/)
 {
     if (!obj) {
         Py_RETURN_NONE;
@@ -910,7 +910,7 @@ PrivateWrap_annotate(PyObject* obj, void *closure)
 
 // __type_params__
 static PyObject*
-PrivateWrap_type_params(PyObject* obj, void *closure)
+PrivateWrap_type_params(PyObject* obj, void* /*closure*/)
 {
     if (!obj) {
         Py_RETURN_NONE;
