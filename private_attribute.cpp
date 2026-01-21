@@ -1672,12 +1672,31 @@ struct PrivateAttrCreationData {
     }
 };
 
-static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObject* kwds, 
+static bool
+need_analyse_type(PyObject* type)
+{
+    if (PyObject_IsInstance(type, (PyObject*)&PrivateAttrType)) {
+        return true;
+    }
+    for (auto i: ::AllData::all_register_new_metaclass) {
+        if (i && PyObject_IsInstance(type, (PyObject*)i)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, 
                                       PrivateAttrCreationData& data) 
 {
     static const char* invalid_name[] = {"__private_attrs__", "__slots__", "__getattribute__", "__getattr__", "__init__",
         "__setattr__", "__delattr__", "__name__", "__module__", "__doc__", "__getstate__", "__setstate__",
         "__get__", "__set__", "__delete__", "__new__", "__set_name__", "__class__", NULL};
+
+    if (!args) {
+        PyErr_SetString(PyExc_SystemError, "arg is NULL");
+        return false;
+    }
 
     // only parse name, bases, attrs
     if (!PyArg_ParseTuple(args, "OOO", &data.name, &data.bases, &data.attrs)) {
@@ -1768,7 +1787,7 @@ static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObj
 
     PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
     bool has_slots = (all_slots != NULL);
-    
+
     if (has_slots) {
         PyObject* slot_seq = PySequence_Fast(all_slots, "__slots__ must be a sequence");
         if (!slot_seq) {
@@ -1790,12 +1809,14 @@ static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObj
             }
         }
         Py_DECREF(slot_seq);
+    } else {
+        PyErr_Clear();
     }
 
     Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases);
     for (Py_ssize_t i = 0; i < bases_len; i++) {
         PyObject* base = PyTuple_GET_ITEM(data.bases, i);
-        if (!base || !PyType_Check(base) || !PyObject_IsInstance(base, (PyObject*)&PrivateAttrType)) {
+        if (!base || !PyType_Check(base) || !need_analyse_type(base)) {
             continue;
         }
         data.all_need_analyse_base.push_back((uintptr_t)base);
@@ -2001,7 +2022,7 @@ static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObjec
     PrivateAttrCreationData data;
     PyObject* new_type = nullptr;
 
-    if (!PrivateAttrType_preprocess(type, args, kwds, data)) {
+    if (!PrivateAttrType_preprocess(args, kwds, data)) {
         return nullptr;
     }
 
@@ -2176,7 +2197,166 @@ create_private_attr_base_simple(void)
     return base_type;
 }
 
-typedef struct PrivateModule{
+typedef struct {
+    PyObject_HEAD
+    PrivateAttrCreationData* tmp;
+} PrivateTempObject;
+
+static PyObject*
+PrivateTempObject_name(PyObject* self, void* /*closure*/)
+{
+    PyObject* name = ((PrivateTempObject*)self)->tmp->name;
+    if (!name) {
+        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        return nullptr;
+    }
+    Py_INCREF(name);
+    return name;
+}
+
+static PyObject*
+PrivateTempObject_base(PyObject* self, void* /*closure*/)
+{
+    PyObject* base = ((PrivateTempObject*)self)->tmp->bases;
+    if (!base) {
+        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        return nullptr;
+    }
+    Py_INCREF(base);
+    return base;
+}
+
+static PyObject*
+PrivateTempObject_attrs(PyObject* self, void* /*closure*/)
+{
+    PyObject* attrs = ((PrivateTempObject*)self)->tmp->attrs_copy;
+    if (!attrs) {
+        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        return nullptr;
+    }
+    Py_INCREF(attrs);
+    return attrs;
+}
+
+static PyObject*
+PrivateTempObject_kwds(PyObject* self, void* /*closure*/)
+{
+    PyObject* kwds = ((PrivateTempObject*)self)->tmp->base_kwds;
+    if (!kwds) {
+        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        return nullptr;
+    }
+    Py_INCREF(kwds);
+    return kwds;
+}
+
+static PyGetSetDef PrivateTempObject_getsets[] = {
+    {"name", (getter)PrivateTempObject_name, NULL, NULL, NULL},
+    {"base", (getter)PrivateTempObject_base, NULL, NULL, NULL},
+    {"attrs", (getter)PrivateTempObject_attrs, NULL, NULL, NULL},
+    {"kwds", (getter)PrivateTempObject_kwds, NULL, NULL, NULL},
+    {NULL}
+};
+
+static void
+PrivateTempObject_dealloc(PyObject* self)
+{
+    ((PrivateTempObject*)self)->tmp->clear();
+    delete ((PrivateTempObject*)self)->tmp;
+    Py_TYPE(self)->tp_free(self);
+}
+
+static PyTypeObject PrivateTempType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "private_temp",    // tp_name
+    sizeof(PrivateTempObject), // tp_basicsize
+    0, //tp_itemsize
+    PrivateTempObject_dealloc, //tp_dealloc
+    0, //tp_print
+    0, //tp_getattr
+    0, //tp_setattr
+    0, //tp_compare
+    0, //tp_repr
+    0, //tp_as_number
+    0, //tp_as_sequence
+    0, //tp_as_mapping
+    0, //tp_hash
+    0, //tp_call
+    0, //tp_str
+    0, //tp_getattro
+    0, //tp_setattro
+    0, //tp_as_buffer
+    Py_TPFLAGS_DEFAULT, //tp_flags
+    0, //tp_doc
+    0, //tp_traverse
+    0, //tp_clear
+    0, //tp_richcompare
+    0, //tp_weaklistoffset
+    0, //tp_iter
+    0, //tp_iternext
+    0, //tp_methods
+    0, //tp_members
+    PrivateTempObject_getsets //tp_getset
+};
+
+static PyObject*
+prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs)
+{
+    PrivateTempObject* tmp = PyObject_New(PrivateTempObject, &PrivateTempType);
+    if (!tmp) {
+        return NULL;
+    }
+    tmp->tmp = new PrivateAttrCreationData();
+    if (!PrivateAttrType_preprocess(args, kwargs, *(tmp->tmp))) {
+        Py_DECREF(tmp);
+        return NULL;
+    }
+    return (PyObject*)tmp;
+}
+
+static PyObject*
+postprocess_dor_PrivateAttr(PyObject* /*self*/, PyObject* args) {
+    PyObject* type;
+    PyObject* tmp;
+    if (!PyArg_ParseTuple(args, "OO", &type, &tmp)) {
+        return NULL;
+    }
+    if (!PyType_Check(type)) {
+        PyErr_SetString(PyExc_TypeError, "type must be a type");
+        return NULL;
+    }
+    if (!PyObject_TypeCheck(tmp, &PrivateTempType)) {
+        PyErr_SetString(PyExc_TypeError, "tmp must be a private_temp");
+        return NULL;
+    }
+    if (!PrivateAttrType_postprocess(type, *(((PrivateTempObject*)tmp)->tmp))) {
+        return NULL;
+    }
+    ((PrivateTempObject*)tmp)->tmp->clear();
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+register_metaclass(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* metaclass;
+    if (!PyArg_ParseTuple(args, "O", &metaclass)) {
+        return NULL;
+    }
+    if (!PyType_Check(metaclass)) {
+        PyErr_SetString(PyExc_TypeError, "metaclass must be a type");
+        return NULL;
+    }
+    if (!PyObject_IsSubclass(metaclass, (PyObject*)&PyType_Type)) {
+        PyErr_SetString(PyExc_TypeError, "metaclass must be a metatype");
+        return NULL;
+    }
+    Py_INCREF(metaclass);
+    ::AllData::all_register_new_metaclass.push_back((PyTypeObject*)metaclass);
+    Py_RETURN_NONE;
+}
+
+typedef struct PrivateModule {
     PyObject_HEAD
 }PrivateModule;
 
@@ -2224,6 +2404,9 @@ PrivateModule_dir(PyObject* self)
     PyList_Append(attr_list, PyUnicode_FromString("PrivateWrapProxy"));
     PyList_Append(attr_list, PyUnicode_FromString("PrivateAttrType"));
     PyList_Append(attr_list, PyUnicode_FromString("PrivateAttrBase"));
+    PyList_Append(attr_list, PyUnicode_FromString("prepare"));
+    PyList_Append(attr_list, PyUnicode_FromString("postprocess"));
+    PyList_Append(attr_list, PyUnicode_FromString("register_metaclass"));
     PyObject* result = PySequence_Concat(parent_dir, attr_list);
     Py_DECREF(parent_dir);
     Py_DECREF(attr_list);
@@ -2252,6 +2435,9 @@ static PyGetSetDef PrivateModule_getsetters[] = {
 
 static PyMethodDef PrivateModule_methods[] = {
     {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
+    {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"postprocess", (PyCFunction)postprocess_dor_PrivateAttr, METH_VARARGS, NULL},
+    {"register_metaclass", (PyCFunction)register_metaclass, METH_VARARGS, NULL},
     {NULL}  // Sentinel
 };
 
@@ -2307,7 +2493,8 @@ PyInit_private_attribute(void)
     if (PyType_Ready(&PrivateWrapType) < 0 ||
         PyType_Ready(&PrivateWrapProxyType) < 0 ||
         PyType_Ready(&PrivateAttrType) < 0 ||
-        PyType_Ready(&PrivateModuleType) < 0) {
+        PyType_Ready(&PrivateModuleType) < 0 ||
+        PyType_Ready(&PrivateTempType)) {
         return NULL;
     }
 

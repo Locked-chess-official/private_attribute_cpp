@@ -4,7 +4,7 @@
 
 This package provide a way to create the private attribute like "C++" does.
 
-## All API
+## All Base API
 
 ```python
 from private_attribute import (PrivateAttrBase, PrivateWrapProxy)      # 1 Import public API
@@ -162,6 +162,63 @@ class MyClass(PrivateAttrBase):
 
     @PrivateWrapProxy(decorator3())
     def method2(self):
+```
+
+## Advanced API
+
+### define your metaclass based on one metaclass
+
+You can define your metaclass based on one metaclass:
+
+```python
+from abc import ABCMeta, abstractmethod
+import private_attribute
+
+class PrivateAbcMeta(ABCMeta):
+    def __new__(cls, name, bases, attrs, **kwargs):
+        temp = private_attribute.prepare(name, bases, attrs, **kwargs)
+        typ = super().__new__(cls, temp.name, temp.base, temp.attrs, **temp.kwds)
+        private_attribute.postprocess(typ, temp)
+        return typ
+
+private_attribute.register_metaclass(PrivateAbcMeta)
+```
+
+By this way you create a metaclass both can behave as ABC and private attribute:
+
+```python
+class MyClass(metaclass=PrivateAbcMeta):
+    __private_attrs__ = ()
+    __slots__ = ()
+
+    @abstractmethod
+    def my_function(self): ...
+
+class MyImplement(MyClass):
+    __private_attrs__ = ("_a",)
+    def __init__(self, value=1):
+        self._a = value
+
+    def my_function(self):
+        return self._a
+```
+
+Finally:
+
+```python
+>>> a = MyImplement(1)
+>>> a.my_function()
+1
+>>> a._a
+Traceback (most recent call last):
+  File "<pyshell#2>", line 1, in <module>
+    a._a
+AttributeError: private attribute
+>>> MyClass()
+Traceback (most recent call last):
+  File "<pyshell#3>", line 1, in <module>
+    MyClass()
+TypeError: Can't instantiate abstract class MyClass without an implementation for abstract method 'my_function'
 ```
 
 ## Notes
