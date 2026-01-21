@@ -120,6 +120,8 @@ namespace {
         static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
         // all type tp_finalizer map
         static std::unordered_map<uintptr_t, destructor> all_type_finalize;
+
+        static std::shared_mutex all_register_new_metaclass_mutex;
         static std::vector<PyTypeObject*> all_register_new_metaclass;
     };
 };
@@ -1678,6 +1680,7 @@ need_analyse_type(PyObject* type)
     if (PyObject_IsInstance(type, (PyObject*)&PrivateAttrType)) {
         return true;
     }
+    std::shared_lock lock(::AllData::all_register_new_metaclass_mutex);
     for (auto i: ::AllData::all_register_new_metaclass) {
         if (i && PyObject_IsInstance(type, (PyObject*)i)) {
             return true;
@@ -2352,6 +2355,7 @@ register_metaclass(PyObject* /*self*/, PyObject* args)
         return NULL;
     }
     Py_INCREF(metaclass);
+    std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
     ::AllData::all_register_new_metaclass.push_back((PyTypeObject*)metaclass);
     Py_RETURN_NONE;
 }
