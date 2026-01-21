@@ -118,6 +118,8 @@ namespace {
         static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
         // all type tp_setattro map
         static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
+        // all type tp_finalizer map
+        static std::unordered_map<uintptr_t, destructor> all_type_finalize;
         static std::vector<PyTypeObject*> all_register_new_metaclass;
     };
 };
@@ -1194,20 +1196,22 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
 }
 
 static void
-PrivateAttr_tp_dealloc(PyObject* self)
+PrivateAttr_tp_finalize(PyObject* self)
 {
+    uintptr_t id_self = (uintptr_t)self;
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
+    Py_ssize_t original_ref = Py_REFCNT(self);
+    if (::AllData::all_type_finalize.find(typ_id) != ::AllData::all_type_finalize.end()){
+        ::AllData::all_type_finalize[typ_id](self);
+    }
+    if (original_ref != Py_REFCNT(self)) {
+        return;
+    }
     std::vector<uintptr_t> parent_ids;
     if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()){
         parent_ids = ::AllData::all_type_parent_id[typ_id];
     }
-    uintptr_t id_self = (uintptr_t)self;
-    if (PyObject_CallFinalizerFromDealloc(self) < 0) {
-        return;
-    }
-
-    typ->tp_free(self);
 
     {
         // first: clear ::AllData::all_object_attr and ::AllData::all_object_mutex on this typ_id
@@ -1626,8 +1630,12 @@ struct PrivateAttrCreationData {
     PyObject* name = nullptr;
     PyObject* bases = nullptr;
     PyObject* attrs = nullptr;
+    bool cleared = false;
 
     void clear() {
+        if (cleared) {
+            return;
+        }
         if (attrs_copy) {
             Py_DECREF(attrs_copy);
             attrs_copy = nullptr;
@@ -1656,6 +1664,7 @@ struct PrivateAttrCreationData {
             }
         }
         need_remove_subclass.clear();
+        cleared = true;
     }
     
     ~PrivateAttrCreationData() {
@@ -1791,7 +1800,7 @@ static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObj
         }
         data.all_need_analyse_base.push_back((uintptr_t)base);
     }
-    
+
     std::function<uintptr_t(std::string)> need_remove_to_subclass = [&data](std::string attr_name){
         for (auto& base: data.all_need_analyse_base) {
             if (type_private_attr(base, attr_name)) {
@@ -1800,7 +1809,7 @@ static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObj
         }
         return (uintptr_t)0;
     };
-    
+
     {
         Py_ssize_t pos = 0;
         PyObject* key, *value;
@@ -1847,7 +1856,7 @@ static bool PrivateAttrType_preprocess(PyTypeObject* type, PyObject* args, PyObj
         PyDict_DelItemString(data.base_kwds, "private_func");
         PyErr_Clear();
     }
-    
+
     return true;
 }
 
@@ -1857,14 +1866,14 @@ static PyObject* PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationD
     if (!type_args) {
         return nullptr;
     }
-    
+
     PyObject* new_type = type->tp_base->tp_new(type, type_args, data.base_kwds);
     Py_DECREF(type_args);
 
     if (!new_type) {
         return nullptr;
     }
-    
+
     if (!PyObject_IsInstance(new_type, (PyObject*)type)) {
         Py_DECREF(new_type);
         PyErr_SetString(PyExc_TypeError, 
@@ -1872,7 +1881,7 @@ static PyObject* PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationD
                         std::string(type->tp_name) + "'").c_str());
         return nullptr;
     }
-    
+
     return new_type;
 }
 
@@ -1881,15 +1890,16 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
     if (!new_type) {
         return false;
     }
-    
+
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
-    
+
     if (type_instance->tp_getattro)::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
     if (type_instance->tp_setattro)::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
+    if (type_instance->tp_finalize)::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
     type_instance->tp_getattro = PrivateAttr_tp_getattro;
     type_instance->tp_setattro = PrivateAttr_tp_setattro;
-    type_instance->tp_dealloc = PrivateAttr_tp_dealloc;
+    type_instance->tp_finalize = PrivateAttr_tp_finalize;
 
     ::AllData::type_attr_dict[type_id] = {};
     ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
@@ -1913,7 +1923,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
     ::AllData::all_object_attr[type_id] = {};
     ::AllData::all_type_subclass_attr[type_id] = {};
     ::AllData::all_type_subclass_mutex[type_id] = {};
-    
+
     for (uintptr_t i: mro_vector) {
         if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[i] = {};
@@ -1924,7 +1934,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
         ::AllData::all_type_subclass_attr[i][type_id] = {};
         ::AllData::all_type_subclass_mutex[i][type_id] = std::make_shared<std::shared_mutex>();
     }
-    
+
     for (auto& [key, value]: data.need_remove_itself) {
         std::string final_key;
         if (data.private_func) {
@@ -1939,7 +1949,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
         }
         ::AllData::type_attr_dict[type_id][final_key] = value;
     }
-    
+
     for (auto& [i, map]: data.need_remove_subclass) {
         if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[i] = {};
@@ -1968,7 +1978,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
             ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
         }
     }
-    
+
     if (data.private_func) {
         ::AllData::type_need_call[type_id] = data.private_func;
     }
@@ -1990,21 +2000,21 @@ static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObjec
 {
     PrivateAttrCreationData data;
     PyObject* new_type = nullptr;
-    
+
     if (!PrivateAttrType_preprocess(type, args, kwds, data)) {
         return nullptr;
     }
-    
+
     new_type = PrivateAttrType_create(type, data);
     if (!new_type) {
         return nullptr;
     }
-    
+
     if (!PrivateAttrType_postprocess(new_type, data)) {
         Py_DECREF(new_type);
         return nullptr;
     }
-    
+
     return new_type;
 }
 
