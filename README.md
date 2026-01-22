@@ -51,11 +51,11 @@ print(obj.expensive_api_call(10))   # works with all decorators applied
 ```
 
 | # | API | Purpose | Required? |
-|---|----------------------------------------|-------------------------------------------------------|-----------|
+| --- | ---------------------------------------- | ------------------------------------------------------- | ----------- |
 | 1 | PrivateAttrBase | Base class – must inherit | Yes |
-| 1 | PrivateWrapProxy  | Decorator wrapper for arbitrary decorators  | When needed |
-| 2 | private_func=callable  | Custom hidden-name generator  | Optional |
-| 3 | Pass private_func in class definition | Same as above   | Optional |
+| 1 | PrivateWrapProxy | Decorator wrapper for arbitrary decorators | When needed |
+| 2 | private_func=callable | Custom hidden-name generator | Optional |
+| 3 | Pass private_func in class definition | Same as above | Optional |
 | 4 | \_\_private_attrs\_\_ list | Declare which attributes are private | Yes |
 | 5 | @PrivateWrapProxy(...) | Make any decorator compatible with private attributes | When needed |
 | 6 | method.result.xxx chain + dummy wrap | Fix decorator order and name conflicts | When needed |

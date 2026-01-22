@@ -2089,7 +2089,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
 }
 
 static void
-PrivateAttrType_del(PyObject* cls)
+PrivateAttrType_finalize(PyObject* cls)
 {
     uintptr_t typ_id = (uintptr_t) cls;
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()) {
@@ -2149,6 +2149,12 @@ PrivateAttrType_del(PyObject* cls)
     }
     ::AllData::all_type_mutex.erase(typ_id);
     clear_obj(typ_id);
+}
+
+static void
+PrivateAttrType_del(PyObject* cls)
+{
+    PrivateAttrType_finalize(cls);
     (Py_TYPE(cls))->tp_free(cls);
 }
 
@@ -2318,7 +2324,7 @@ prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs)
 }
 
 static PyObject*
-postprocess_dor_PrivateAttr(PyObject* /*self*/, PyObject* args) {
+postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args) {
     PyObject* type;
     PyObject* tmp;
     if (!PyArg_ParseTuple(args, "OO", &type, &tmp)) {
@@ -2339,6 +2345,17 @@ postprocess_dor_PrivateAttr(PyObject* /*self*/, PyObject* args) {
     Py_RETURN_NONE;
 }
 
+static void
+register_finalize(PyObject* cls)
+{
+    Py_ssize_t original_ref = Py_REFCNT(cls);
+    Py_TYPE(cls)->tp_base->tp_finalize(cls);
+    if (Py_REFCNT(cls) != original_ref) {
+        return;
+    }
+    PrivateAttrType_finalize(cls);
+}
+
 static PyObject*
 register_metaclass(PyObject* /*self*/, PyObject* args)
 {
@@ -2357,6 +2374,9 @@ register_metaclass(PyObject* /*self*/, PyObject* args)
     Py_INCREF(metaclass);
     std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
     ::AllData::all_register_new_metaclass.push_back((PyTypeObject*)metaclass);
+    ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
+    ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
+    ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
     Py_RETURN_NONE;
 }
 
@@ -2440,7 +2460,7 @@ static PyGetSetDef PrivateModule_getsetters[] = {
 static PyMethodDef PrivateModule_methods[] = {
     {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
     {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, NULL},
-    {"postprocess", (PyCFunction)postprocess_dor_PrivateAttr, METH_VARARGS, NULL},
+    {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS, NULL},
     {"register_metaclass", (PyCFunction)register_metaclass, METH_VARARGS, NULL},
     {NULL}  // Sentinel
 };
