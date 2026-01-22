@@ -175,7 +175,7 @@ import private_attribute
 class PrivateAbcMeta(ABCMeta):
     def __new__(cls, name, bases, attrs, **kwargs):
         temp = private_attribute.prepare(name, bases, attrs, **kwargs)
-        typ = super().__new__(cls, temp.name, temp.base, temp.attrs, **temp.kwds)
+        typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
         private_attribute.postprocess(typ, temp)
         return typ
 
