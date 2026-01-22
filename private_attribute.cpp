@@ -442,12 +442,23 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
     if (final_object.status != -1) {
         result = final_object.result;
     }
+    PyObject* result_typ = nullptr;
 
-    if (result && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")
-    && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__set__")) {
+    if (result) {
+        result_typ = PyObject_Type(result);
+        if (!result_typ) return NULL;
+    }
+    int has_get = 0;
+    int has_set = 0;
+    if (result_typ) {
+        has_get = PyObject_HasAttrString(result_typ, "__get__");
+        has_set = PyObject_HasAttrString(result_typ, "__set__");
+    }
+    if (has_get && has_set) {
         PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", obj, typ);
         return python_result;
     }
+
     {
         std::shared_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[final_id][obj_id]);
         if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) != ::AllData::all_object_attr[final_id][obj_id].end()) {
@@ -457,16 +468,17 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
                 return NULL;
             }
             // if obj is a type, call result.__get__(None, obj)
-            if (PyType_Check(obj) && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")) {
+            if (PyType_Check(obj) && PyObject_HasAttrString((PyObject*)PyObject_Type(python_obj), "__get__")) {
                 lock.unlock();
-                PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", Py_None, obj);
+                PyObject* python_result = PyObject_CallMethod(python_obj, "__get__", "(OO)", Py_None, obj);
                 return python_result;
             }
             Py_XINCREF(python_obj);
             return python_obj;
         }
     }
-    if (result && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")) {
+
+    if (has_get) {
         PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", obj, typ);
         return python_result;
     }
@@ -1971,6 +1983,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
         } else {
             final_key = default_random_string(type_id, key);
         }
+        Py_INCREF(value);
         ::AllData::type_attr_dict[type_id][final_key] = value;
     }
 
@@ -1999,6 +2012,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
             } else {
                 final_key = default_random_string(type_id, key);
             }
+            Py_INCREF(value);
             ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
         }
     }
