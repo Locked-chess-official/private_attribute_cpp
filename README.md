@@ -121,8 +121,7 @@ class MyClass(PrivateAttrBase):
     def method1(self):
         ...
 
-    @method1.attr_name
-    @PrivateWrapProxy(lambda _: _) # use empty function to wrap
+    @PrivateWrapProxy(method1.attr_name, method1) # Use the argument "method1" to save old func
     def method1(self):
         ...
 
@@ -130,8 +129,7 @@ class MyClass(PrivateAttrBase):
     def method2(self):
         ...
 
-    @method2.attr_name
-    @PrivateWrapProxy(lambda _: _)
+    @PrivateWrapProxy(method2.attr_name, method2) # Use the argument "method2" to save old func
     def method2(self):
         ...
 
@@ -239,7 +237,7 @@ MIT
 
 ## Requirement
 
-This package require the c++ module "picosha2" to compute the sha256 hash.
+This package require the c++ module "[picosha2](https://github.com/okdshin/PicoSHA2)" to compute the sha256 hash.
 
 ## Support
 

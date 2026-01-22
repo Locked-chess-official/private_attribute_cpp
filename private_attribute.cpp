@@ -2275,7 +2275,7 @@ PrivateTempObject_kwds(PyObject* self, void* /*closure*/)
 
 static PyGetSetDef PrivateTempObject_getsets[] = {
     {"name", (getter)PrivateTempObject_name, NULL, NULL, NULL},
-    {"base", (getter)PrivateTempObject_base, NULL, NULL, NULL},
+    {"bases", (getter)PrivateTempObject_base, NULL, NULL, NULL},
     {"attrs", (getter)PrivateTempObject_attrs, NULL, NULL, NULL},
     {"kwds", (getter)PrivateTempObject_kwds, NULL, NULL, NULL},
     {NULL}
