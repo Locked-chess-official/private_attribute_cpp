@@ -123,6 +123,7 @@ namespace {
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::vector<PyTypeObject*> all_register_new_metaclass;
+        static std::unordered_set<uintptr_t> all_register_new_metaclass_id;
     };
 };
 
@@ -2076,7 +2077,14 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
         return type_getattr(cls, name_str);
     }
     Py_XDECREF(now_code);
-    return Py_TYPE(cls)->tp_base->tp_getattro(cls, name);
+    PyTypeObject* base = Py_TYPE(cls)->tp_base;
+    while (base && base->tp_base && base->tp_getattro == PrivateAttrType_getattr) {
+        base = base->tp_base;
+    }
+    if (!base) {
+        return PyType_Type.tp_getattro(cls, name);
+    }
+    return base->tp_getattro(cls, name);
 }
 
 static int
@@ -2099,7 +2107,14 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
         return type_setattr(cls, name_str, value);
     }
     Py_XDECREF(now_code);
-    return Py_TYPE(cls)->tp_base->tp_setattro(cls, name, value);
+    PyTypeObject* base = Py_TYPE(cls)->tp_base;
+    while (base && base->tp_base && base->tp_setattro == PrivateAttrType_setattr) {
+        base = base->tp_base;
+    }
+    if (!base) {
+        return PyType_Type.tp_setattro(cls, name, value);
+    }
+    return base->tp_setattro(cls, name, value);
 }
 
 static void
@@ -2363,7 +2378,11 @@ static void
 register_finalize(PyObject* cls)
 {
     Py_ssize_t original_ref = Py_REFCNT(cls);
-    Py_TYPE(cls)->tp_base->tp_finalize(cls);
+    PyTypeObject* base = Py_TYPE(cls)->tp_base;
+    while (base && base->tp_finalize == register_finalize) {
+        base = base->tp_base;
+    }
+    if (base && base->tp_finalize) base->tp_finalize(cls);
     if (Py_REFCNT(cls) != original_ref) {
         return;
     }
@@ -2371,12 +2390,8 @@ register_finalize(PyObject* cls)
 }
 
 static PyObject*
-register_metaclass(PyObject* /*self*/, PyObject* args)
+register_metaclass(PyObject* /*self*/, PyObject* metaclass)
 {
-    PyObject* metaclass;
-    if (!PyArg_ParseTuple(args, "O", &metaclass)) {
-        return NULL;
-    }
     if (!PyType_Check(metaclass)) {
         PyErr_SetString(PyExc_TypeError, "metaclass must be a type");
         return NULL;
@@ -2386,7 +2401,10 @@ register_metaclass(PyObject* /*self*/, PyObject* args)
         return NULL;
     }
     Py_INCREF(metaclass);
+    uintptr_t id = (uintptr_t)metaclass;
     std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
+    if (::AllData::all_register_new_metaclass_id.find(id) != ::AllData::all_register_new_metaclass_id.end()) Py_RETURN_NONE;
+    ::AllData::all_register_new_metaclass_id.insert(id);
     ::AllData::all_register_new_metaclass.push_back((PyTypeObject*)metaclass);
     ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
     ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
@@ -2475,7 +2493,7 @@ static PyMethodDef PrivateModule_methods[] = {
     {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
     {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, NULL},
     {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS, NULL},
-    {"register_metaclass", (PyCFunction)register_metaclass, METH_VARARGS, NULL},
+    {"register_metaclass", (PyCFunction)register_metaclass, METH_O, NULL},
     {NULL}  // Sentinel
 };
 
