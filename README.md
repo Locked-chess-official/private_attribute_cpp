@@ -138,7 +138,7 @@ class MyClass(PrivateAttrBase):
 
 The `PrivateWrapProxy` is a decorator, and it will wrap the function with the decorator. When it decorates the method, it returns a `_PrivateWrap` object.
 
-The `_PrivateWrap` has the public api `result`. It returns the original decoratored result.
+The `_PrivateWrap` has the public api `result` and `funcs`. `result` returns the original decoratored result and `funcs` returns the tuple of the original functions.
 
 ```python
 from private_attribute import PrivateAttrBase, PrivateWrapProxy

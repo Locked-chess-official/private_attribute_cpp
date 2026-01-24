@@ -103,7 +103,7 @@ namespace {
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObject*>> type_attr_dict;
         };
-        static std::unordered_map<uintptr_t, std::vector<PyCodeObject*>> type_allowed_code;
+        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
         static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
         static std::unordered_map<uintptr_t, PyObject*> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
@@ -144,7 +144,6 @@ struct FinalObject {
 
 static TwoStringTuple get_string_hash_tuple2(std::string name);
 static PyCodeObject* get_now_code();
-static std::vector<PyCodeObject*>::iterator find_code(std::vector<PyCodeObject*>& code_vector, PyCodeObject* code);
 static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, std::string name);
 static bool type_private_attr(uintptr_t type, std::string name);
 static FinalObject type_get_final_attr(uintptr_t type_id, std::string name);
@@ -152,12 +151,12 @@ static FinalObject type_get_final_attr(uintptr_t type_id, std::string name);
 static bool
 is_class_code(uintptr_t typ_id, PyCodeObject* code)
 {
-    if (::AllData::type_allowed_code.find(typ_id) == ::AllData::type_allowed_code.end()){
-        return false;
-    }
-    auto code_list = ::AllData::type_allowed_code[typ_id];
-    if (find_code(code_list, code) != code_list.end()){
-        return true;
+    if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()){
+        auto& code_map = ::AllData::type_allowed_code_map[typ_id];
+        uintptr_t code_id = (uintptr_t)code;
+        if (code_map.find(code_id) != code_map.end()){
+            return true;
+        }
     }
     return false;
 }
@@ -175,20 +174,6 @@ is_subclass_code(uintptr_t typ_id, PyCodeObject* code)
         }
     }
     return false;
-}
-
-static std::vector<PyCodeObject*>::iterator
-find_code(std::vector<PyCodeObject*>& code_vector, PyCodeObject* code)
-{
-    for (auto it = code_vector.begin(); it != code_vector.end(); it++) {
-        auto now_code = *it;
-        uintptr_t now_code_id = (uintptr_t)now_code;
-        uintptr_t code_id = (uintptr_t)code;
-        if (now_code_id == code_id) {
-            return it;
-        }
-    }
-    return code_vector.end();
 }
 
 static std::string
@@ -854,6 +839,16 @@ PrivateWrap_result(PyObject *obj, void* /*closure*/)
     return res;
 }
 
+static PyObject *
+PrivateWrap_funcs(PyObject *obj, void* /*closure*/)
+{
+    if (!obj) {
+        Py_RETURN_NONE;
+    }
+
+    return PySequence_Tuple(((PrivateWrapObject*)obj)->func_list);
+}
+
 static PyObject*
 PrivateWrap_doc(PyObject *obj, void* /*closure*/)
 {
@@ -942,6 +937,7 @@ PrivateWrap_type_params(PyObject* obj, void* /*closure*/)
 
 static PyGetSetDef PrivateWrap_getset[] = {
     {"result", (getter)PrivateWrap_result, NULL, "final result", NULL},
+    {"funcs", (getter)PrivateWrap_funcs, NULL, "funcs", NULL},
     {"__wrapped__", (getter)PrivateWrap_result, NULL, "final result", NULL},
     {"__doc__", (getter)PrivateWrap_doc, NULL, "doc", NULL},
     {"__module__", (getter)PrivateWrap_module, NULL, "module", NULL},
@@ -1535,7 +1531,7 @@ get_now_code()
 }
 
 static void
-analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered_set<uintptr_t>& _seen)
+analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& map, std::unordered_set<uintptr_t>& _seen)
 {
     uintptr_t obj_id = (uintptr_t)obj;
     if (_seen.find(obj_id) != _seen.end()) {
@@ -1544,20 +1540,18 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
     _seen.insert(obj_id);
     if (PyObject_TypeCheck(obj, &PyCode_Type)) {
         Py_INCREF(obj);
-        list.push_back((PyCodeObject*)obj);
+        map[(uintptr_t)obj] = (PyCodeObject*)obj;
         PyObject* co_contain = PyObject_GetAttrString(obj, "co_consts");
         if (co_contain && PySequence_Check(co_contain)) {
             Py_ssize_t len = PySequence_Length(co_contain);
             for (Py_ssize_t i = 0; i < len; i++) {
                 PyObject* item = PySequence_GetItem(co_contain, i);
                 if (item) {
-                    analyse_all_code(item, list, _seen);
+                    analyse_all_code(item, map, _seen);
                 } else {
                     PyErr_Clear();
                 }
             }
-        } else {
-            PyErr_Clear();
         }
         return;
     }
@@ -1568,7 +1562,7 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
             for (Py_ssize_t i = 0; i < len; i++) {
                 PyObject* func = PySequence_GetItem(func_list, i);
                 if (func) {
-                    analyse_all_code(func, list, _seen);
+                    analyse_all_code(func, map, _seen);
                 } else {
                     PyErr_Clear();
                 }
@@ -1579,19 +1573,20 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
     if (PyObject_TypeCheck(obj, &PyProperty_Type)) {
         PyObject* fget = PyObject_GetAttrString(obj, "fget");
         if (fget) {
-            analyse_all_code(fget, list, _seen);
+            analyse_all_code(fget, map, _seen);
         } else {
             PyErr_Clear();
         }
         PyObject* fset = PyObject_GetAttrString(obj, "fset");
         if (fset) {
-            analyse_all_code(fset, list, _seen);
-        } else {
+            analyse_all_code(fset, map, _seen);
+        }
+        else {
             PyErr_Clear();
         }
         PyObject* fdel = PyObject_GetAttrString(obj, "fdel");
         if (fdel) {
-            analyse_all_code(fdel, list, _seen);
+            analyse_all_code(fdel, map, _seen);
         } else {
             PyErr_Clear();
         }
@@ -1600,7 +1595,7 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
     if (PyObject_TypeCheck(obj, &PyClassMethod_Type) || PyObject_TypeCheck(obj, &PyStaticMethod_Type)) {
         PyObject* func = PyObject_GetAttrString(obj, "__func__");
         if (func) {
-            analyse_all_code(func, list, _seen);
+            analyse_all_code(func, map, _seen);
         } else {
             PyErr_Clear();
         }
@@ -1608,14 +1603,15 @@ analyse_all_code(PyObject* obj, std::vector<PyCodeObject*>& list, std::unordered
     }
     PyObject* wrap = PyObject_GetAttrString(obj, "__wrapped__");
     if (wrap) {
-        analyse_all_code(wrap, list, _seen);
+        analyse_all_code(wrap, map, _seen);
         return;
-    } else {
+    }
+    else {
         PyErr_Clear();
     }
     PyObject* code = PyObject_GetAttrString(obj, "__code__");
     if (code) {
-        analyse_all_code(code, list, _seen);
+        analyse_all_code(code, map, _seen);
     } else {
         PyErr_Clear();
     }
@@ -1702,8 +1698,8 @@ need_analyse_type(PyObject* type)
     return false;
 }
 
-static bool PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, 
-                                      PrivateAttrCreationData& data) 
+static bool
+PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data) 
 {
     static const char* invalid_name[] = {"__private_attrs__", "__slots__", "__getattribute__", "__getattr__", "__init__",
         "__setattr__", "__delattr__", "__name__", "__module__", "__doc__", "__getstate__", "__setstate__",
@@ -1852,6 +1848,10 @@ static bool PrivateAttrType_preprocess(PyObject* args, PyObject* kwds,
         PyObject* key, *value;
         PyObject* forward_analyse = PyDict_Copy(data.attrs_copy);
         while (PyDict_Next(forward_analyse, &pos, &key, &value)) {
+            if (!key && !PyUnicode_Check(key)) {
+                PyErr_SetString(PyExc_TypeError, "all keys in 'attrs' must be strings");
+                return false;
+            }
             std::string attr_name = real_class_name(PyUnicode_AsUTF8(key), data.class_name);
             PyObject* need_value;
             if (PyObject_IsInstance(value, (PyObject*)&PrivateWrapType)) {
@@ -1897,7 +1897,8 @@ static bool PrivateAttrType_preprocess(PyObject* args, PyObject* kwds,
     return true;
 }
 
-static PyObject* PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
+static PyObject*
+PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
 {
     PyObject* type_args = PyTuple_Pack(3, data.name, data.bases, data.attrs_copy);
     if (!type_args) {
@@ -1922,7 +1923,8 @@ static PyObject* PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationD
     return new_type;
 }
 
-static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
+static bool
+PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
 {
     if (!new_type) {
         return false;
@@ -1931,9 +1933,45 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
 
-    if (type_instance->tp_getattro)::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
-    if (type_instance->tp_setattro)::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
-    if (type_instance->tp_finalize)::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
+    if (type_instance->tp_getattro) {
+        if (type_instance->tp_getattro != PrivateAttr_tp_getattro) {
+            ::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
+        } else {
+            PyTypeObject* base = type_instance->tp_base;
+            uintptr_t base_id = (uintptr_t)(base);
+            if (::AllData::all_type_getattro.find(base_id) != ::AllData::all_type_getattro.end()) {
+                ::AllData::all_type_getattro[type_id] = ::AllData::all_type_getattro[base_id];
+            } else if (base && base->tp_getattro && base->tp_getattro != PrivateAttr_tp_getattro) {
+                ::AllData::all_type_getattro[type_id] = base->tp_getattro;
+            }
+        }
+    }
+    if (type_instance->tp_setattro) {
+        if (type_instance->tp_setattro != PrivateAttr_tp_setattro) {
+            ::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
+        } else {
+            PyTypeObject* base = type_instance->tp_base;
+            uintptr_t base_id = (uintptr_t)(base);
+            if (::AllData::all_type_setattro.find(base_id) != ::AllData::all_type_setattro.end()) {
+                ::AllData::all_type_setattro[type_id] = ::AllData::all_type_setattro[base_id];
+            } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttr_tp_setattro) {
+                ::AllData::all_type_setattro[type_id] = base->tp_setattro;
+            }
+        }
+    }
+    if (type_instance->tp_finalize) {
+        if (type_instance->tp_finalize != PrivateAttr_tp_finalize) {
+            ::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
+        } else {
+            PyTypeObject* base = type_instance->tp_base;
+            uintptr_t base_id = (uintptr_t)(base);
+            if (::AllData::all_type_finalize.find(base_id) != ::AllData::all_type_finalize.end()) {
+                ::AllData::all_type_finalize[type_id] = ::AllData::all_type_finalize[base_id];
+            } else if (base && base->tp_finalize && base->tp_finalize != PrivateAttr_tp_finalize) {
+                ::AllData::all_type_finalize[type_id] = base->tp_finalize;
+            }
+        }
+    }
     type_instance->tp_getattro = PrivateAttr_tp_getattro;
     type_instance->tp_setattro = PrivateAttr_tp_setattro;
     type_instance->tp_finalize = PrivateAttr_tp_finalize;
@@ -1954,7 +1992,7 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
     }
     ::AllData::all_type_parent_id[type_id] = mro_vector;
 
-    ::AllData::type_allowed_code[type_id] = {};
+    ::AllData::type_allowed_code_map[type_id] = {};
     ::AllData::all_object_mutex[type_id] = {};
     ::AllData::all_type_mutex[type_id] = std::make_shared<std::shared_mutex>();
     ::AllData::all_object_attr[type_id] = {};
@@ -2028,14 +2066,15 @@ static bool PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationD
         PyObject* original_value;
         while (PyDict_Next(data.attrs, &original_pos, &original_key, &original_value)) {
             std::unordered_set<uintptr_t> set;
-            analyse_all_code(original_value, ::AllData::type_allowed_code[type_id], set);
+            analyse_all_code(original_value, ::AllData::type_allowed_code_map[type_id], set);
         }
     }
     
     return true;
 }
 
-static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
+static PyObject*
+PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
 {
     PrivateAttrCreationData data;
     PyObject* new_type = nullptr;
@@ -2124,12 +2163,11 @@ PrivateAttrType_finalize(PyObject* cls)
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()) {
         ::AllData::all_type_attr_set.erase(typ_id);
     }
-    if (::AllData::type_allowed_code.find(typ_id) != ::AllData::type_allowed_code.end()) {
-        auto& allowed_code = ::AllData::type_allowed_code[typ_id];
-        for (auto& code : allowed_code) {
-            Py_XDECREF(code);
+    if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()) {
+        for (auto& [id, obj] : ::AllData::type_allowed_code_map[typ_id]) {
+            Py_XDECREF(obj);
         }
-        ::AllData::type_allowed_code.erase(typ_id);
+        ::AllData::type_allowed_code_map.erase(typ_id);
     }
     if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
         auto& need_call = ::AllData::type_need_call[typ_id];
@@ -2175,6 +2213,9 @@ PrivateAttrType_finalize(PyObject* cls)
     }
     if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()) {
         ::AllData::all_type_setattro.erase(typ_id);
+    }
+    if (::AllData::all_type_finalize.find(typ_id) != ::AllData::all_type_finalize.end()) {
+        ::AllData::all_type_finalize.erase(typ_id);
     }
     ::AllData::all_type_mutex.erase(typ_id);
     clear_obj(typ_id);
