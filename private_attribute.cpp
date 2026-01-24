@@ -1848,7 +1848,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         PyObject* key, *value;
         PyObject* forward_analyse = PyDict_Copy(data.attrs_copy);
         while (PyDict_Next(forward_analyse, &pos, &key, &value)) {
-            if (!key && !PyUnicode_Check(key)) {
+            if (!key || !PyUnicode_Check(key)) {
                 PyErr_SetString(PyExc_TypeError, "all keys in 'attrs' must be strings");
                 return false;
             }
