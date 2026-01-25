@@ -230,6 +230,7 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 - Finally the `_PrivateWrap` object will be recoveried to the original object.
 - One class defined in another class cannot use another class's private attribute.
 - One parent class defined an attribute which not in `__private_attrs__` or not a `PrivateAttrType` instance, the child class shouldn't contain the attribute in its `__private_attrs__`.
+- When combine with other metaclass, be ensure that the parent metaclass has no classmethod that can set subclasses' attributes. If it has, it will fail on new metaclass because the new metaclass you defined and registered will be immutable.
 
 ## License
 

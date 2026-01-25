@@ -1291,6 +1291,28 @@ static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObjec
 static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name);
 static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value);
 static void PrivateAttrType_del(PyObject* cls);
+static void ensure_tp(PyTypeObject* type_instance);
+
+static int
+PrivateAttrType_init(PyObject* self, PyObject* args, PyObject* kwds)
+{
+    PyTypeObject* base = Py_TYPE(self);
+    while (base->tp_init == PrivateAttrType_init) {
+        base = base->tp_base;
+    }
+    if (base->tp_init == NULL) {
+        int result = PyType_Type.tp_init(self, args, kwds);
+        if (result == 0) {
+            ensure_tp((PyTypeObject*)self);
+        }
+        return result;
+    }
+    int result = base->tp_init(self, args, kwds);
+    if (result == 0) {
+        ensure_tp((PyTypeObject*)self);
+    }
+    return result;
+}
 
 static PyTypeObject PrivateAttrType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -1328,7 +1350,7 @@ static PyTypeObject PrivateAttrType = {
     0,                                      // tp_descr_get
     0,                                      // tp_descr_set
     0,                                      // tp_dictoffset
-    0,                                      // tp_init
+    PrivateAttrType_init,                   // tp_init
     0,                                      // tp_alloc
     (newfunc)PrivateAttrType_new,           // tp_new
 };
@@ -1923,16 +1945,10 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
     return new_type;
 }
 
-static bool
-PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
+static void
+ensure_tp(PyTypeObject* type_instance)
 {
-    if (!new_type) {
-        return false;
-    }
-
-    PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
-
     if (type_instance->tp_getattro) {
         if (type_instance->tp_getattro != PrivateAttr_tp_getattro) {
             ::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
@@ -1975,6 +1991,19 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
     type_instance->tp_getattro = PrivateAttr_tp_getattro;
     type_instance->tp_setattro = PrivateAttr_tp_setattro;
     type_instance->tp_finalize = PrivateAttr_tp_finalize;
+}
+
+static bool
+PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
+{
+    if (!new_type) {
+        return false;
+    }
+
+    PyTypeObject* type_instance = (PyTypeObject*)new_type;
+    uintptr_t type_id = (uintptr_t)(type_instance);
+
+    ensure_tp(type_instance);
 
     ::AllData::type_attr_dict[type_id] = {};
     ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
@@ -2151,9 +2180,13 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
         base = base->tp_base;
     }
     if (!base) {
-        return PyType_Type.tp_setattro(cls, name, value);
+        int result = PyType_Type.tp_setattro(cls, name, value);
+        ensure_tp((PyTypeObject*)cls);
+        return result;
     }
-    return base->tp_setattro(cls, name, value);
+    int result = base->tp_setattro(cls, name, value);
+    ensure_tp((PyTypeObject*)cls);
+    return result;
 }
 
 static void
@@ -2450,6 +2483,8 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass)
     ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
     ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
     ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
+    ((PyTypeObject*)metaclass)->tp_init = PrivateAttrType_init;
+    ((PyTypeObject*)metaclass)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     Py_RETURN_NONE;
 }
 
