@@ -2178,13 +2178,9 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
     }
     if (!base) {
         PyObject* result = PyType_Type.tp_getattro(cls, name);
-        ensure_tp((PyTypeObject*)cls);
-        ensure_subclass_tp((PyTypeObject*)cls);
         return result;
     }
     PyObject* result = base->tp_getattro(cls, name);
-    ensure_tp((PyTypeObject*)cls);
-    ensure_subclass_tp((PyTypeObject*)cls);
     return result;
 }
 
