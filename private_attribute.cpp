@@ -1149,6 +1149,8 @@ typedef struct {
 } PrivateAttrTypeObject;
 
 static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id);
+static void ensure_tp(PyTypeObject* type_instance);
+static void ensure_subclass_tp(PyTypeObject* type_instance);
 
 static PyObject*
 PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
@@ -1170,7 +1172,8 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
     }
     Py_XDECREF(code);
     if (::AllData::all_type_getattro.find(type_id) != ::AllData::all_type_getattro.end()){
-        return ::AllData::all_type_getattro[type_id](self, name);
+        PyObject* result = ::AllData::all_type_getattro[type_id](self, name);
+        return result;
     }
     return PyObject_GenericGetAttr(self, name);
 }
@@ -1201,7 +1204,8 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
     }
     Py_XDECREF(code);
     if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()){
-        return ::AllData::all_type_setattro[typ_id](self, name, value);
+        int result = ::AllData::all_type_setattro[typ_id](self, name, value);
+        return result;
     }
     return PyObject_GenericSetAttr(self, name, value);
 }
@@ -1291,7 +1295,6 @@ static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObjec
 static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name);
 static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value);
 static void PrivateAttrType_del(PyObject* cls);
-static void ensure_tp(PyTypeObject* type_instance);
 
 static int
 PrivateAttrType_init(PyObject* self, PyObject* args, PyObject* kwds)
@@ -1952,6 +1955,7 @@ ensure_tp(PyTypeObject* type_instance)
     if (type_instance->tp_getattro) {
         if (type_instance->tp_getattro != PrivateAttr_tp_getattro) {
             ::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
+            type_instance->tp_getattro = PrivateAttr_tp_getattro;
         } else {
             PyTypeObject* base = type_instance->tp_base;
             uintptr_t base_id = (uintptr_t)(base);
@@ -1965,6 +1969,7 @@ ensure_tp(PyTypeObject* type_instance)
     if (type_instance->tp_setattro) {
         if (type_instance->tp_setattro != PrivateAttr_tp_setattro) {
             ::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
+            type_instance->tp_setattro = PrivateAttr_tp_setattro;
         } else {
             PyTypeObject* base = type_instance->tp_base;
             uintptr_t base_id = (uintptr_t)(base);
@@ -1978,6 +1983,7 @@ ensure_tp(PyTypeObject* type_instance)
     if (type_instance->tp_finalize) {
         if (type_instance->tp_finalize != PrivateAttr_tp_finalize) {
             ::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
+            type_instance->tp_finalize = PrivateAttr_tp_finalize;
         } else {
             PyTypeObject* base = type_instance->tp_base;
             uintptr_t base_id = (uintptr_t)(base);
@@ -1988,9 +1994,30 @@ ensure_tp(PyTypeObject* type_instance)
             }
         }
     }
-    type_instance->tp_getattro = PrivateAttr_tp_getattro;
-    type_instance->tp_setattro = PrivateAttr_tp_setattro;
-    type_instance->tp_finalize = PrivateAttr_tp_finalize;
+}
+
+static void
+ensure_subclass_tp(PyTypeObject* type_instance)
+{
+    // type.__subclasses__
+    PyObject* type_subclasses = PyObject_CallMethodNoArgs((PyObject*)type_instance, PyUnicode_FromString("__subclasses__"));
+    if (!type_subclasses) {
+        PyErr_Clear();
+        return;
+    }
+    if (!PyList_Check(type_subclasses)) {
+        Py_DECREF(type_subclasses);
+        return;
+    }
+    Py_ssize_t subclasses_size = PyList_GET_SIZE(type_subclasses);
+    for (Py_ssize_t i = 0; i < subclasses_size; i++) {
+        PyObject* subclass = PyList_GET_ITEM(type_subclasses, i);
+        if (!subclass || !PyType_Check(subclass)) {
+            continue;
+        }
+        ensure_tp((PyTypeObject*)subclass);
+    }
+    Py_DECREF(type_subclasses);
 }
 
 static bool
@@ -2150,9 +2177,15 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
         base = base->tp_base;
     }
     if (!base) {
-        return PyType_Type.tp_getattro(cls, name);
+        PyObject* result = PyType_Type.tp_getattro(cls, name);
+        ensure_tp((PyTypeObject*)cls);
+        ensure_subclass_tp((PyTypeObject*)cls);
+        return result;
     }
-    return base->tp_getattro(cls, name);
+    PyObject* result = base->tp_getattro(cls, name);
+    ensure_tp((PyTypeObject*)cls);
+    ensure_subclass_tp((PyTypeObject*)cls);
+    return result;
 }
 
 static int
@@ -2182,10 +2215,12 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
     if (!base) {
         int result = PyType_Type.tp_setattro(cls, name, value);
         ensure_tp((PyTypeObject*)cls);
+        ensure_subclass_tp((PyTypeObject*)cls);
         return result;
     }
     int result = base->tp_setattro(cls, name, value);
     ensure_tp((PyTypeObject*)cls);
+    ensure_subclass_tp((PyTypeObject*)cls);
     return result;
 }
 
@@ -2306,6 +2341,7 @@ create_private_attr_base_simple(void)
     }
     // set "__module__"
     PyType_Type.tp_setattro(base_type, PyUnicode_FromString("__module__"), PyUnicode_FromString("private_attribute"));
+    ((PyTypeObject*)base_type)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     return base_type;
 }
 
@@ -2488,6 +2524,34 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass)
     Py_RETURN_NONE;
 }
 
+static PyObject*
+ensure_type_tp(PyObject* /*self*/, PyObject* type)
+{
+    if (!PyType_Check(type)) {
+        PyErr_SetString(PyExc_TypeError, "type must be a type");
+        return NULL;
+    }
+    if (!need_analyse_type(type)) {
+        Py_RETURN_NONE;
+    }
+    ensure_tp((PyTypeObject*)type);
+    ensure_subclass_tp((PyTypeObject*)type);
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass)
+{
+    uintptr_t id = (uintptr_t)metaclass;
+    if (::AllData::all_register_new_metaclass_id.find(id) != ::AllData::all_register_new_metaclass_id.end()) {
+        ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
+        ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
+        ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
+        ((PyTypeObject*)metaclass)->tp_init = PrivateAttrType_init;
+    }
+    Py_RETURN_NONE;
+}
+
 typedef struct PrivateModule {
     PyObject_HEAD
 }PrivateModule;
@@ -2539,6 +2603,8 @@ PrivateModule_dir(PyObject* self)
     PyList_Append(attr_list, PyUnicode_FromString("prepare"));
     PyList_Append(attr_list, PyUnicode_FromString("postprocess"));
     PyList_Append(attr_list, PyUnicode_FromString("register_metaclass"));
+    PyList_Append(attr_list, PyUnicode_FromString("ensure_type"));
+    PyList_Append(attr_list, PyUnicode_FromString("ensure_metaclass"));
     PyObject* result = PySequence_Concat(parent_dir, attr_list);
     Py_DECREF(parent_dir);
     Py_DECREF(attr_list);
@@ -2570,6 +2636,8 @@ static PyMethodDef PrivateModule_methods[] = {
     {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, NULL},
     {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS, NULL},
     {"register_metaclass", (PyCFunction)register_metaclass, METH_O, NULL},
+    {"ensure_type", (PyCFunction)ensure_type_tp, METH_O, NULL},
+    {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O, NULL},
     {NULL}  // Sentinel
 };
 

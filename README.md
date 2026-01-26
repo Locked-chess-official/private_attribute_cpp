@@ -231,6 +231,7 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 - One class defined in another class cannot use another class's private attribute.
 - One parent class defined an attribute which not in `__private_attrs__` or not a `PrivateAttrType` instance, the child class shouldn't contain the attribute in its `__private_attrs__`.
 - When combine with other metaclass, be ensure that the parent metaclass has no classmethod that can set subclasses' attributes. If it has, it will fail on new metaclass because the new metaclass you defined and registered will be immutable.
+- CPython may change "tp_getattro", "tp_setattro" and so on when you change the attribute "\_\_getattribute\_\_", "\_\_setattr\_\_" and so on. If you are fear about it, you can use `ensure_type` to reset those tp slots. For the other metaclasses, you can use `ensure_metaclass` to reset those tp slots. Also, don't set those methods on these classes in your code.
 
 ## License
 
