@@ -1337,9 +1337,9 @@ static PyTypeObject PrivateAttrType = {
     (getattrofunc)PrivateAttrType_getattr,  // tp_getattro
     (setattrofunc)PrivateAttrType_setattr,  // tp_setattro
     0,                                      // tp_as_buffer
-    Py_TPFLAGS_DEFAULT,                     // tp_flags
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,    // tp_flags
     "metaclass for private attributes",     // tp_doc
-    0,                                      // tp_traverse
+    0,                                      // tp_travers
     0,                                      // tp_clear
     0,                                      // tp_richcompare
     0,                                      // tp_weaklistoffset
@@ -2000,7 +2000,7 @@ static void
 ensure_subclass_tp(PyTypeObject* type_instance)
 {
     // type.__subclasses__
-    PyObject* type_subclasses = PyObject_CallMethodNoArgs((PyObject*)type_instance, PyUnicode_FromString("__subclasses__"));
+    PyObject* type_subclasses = (PyObject*)type_instance->tp_subclasses;
     if (!type_subclasses) {
         PyErr_Clear();
         return;
