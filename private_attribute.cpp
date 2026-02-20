@@ -2041,7 +2041,7 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
     std::vector<uintptr_t> mro_vector;
     for (Py_ssize_t i = 1; i < mro_size; i++) {
         PyObject* item = PyTuple_GET_ITEM(mro, i);
-        if (!item || !PyType_Check(item) || !PyObject_IsInstance(item, (PyObject*)&PrivateAttrType)) {
+        if (!item || !PyType_Check(item) || !need_analyse_type(item)) {
             continue;
         }
         mro_vector.push_back((uintptr_t)item);
