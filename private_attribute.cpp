@@ -1930,7 +1930,7 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
         return nullptr;
     }
 
-    PyObject* new_type = type->tp_base->tp_new(type, type_args, data.base_kwds);
+    PyObject* new_type = PyType_Type.tp_new(type, type_args, data.base_kwds);
     Py_DECREF(type_args);
 
     if (!new_type) {
