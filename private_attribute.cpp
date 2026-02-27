@@ -477,7 +477,7 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
         return NULL;
     }
     std::string string_type_name = type_name;
-    std::string exception_information = "'" + string_type_name + "' object has no attribute '" + attr_name + "'";
+    std::string exception_information = "'" + string_type_name + "' objects has no attribute '" + attr_name + "'";
     PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
     return NULL;
 }
@@ -722,7 +722,7 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
                 return -1;
             }
             std::string string_type_name = type_name;
-            std::string exception_information = "'" + string_type_name + "' object has no attribute '" + attr_name + "'";
+            std::string exception_information = "'" + string_type_name + "' objects has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
             return -1;
         }
@@ -1041,30 +1041,8 @@ typedef struct {
     PyObject *func_list;  // _func_list
 } PrivateWrapProxyObject;
 
-static int
-PrivateWrapProxy_init(PrivateWrapProxyObject *self, PyObject *args, PyObject *kwds)
-{
-    PyObject *decorator;
-    PyObject *orig = NULL;
-
-    if (!PyArg_ParseTuple(args, "O|O", &decorator, &orig))
-        return -1;
-
-    self->decorator = decorator;
-    Py_INCREF(decorator);
-
-    if (orig && PyObject_TypeCheck(orig, &PrivateWrapType)) {
-        self->func_list = ((PrivateWrapObject*)orig)->func_list;
-        Py_INCREF(self->func_list);
-    }
-    else {
-        self->func_list = PyList_New(0);
-    }
-    return 0;
-}
-
 static PyObject*
-PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject * /*kwgs */)
+PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*kwgs */)
 {
     PyObject *func;
     if (!PyArg_ParseTuple(args, "O", &func)) return NULL;
@@ -1091,6 +1069,7 @@ PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject * /
 }
 
 static void PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self);
+static PyObject* PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject *kwds);
 
 static PyTypeObject PrivateWrapProxyType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -1128,10 +1107,42 @@ static PyTypeObject PrivateWrapProxyType = {
     0,                                      // tp_descr_get
     0,                                      // tp_descr_set
     0,                                      // tp_dictoffset
-    (initproc)PrivateWrapProxy_init,        // tp_init
+    0,                                      // tp_init
     0,                                      // tp_alloc
-    PyType_GenericNew,                      // tp_new
+    PrivateWrapProxy_New,                   // tp_new
 };
+
+static PyObject*
+PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject* /*kwds*/)
+{
+    PrivateWrapProxyObject *self;
+    PyObject *decorator;
+    PyObject *orig = NULL;
+
+    if (!PyArg_ParseTuple(args, "O|O", &decorator, &orig))
+        return NULL;
+
+    self = (PrivateWrapProxyObject*)type->tp_alloc(type, 0);
+    if (self == NULL)
+        return NULL;
+
+    Py_INCREF(decorator);
+    self->decorator = decorator;
+
+    if (orig && PyObject_TypeCheck(orig, &PrivateWrapType)) {
+        self->func_list = ((PrivateWrapObject*)orig)->func_list;
+        Py_INCREF(self->func_list);
+    }
+    else {
+        self->func_list = PyList_New(0);
+        if (self->func_list == NULL) {
+            Py_DECREF(self);
+            return NULL;
+        }
+    }
+
+    return (PyObject*)self;
+}
 
 static void
 PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self)
