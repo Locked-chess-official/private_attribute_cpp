@@ -816,11 +816,10 @@ type_delattr(PyObject* typ, std::string attr_name)
 // ================================================================
 // _PrivateWrap
 // ================================================================
-typedef struct PrivateWrapObject {
+typedef struct {
     PyObject_HEAD
     PyObject *result;
     PyObject *func_list;
-    PyObject *decorator;
 } PrivateWrapObject;
 
 static PrivateWrapObject* PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list);
@@ -1009,9 +1008,6 @@ PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list)
         return NULL;
     }
 
-    self->decorator = decorator;
-    Py_INCREF(decorator);
-
     self->func_list = list;
     Py_INCREF(list);
 
@@ -1025,7 +1021,6 @@ PrivateWrap_dealloc(PrivateWrapObject *self)
 {
     Py_XDECREF(self->result);
     Py_XDECREF(self->func_list);
-    Py_XDECREF(self->decorator);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -2315,8 +2310,7 @@ PrivateAttrType_del(PyObject* cls)
     (Py_TYPE(cls))->tp_free(cls);
 }
 
-static const char* PrivateAttrBase_doc = "The class to help to create private attribute. "
-        "It does not have any special behavior, but it can be used as a base class for PrivateAttrType to avoid some conflicts with other metaclasses.";
+static const char* PrivateAttrBase_doc = "The class to help to create private attribute. It does not have any special behavior.";
 
 // PrivateAttrBase
 static PyObject*
@@ -2378,7 +2372,7 @@ PrivateTempObject_name(PyObject* self, void* /*closure*/)
 {
     PyObject* name = ((PrivateTempObject*)self)->tmp->name;
     if (!name) {
-        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        PyErr_SetString(PyExc_RuntimeError, "object not init or have been used");
         return nullptr;
     }
     Py_INCREF(name);
@@ -2390,7 +2384,7 @@ PrivateTempObject_base(PyObject* self, void* /*closure*/)
 {
     PyObject* base = ((PrivateTempObject*)self)->tmp->bases;
     if (!base) {
-        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        PyErr_SetString(PyExc_RuntimeError, "object not init or have been used");
         return nullptr;
     }
     Py_INCREF(base);
@@ -2402,7 +2396,7 @@ PrivateTempObject_attrs(PyObject* self, void* /*closure*/)
 {
     PyObject* attrs = ((PrivateTempObject*)self)->tmp->attrs_copy;
     if (!attrs) {
-        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        PyErr_SetString(PyExc_RuntimeError, "object not init or have been used");
         return nullptr;
     }
     Py_INCREF(attrs);
@@ -2414,7 +2408,7 @@ PrivateTempObject_kwds(PyObject* self, void* /*closure*/)
 {
     PyObject* kwds = ((PrivateTempObject*)self)->tmp->base_kwds;
     if (!kwds) {
-        PyErr_SetString(PyExc_RuntimeError, "object not init");
+        PyErr_SetString(PyExc_RuntimeError, "object not init or have been used");
         return nullptr;
     }
     Py_INCREF(kwds);
@@ -2473,15 +2467,19 @@ static PyTypeObject PrivateTempType = {
 static PyObject*
 prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs)
 {
+    PrivateAttrCreationData* tmp_data = new PrivateAttrCreationData();
+    if (!PrivateAttrType_preprocess(args, kwargs, *tmp_data)) {
+        tmp_data->clear();
+        delete tmp_data;
+        return NULL;
+    }
     PrivateTempObject* tmp = PyObject_New(PrivateTempObject, &PrivateTempType);
     if (!tmp) {
+        tmp_data->clear();
+        delete tmp_data;
         return NULL;
     }
-    tmp->tmp = new PrivateAttrCreationData();
-    if (!PrivateAttrType_preprocess(args, kwargs, *(tmp->tmp))) {
-        Py_DECREF(tmp);
-        return NULL;
-    }
+    tmp->tmp = tmp_data;
     return (PyObject*)tmp;
 }
 
@@ -2542,7 +2540,6 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass)
     ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
     ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
     ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
-    ((PyTypeObject*)metaclass)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     Py_RETURN_NONE;
 }
 
@@ -2655,13 +2652,14 @@ static PyGetSetDef PrivateModule_getsetters[] = {
 static const char* prepare_and_postprocess_doc = R"(function for custom metaclass to create private attributes class.
 
 def prepare(name: str, bases: tuple, attrs: dict, **kwds) -> tempobject:
-    the function to prepare for creating private attributes class. It will return a temporary object which has the same information as the arguments. The custom metaclass can call this function in its __prepare__ method to get the information for creating private attributes class.
+    the function to prepare for creating private attributes class. It will return a temporary object which has the same information as the arguments.
 
 def postprocess(type: type, tmp: tempobject) -> None:
     the function to postprocess for creating private attributes class. The custom metaclass can call this
 
 def register_metaclass(metaclass: type) -> None:
-    the function to register custom metaclass. The custom metaclass must call this function to register itself before creating any private attributes class, otherwise the private attributes class created by this custom metaclass will not work.
+    the function to register custom metaclass. The custom metaclass must call this function to register itself before creating any private attributes class,
+    otherwise the private attributes class created by this custom metaclass will not work.
 
 All usage of this module should be like:
 ```
@@ -2675,18 +2673,16 @@ class PrivateAbcMeta(ABCMeta):
         private_attribute.postprocess(typ, temp)
         return typ
 
-
 private_attribute.register_metaclass(PrivateAbcMeta)
 ```
 )";
 
 static const char* ensure_type_doc = R"(function for custom metaclass to ensure the type is a private attributes class.
-
 def ensure_type(type: type) -> None:
     the function to ensure the type is a private attributes class `tp_getattro`, `tp_setattro` and `tp_finalizer`.
 )";
 
-static const char* ensure_metaclass_doc = R"(function for custom metaclass to ensure the metaclass is registered.
+static const char* ensure_metaclass_doc = R"(function for custom metaclass to ensure the metaclass is working.
 def ensure_metaclass(metaclass: type) -> None:
     the function to ensure the metaclass `tp_getattro`, `tp_setattro` and `tp_finalizer`.
 )";
@@ -2740,7 +2736,7 @@ A module that provides a metaclass for creating classes with private attributes.
 Private attributes are defined in the `__private_attrs__` sequence and are only
 You can use the `PrivateAttrBase` metaclass to create classes with private attributes.
 The attributes which are private are not on the instance's `__dict__` and cannot be accessed outside
-but in the classmethods it is reachable.
+but in the methods defined in class it is reachable.
 Usage example:
 ```python
 class MyClass(PrivateAttrBase):
