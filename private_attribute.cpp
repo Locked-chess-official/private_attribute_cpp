@@ -935,16 +935,19 @@ PrivateWrap_type_params(PyObject* obj, void* /*closure*/)
     return type_params;
 }
 
+static const char* PrivateWrap_result_doc = "the final result of decorating";
+static const char* PrivateWrap_funcs_doc = "the original functions";
+
 static PyGetSetDef PrivateWrap_getset[] = {
-    {"result", (getter)PrivateWrap_result, NULL, "final result", NULL},
-    {"funcs", (getter)PrivateWrap_funcs, NULL, "funcs", NULL},
-    {"__wrapped__", (getter)PrivateWrap_result, NULL, "final result", NULL},
-    {"__doc__", (getter)PrivateWrap_doc, NULL, "doc", NULL},
-    {"__module__", (getter)PrivateWrap_module, NULL, "module", NULL},
-    {"__name__", (getter)PrivateWarp_name, NULL, "name", NULL},
-    {"__qualname__", (getter)PrivateWrap_qualname, NULL, "qualname", NULL},
-    {"__annotate__", (getter)PrivateWrap_annotate, NULL, "annotate", NULL},
-    {"__type_params__", (getter)PrivateWrap_type_params, NULL, "type_params", NULL},
+    {"result", (getter)PrivateWrap_result, NULL, PrivateWrap_result_doc, NULL},
+    {"funcs", (getter)PrivateWrap_funcs, NULL, PrivateWrap_funcs_doc, NULL},
+    {"__wrapped__", (getter)PrivateWrap_result, NULL, NULL, NULL},
+    {"__doc__", (getter)PrivateWrap_doc, NULL, NULL, NULL},
+    {"__module__", (getter)PrivateWrap_module, NULL, NULL, NULL},
+    {"__name__", (getter)PrivateWarp_name, NULL, NULL, NULL},
+    {"__qualname__", (getter)PrivateWrap_qualname, NULL, NULL, NULL},
+    {"__annotate__", (getter)PrivateWrap_annotate, NULL, NULL, NULL},
+    {"__type_params__", (getter)PrivateWrap_type_params, NULL, NULL, NULL},
     {NULL}
 };
 
@@ -1070,6 +1073,35 @@ PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*
 
 static void PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self);
 static PyObject* PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject *kwds);
+static const char* PrivateWrapProxy_doc = R"(
+PrivateWrapProxy is a proxy for private attributes.
+Usage:
+```
+from private_attribute import PrivateWrapProxy, PrivateAttrBase
+
+class MyClass(PrivateAttrBase):
+    __private_attrs__ = ()
+    @PrivateWrapProxy(decorator)
+    def my_method(self): ...
+
+    @PrivateWrapProxy(decorator)
+    def my_method2(self): ...
+```
+It returned a '_PrivateWrap' object.
+
+If you need to decorate more function, use like this:
+```
+from private_attribute import PrivateWrapProxy, PrivateAttrBase
+
+class MyClass(PrivateAttrBase):
+    __private_attrs__ = ()
+    @PrivateWrapProxy(decorator)
+    def my_method(self): ...
+
+    @PrivateWrapProxy(my_method.some_decorator, my_method)
+    def my_method(self): ...
+```
+)";
 
 static PyTypeObject PrivateWrapProxyType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -1092,7 +1124,7 @@ static PyTypeObject PrivateWrapProxyType = {
     0,                                      // tp_setattro
     0,                                      // tp_as_buffer
     Py_TPFLAGS_DEFAULT,                     // tp_flags
-    "PrivateWrapProxy",                     // tp_doc
+    PrivateWrapProxy_doc,                   // tp_doc
     0,                                      // tp_traverse
     0,                                      // tp_clear
     0,                                      // tp_richcompare
@@ -1307,66 +1339,45 @@ static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name);
 static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value);
 static void PrivateAttrType_del(PyObject* cls);
 
-static int
-PrivateAttrType_init(PyObject* self, PyObject* args, PyObject* kwds)
-{
-    PyTypeObject* base = Py_TYPE(self);
-    while (base->tp_init == PrivateAttrType_init) {
-        base = base->tp_base;
-    }
-    if (base->tp_init == NULL) {
-        int result = PyType_Type.tp_init(self, args, kwds);
-        if (result == 0) {
-            ensure_tp((PyTypeObject*)self);
-        }
-        return result;
-    }
-    int result = base->tp_init(self, args, kwds);
-    if (result == 0) {
-        ensure_tp((PyTypeObject*)self);
-    }
-    return result;
-}
-
 static PyTypeObject PrivateAttrType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "private_attribute.PrivateAttrType",    // tp_name
-    sizeof(PrivateAttrTypeObject),          // tp_basicsize
-    0,                                      // tp_itemsize
-    (destructor)PrivateAttrType_del,        // tp_dealloc
-    0,                                      // tp_print
-    0,                                      // tp_getattr
-    0,                                      // tp_setattr
-    0,                                      // tp_reserved
-    0,                                      // tp_repr
-    0,                                      // tp_as_number
-    0,                                      // tp_as_sequence
-    0,                                      // tp_as_mapping
-    0,                                      // tp_hash
-    0,                                      // tp_call
-    0,                                      // tp_str
-    (getattrofunc)PrivateAttrType_getattr,  // tp_getattro
-    (setattrofunc)PrivateAttrType_setattr,  // tp_setattro
-    0,                                      // tp_as_buffer
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,    // tp_flags
-    "metaclass for private attributes",     // tp_doc
-    0,                                      // tp_travers
-    0,                                      // tp_clear
-    0,                                      // tp_richcompare
-    0,                                      // tp_weaklistoffset
-    0,                                      // tp_iter
-    0,                                      // tp_iternext
-    0,                                      // tp_methods
-    0,                                      // tp_members
-    0,                                      // tp_getset
-    &PyType_Type,                           // tp_base
-    0,                                      // tp_dict
-    0,                                      // tp_descr_get
-    0,                                      // tp_descr_set
-    0,                                      // tp_dictoffset
-    PrivateAttrType_init,                   // tp_init
-    0,                                      // tp_alloc
-    (newfunc)PrivateAttrType_new,           // tp_new
+    "private_attribute.PrivateAttrType",        // tp_name
+    sizeof(PrivateAttrTypeObject),              // tp_basicsize
+    0,                                          // tp_itemsize
+    (destructor)PrivateAttrType_del,            // tp_dealloc
+    0,                                          // tp_print
+    0,                                          // tp_getattr
+    0,                                          // tp_setattr
+    0,                                          // tp_reserved
+    0,                                          // tp_repr
+    0,                                          // tp_as_number
+    0,                                          // tp_as_sequence
+    0,                                          // tp_as_mapping
+    0,                                          // tp_hash
+    0,                                          // tp_call
+    0,                                          // tp_str
+    (getattrofunc)PrivateAttrType_getattr,      // tp_getattro
+    (setattrofunc)PrivateAttrType_setattr,      // tp_setattro
+    0,                                          // tp_as_buffer
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,   // tp_flags
+    "metaclass for private attributes",         // tp_doc
+    0,                                          // tp_travers
+    0,                                          // tp_clear
+    0,                                          // tp_richcompare
+    0,                                          // tp_weaklistoffset
+    0,                                          // tp_iter
+    0,                                          // tp_iternext
+    0,                                          // tp_methods
+    0,                                          // tp_members
+    0,                                          // tp_getset
+    &PyType_Type,                               // tp_base
+    0,                                          // tp_dict
+    0,                                          // tp_descr_get
+    0,                                          // tp_descr_set
+    0,                                          // tp_dictoffset
+    0,                                          // tp_init
+    0,                                          // tp_alloc
+    (newfunc)PrivateAttrType_new,               // tp_new
 };
 
 static PyObject*
@@ -2027,6 +2038,7 @@ ensure_subclass_tp(PyTypeObject* type_instance)
             continue;
         }
         ensure_tp((PyTypeObject*)subclass);
+        ensure_subclass_tp((PyTypeObject*)subclass);
     }
     Py_DECREF(type_subclasses);
 }
@@ -2303,6 +2315,9 @@ PrivateAttrType_del(PyObject* cls)
     (Py_TYPE(cls))->tp_free(cls);
 }
 
+static const char* PrivateAttrBase_doc = "The class to help to create private attribute. "
+        "It does not have any special behavior, but it can be used as a base class for PrivateAttrType to avoid some conflicts with other metaclasses.";
+
 // PrivateAttrBase
 static PyObject*
 create_private_attr_base_simple(void)
@@ -2329,6 +2344,7 @@ create_private_attr_base_simple(void)
     }
     PyDict_SetItemString(dict, "__private_attrs__", private_attrs);
     PyDict_SetItemString(dict, "__slots__", private_attrs);
+    PyDict_SetItemString(dict, "__doc__", PyUnicode_FromString(PrivateAttrBase_doc));
     PyObject *args = PyTuple_Pack(3, name, bases, dict);
     PyObject* base_type;
     if (args) {
@@ -2406,10 +2422,10 @@ PrivateTempObject_kwds(PyObject* self, void* /*closure*/)
 }
 
 static PyGetSetDef PrivateTempObject_getsets[] = {
-    {"name", (getter)PrivateTempObject_name, NULL, NULL, NULL},
-    {"bases", (getter)PrivateTempObject_base, NULL, NULL, NULL},
-    {"attrs", (getter)PrivateTempObject_attrs, NULL, NULL, NULL},
-    {"kwds", (getter)PrivateTempObject_kwds, NULL, NULL, NULL},
+    {"name", (getter)PrivateTempObject_name, NULL, "The name for submetaclass.__new__ argument 1", NULL},
+    {"bases", (getter)PrivateTempObject_base, NULL, "The base classes for submetaclass.__new__ argument 2", NULL},
+    {"attrs", (getter)PrivateTempObject_attrs, NULL, "The attributes for submetaclass.__new__ argument 3", NULL},
+    {"kwds", (getter)PrivateTempObject_kwds, NULL, "The keyword arguments for submetaclass.__new__", NULL},
     {NULL}
 };
 
@@ -2526,7 +2542,6 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass)
     ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
     ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
     ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
-    ((PyTypeObject*)metaclass)->tp_init = PrivateAttrType_init;
     ((PyTypeObject*)metaclass)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     Py_RETURN_NONE;
 }
@@ -2554,7 +2569,6 @@ ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass)
         ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
         ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
         ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
-        ((PyTypeObject*)metaclass)->tp_init = PrivateAttrType_init;
     }
     Py_RETURN_NONE;
 }
@@ -2638,13 +2652,52 @@ static PyGetSetDef PrivateModule_getsetters[] = {
     {NULL}
 };
 
+static const char* prepare_and_postprocess_doc = R"(function for custom metaclass to create private attributes class.
+
+def prepare(name: str, bases: tuple, attrs: dict, **kwds) -> tempobject:
+    the function to prepare for creating private attributes class. It will return a temporary object which has the same information as the arguments. The custom metaclass can call this function in its __prepare__ method to get the information for creating private attributes class.
+
+def postprocess(type: type, tmp: tempobject) -> None:
+    the function to postprocess for creating private attributes class. The custom metaclass can call this
+
+def register_metaclass(metaclass: type) -> None:
+    the function to register custom metaclass. The custom metaclass must call this function to register itself before creating any private attributes class, otherwise the private attributes class created by this custom metaclass will not work.
+
+All usage of this module should be like:
+```
+from abc import ABCMeta
+import private_attribute
+
+class PrivateAbcMeta(ABCMeta):
+    def __new__(cls, *args, **kwargs):
+        temp = private_attribute.prepare(*args, **kwargs)
+        typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+        private_attribute.postprocess(typ, temp)
+        return typ
+
+
+private_attribute.register_metaclass(PrivateAbcMeta)
+```
+)";
+
+static const char* ensure_type_doc = R"(function for custom metaclass to ensure the type is a private attributes class.
+
+def ensure_type(type: type) -> None:
+    the function to ensure the type is a private attributes class `tp_getattro`, `tp_setattro` and `tp_finalizer`.
+)";
+
+static const char* ensure_metaclass_doc = R"(function for custom metaclass to ensure the metaclass is registered.
+def ensure_metaclass(metaclass: type) -> None:
+    the function to ensure the metaclass `tp_getattro`, `tp_setattro` and `tp_finalizer`.
+)";
+
 static PyMethodDef PrivateModule_methods[] = {
     {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
-    {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, NULL},
-    {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS, NULL},
-    {"register_metaclass", (PyCFunction)register_metaclass, METH_O, NULL},
-    {"ensure_type", (PyCFunction)ensure_type_tp, METH_O, NULL},
-    {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O, NULL},
+    {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, prepare_and_postprocess_doc},
+    {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS, prepare_and_postprocess_doc},
+    {"register_metaclass", (PyCFunction)register_metaclass, METH_O, prepare_and_postprocess_doc},
+    {"ensure_type", (PyCFunction)ensure_type_tp, METH_O, ensure_type_doc},
+    {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O, ensure_metaclass_doc},
     {NULL}  // Sentinel
 };
 
@@ -2682,10 +2735,29 @@ static PyTypeObject PrivateModuleType = {
     &PyModule_Type, //tp_base
 };
 
+static const char* module_doc = R"(
+A module that provides a metaclass for creating classes with private attributes.
+Private attributes are defined in the `__private_attrs__` sequence and are only
+You can use the `PrivateAttrBase` metaclass to create classes with private attributes.
+The attributes which are private are not on the instance's `__dict__` and cannot be accessed outside
+but in the classmethods it is reachable.
+Usage example:
+```python
+class MyClass(PrivateAttrBase):
+    __private_attrs__ = ('_private_attr1',)
+    def __init__(self):
+        self._private_attr1 = 1
+
+    @property
+    def public_attr1(self):
+        return self._private_attr1
+```
+)";
+
 static PyModuleDef def = {
     PyModuleDef_HEAD_INIT,
     "private_attribute",
-    NULL,
+    module_doc,
     0,
     NULL,
     NULL,
