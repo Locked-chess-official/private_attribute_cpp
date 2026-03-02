@@ -2212,8 +2212,14 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
         PyErr_SetString(PyExc_TypeError, "cls must be a type");
         return -1;
     }
+    // check Py_TPFLAGS_IMMUTABLETYPE
     uintptr_t typ_id = (uintptr_t)(cls);
     std::string name_str = PyUnicode_AsUTF8(name);
+    if (((PyTypeObject*)cls)->tp_flags & Py_TPFLAGS_IMMUTABLETYPE) {
+        std::string error_message = "cannot set '" + name_str + "' attribute of immutable type '" + ((PyTypeObject*)cls)->tp_name + "'";
+        PyErr_SetString(PyExc_TypeError, error_message.c_str());
+        return -1;
+    }
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
         if (!now_code || (!is_class_code(typ_id, now_code) && !is_subclass_code(typ_id, now_code))) {
