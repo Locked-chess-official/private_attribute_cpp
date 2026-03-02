@@ -61,7 +61,8 @@ public:
     }
 };
 
-class TwoStringTuple {
+class TwoStringTuple
+{
 private:
     std::string first;
     std::string second;
@@ -127,7 +128,8 @@ namespace {
     };
 };
 
-struct FinalObject {
+struct FinalObject
+{
     PyObject* result = NULL;
     int status = 0;
     FinalObject(PyObject* result)
@@ -1669,7 +1671,8 @@ real_class_name(std::string name, std::string class_name)
     return name;
 }
 
-struct PrivateAttrCreationData {
+struct PrivateAttrCreationData
+{
     std::string class_name;
     PyObject* attrs_copy = nullptr;
     PyObject* new_hash_private_attrs = nullptr;
@@ -2484,7 +2487,8 @@ prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs)
 }
 
 static PyObject*
-postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args) {
+postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args)
+{
     PyObject* type;
     PyObject* tmp;
     if (!PyArg_ParseTuple(args, "OO", &type, &tmp)) {
@@ -2769,7 +2773,7 @@ PyInit_private_attribute(void)
         PyType_Ready(&PrivateWrapProxyType) < 0 ||
         PyType_Ready(&PrivateAttrType) < 0 ||
         PyType_Ready(&PrivateModuleType) < 0 ||
-        PyType_Ready(&PrivateTempType)) {
+        PyType_Ready(&PrivateTempType) < 0) {
         return NULL;
     }
 
