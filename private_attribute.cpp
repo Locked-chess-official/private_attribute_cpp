@@ -128,6 +128,12 @@ namespace {
     };
 };
 
+ namespace AllSlots {
+    static getattrofunc original_getattro = nullptr;
+    static setattrofunc original_setattro = nullptr;
+    static destructor original_finalize = nullptr;
+}
+
 struct FinalObject
 {
     PyObject* result = NULL;
@@ -1191,6 +1197,8 @@ typedef struct {
 static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id);
 static void ensure_tp(PyTypeObject* type_instance);
 static void ensure_subclass_tp(PyTypeObject* type_instance);
+static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value);
+static void PrivateAttr_tp_finalize(PyObject* self);
 
 static PyObject*
 PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
@@ -1212,8 +1220,11 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
     }
     Py_XDECREF(code);
     if (::AllData::all_type_getattro.find(type_id) != ::AllData::all_type_getattro.end()){
-        PyObject* result = ::AllData::all_type_getattro[type_id](self, name);
-        return result;
+        if (::AllData::all_type_getattro[type_id]) {
+            PyObject* result = ::AllData::all_type_getattro[type_id](self, name);
+            ensure_tp(typ);
+            return result;
+        }
     }
     return PyObject_GenericGetAttr(self, name);
 }
@@ -1245,6 +1256,7 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
     Py_XDECREF(code);
     if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()){
         int result = ::AllData::all_type_setattro[typ_id](self, name, value);
+        ensure_tp(typ);
         return result;
     }
     return PyObject_GenericSetAttr(self, name, value);
@@ -1258,7 +1270,10 @@ PrivateAttr_tp_finalize(PyObject* self)
     uintptr_t typ_id = (uintptr_t)typ;
     Py_ssize_t original_ref = Py_REFCNT(self);
     if (::AllData::all_type_finalize.find(typ_id) != ::AllData::all_type_finalize.end()){
-        ::AllData::all_type_finalize[typ_id](self);
+        if (::AllData::all_type_finalize[typ_id]) {
+            ::AllData::all_type_finalize[typ_id](self);
+            ensure_tp(typ);
+        }
     }
     if (original_ref != Py_REFCNT(self)) {
         return;
@@ -1809,7 +1824,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         }
 
         if (!PyUnicode_Check(attr)) {
-            PyErr_SetString(PyExc_TypeError, "all items in '__private_attrs__' must be strings");
+            PyErr_Format(PyExc_TypeError, "all items in '__private_attrs__' must be 'str', not '%.200s'", Py_TYPE(attr)->tp_name);
             return false;
         }
 
@@ -1821,7 +1836,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         std::string attr_str = real_class_name(attr_cstr, data.class_name);
 
         for (const char** p = invalid_name; *p != NULL; p++) {
-            if (attr_str == *p) {
+            if (strcmp(attr_str.c_str(), *p) == 0) {
                 std::string error_msg = "invalid attribute name: '" + std::string(*p) + "'";
                 PyErr_SetString(PyExc_TypeError, error_msg.c_str());
                 return false;
@@ -1842,10 +1857,10 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
-    bool has_slots = (all_slots != NULL);
+    int has_slots = PyDict_ContainsString(data.attrs_copy, "__slots__");
 
     if (has_slots) {
+        PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
         PyObject* slot_seq = PySequence_Fast(all_slots, "__slots__ must be a sequence");
         if (!slot_seq) {
             return false;
@@ -1866,8 +1881,6 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
             }
         }
         Py_DECREF(slot_seq);
-    } else {
-        PyErr_Clear();
     }
 
     Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases);
@@ -1927,16 +1940,16 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 
     // get "private_func" from kwds
     if (kwds && PyDict_Check(kwds)) {
-        data.private_func = PyDict_GetItemString(kwds, "private_func");
-        if (data.private_func) {
+        bool has_private_func = PyDict_ContainsString(kwds, "private_func");
+        if (has_private_func) {
+            data.private_func = PyDict_GetItemString(kwds, "private_func");
             Py_INCREF(data.private_func);
         }
         data.base_kwds = PyDict_Copy(kwds);
         if (!data.base_kwds) {
             return false;
         }
-        PyDict_DelItemString(data.base_kwds, "private_func");
-        PyErr_Clear();
+        if (has_private_func) PyDict_DelItemString(data.base_kwds, "private_func");
     }
 
     return true;
@@ -1968,13 +1981,21 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
     return new_type;
 }
 
+static getattrofunc get_need_tp_getattro(PyTypeObject* cls);
+static setattrofunc get_need_tp_setattro(PyTypeObject* cls);
+static destructor get_need_tp_finalize(PyTypeObject* cls);
+
 static void
 ensure_tp(PyTypeObject* type_instance)
 {
     uintptr_t type_id = (uintptr_t)(type_instance);
-    if (type_instance->tp_getattro) {
+    {
         if (type_instance->tp_getattro != PrivateAttr_tp_getattro) {
-            ::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
+            if (!type_instance->tp_getattro) {
+                ::AllData::all_type_getattro[type_id] = get_need_tp_getattro(type_instance);
+            } else {
+                ::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
+            }
             type_instance->tp_getattro = PrivateAttr_tp_getattro;
         } else {
             PyTypeObject* base = type_instance->tp_base;
@@ -1986,9 +2007,13 @@ ensure_tp(PyTypeObject* type_instance)
             }
         }
     }
-    if (type_instance->tp_setattro) {
+    {
         if (type_instance->tp_setattro != PrivateAttr_tp_setattro) {
-            ::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
+            if (!type_instance->tp_setattro) {
+                ::AllData::all_type_setattro[type_id] = get_need_tp_setattro(type_instance);
+            } else {
+                ::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
+            }
             type_instance->tp_setattro = PrivateAttr_tp_setattro;
         } else {
             PyTypeObject* base = type_instance->tp_base;
@@ -2000,9 +2025,13 @@ ensure_tp(PyTypeObject* type_instance)
             }
         }
     }
-    if (type_instance->tp_finalize) {
+    {
         if (type_instance->tp_finalize != PrivateAttr_tp_finalize) {
-            ::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
+            if (!type_instance->tp_finalize) {
+                ::AllData::all_type_finalize[type_id] = get_need_tp_finalize(type_instance);
+            } else {
+                ::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
+            }
             type_instance->tp_finalize = PrivateAttr_tp_finalize;
         } else {
             PyTypeObject* base = type_instance->tp_base;
@@ -2022,23 +2051,37 @@ ensure_subclass_tp(PyTypeObject* type_instance)
     // type.__subclasses__
     PyObject* type_subclasses = (PyObject*)type_instance->tp_subclasses;
     if (!type_subclasses) {
-        PyErr_Clear();
         return;
     }
-    if (!PyList_Check(type_subclasses)) {
-        Py_DECREF(type_subclasses);
+    if (!PyDict_Check(type_subclasses)) {
         return;
     }
-    Py_ssize_t subclasses_size = PyList_GET_SIZE(type_subclasses);
-    for (Py_ssize_t i = 0; i < subclasses_size; i++) {
-        PyObject* subclass = PyList_GET_ITEM(type_subclasses, i);
+    // check all values in the dict. It should be a weakref to a type. If not, continue.
+    PyObject* key, *value;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(type_subclasses, &pos, &key, &value)) {
+        if (!value || !PyWeakref_CheckRef(value)) {
+            continue;
+        }
+// python<3.13 use PyWeakref_GetObject, python>=3.13 use PyWeakref_GetRef
+#if PY_VERSION_HEX < 0x030D0000
+        PyObject* subclass = PyWeakref_GetObject(value);
         if (!subclass || !PyType_Check(subclass)) {
             continue;
         }
         ensure_tp((PyTypeObject*)subclass);
-        ensure_subclass_tp((PyTypeObject*)subclass);
+#else
+        PyObject* subclass;
+        if (PyWeakref_GetRef(value, (PyObject**)&subclass) != 0) {
+            continue;
+        }
+        if (!subclass || !PyType_Check(subclass)) {
+            continue;
+        }
+        ensure_tp((PyTypeObject*)subclass);
+        Py_XDECREF(subclass);
+#endif
     }
-    Py_DECREF(type_subclasses);
 }
 
 static bool
@@ -2206,6 +2249,178 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
 }
 
 static int
+init_all_slots()
+{
+    PyObject* class_locals = PyDict_New();
+    if (!class_locals) {
+        return -1;
+    }
+    // set "__getattribute__", "__setattr__", "__delattr__", "__del__" to class_locals
+    if (PyDict_SetItemString(class_locals, "__getattribute__", Py_None) < 0) {
+        Py_DECREF(class_locals);
+        return -1;
+    }
+    if (PyDict_SetItemString(class_locals, "__setattr__", Py_None) < 0) {
+        Py_DECREF(class_locals);
+        return -1;
+    }
+    if (PyDict_SetItemString(class_locals, "__delattr__", Py_None) < 0) {
+        Py_DECREF(class_locals);
+        return -1;
+    }
+    if (PyDict_SetItemString(class_locals, "__del__", Py_None) < 0) {
+        Py_DECREF(class_locals);
+        return -1;
+    }
+    PyObject* class_name = PyUnicode_FromString("_TempClass");
+    if (!class_name) {
+        Py_DECREF(class_locals);
+        return -1;
+    }
+    PyObject* args = PyTuple_Pack(3, class_name, PyTuple_New(0), class_locals);
+    if (!args) {
+        Py_DECREF(class_name);
+        Py_DECREF(class_locals);
+        return -1;
+    }
+    PyObject* temp_class = PyType_Type.tp_new(&PyType_Type, args, NULL);
+    Py_DECREF(args);
+    if (!temp_class) {
+        return -1;
+    }
+    PyTypeObject* temp_type = (PyTypeObject*)temp_class;
+    AllSlots::original_getattro = temp_type->tp_getattro;
+    AllSlots::original_setattro = temp_type->tp_setattro;
+    AllSlots::original_finalize = temp_type->tp_finalize;
+    Py_DECREF(temp_class);
+    return 0;
+}
+
+static getattrofunc
+get_need_tp_getattro(PyTypeObject* cls)
+{
+    if (PyDict_ContainsString(cls->tp_dict, "__getattribute__") || PyDict_ContainsString(cls->tp_dict, "__getattr__")) {
+        return AllSlots::original_getattro;
+    }
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_getattro != PrivateAttr_tp_getattro) {
+            return base->tp_getattro;
+        } else if (::AllData::all_type_getattro.find((uintptr_t)base) != ::AllData::all_type_getattro.end()) {
+            if (::AllData::all_type_getattro[(uintptr_t)base]) {
+                return ::AllData::all_type_getattro[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static setattrofunc
+get_need_tp_setattro(PyTypeObject* cls)
+{
+    if (PyDict_ContainsString(cls->tp_dict, "__setattr__") || PyDict_ContainsString(cls->tp_dict, "__delattr__")) {
+        return AllSlots::original_setattro;
+    }
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_setattro != PrivateAttr_tp_setattro) {
+            return base->tp_setattro;
+        } else if (::AllData::all_type_setattro.find((uintptr_t)base) != ::AllData::all_type_setattro.end()) {
+            if (::AllData::all_type_setattro[(uintptr_t)base]) {
+                return ::AllData::all_type_setattro[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static destructor
+get_need_tp_finalize(PyTypeObject* cls)
+{
+    if (PyDict_ContainsString(cls->tp_dict, "__del__")) {
+        return AllSlots::original_finalize;
+    }
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_finalize != PrivateAttr_tp_finalize) {
+            return base->tp_finalize;
+        } else if (::AllData::all_type_finalize.find((uintptr_t)base) != ::AllData::all_type_finalize.end()) {
+            if (::AllData::all_type_finalize[(uintptr_t)base]) {
+                return ::AllData::all_type_finalize[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static void
+type_change_all_slots(PyTypeObject* cls, const char* name)
+{
+    if (strcmp(name, "__getattribute__") == 0 || strcmp(name, "__getattr__") == 0) {
+        cls->tp_getattro = PrivateAttr_tp_getattro;
+        ::AllData::all_type_getattro[(uintptr_t)cls] = get_need_tp_getattro(cls);
+    } else if (strcmp(name, "__setattr__") == 0 || strcmp(name, "__delattr__") == 0) {
+        cls->tp_setattro = PrivateAttr_tp_setattro;
+        ::AllData::all_type_setattro[(uintptr_t)cls] = get_need_tp_setattro(cls);
+    } else if (strcmp(name, "__del__") == 0) {
+        cls->tp_finalize = PrivateAttr_tp_finalize;
+        ::AllData::all_type_finalize[(uintptr_t)cls] = get_need_tp_finalize(cls);
+    }
+}
+
+static void
+subtype_change_all_slots(PyTypeObject* cls, const char* name)
+{
+    // tp_subclasses: {id(type): weakref.ref(type)}
+    PyObject* tp_subclasses = (PyObject*)cls->tp_subclasses;
+    if (!tp_subclasses) {
+        return;
+    }
+    if (!PyDict_Check(tp_subclasses)) {
+        return;
+    }
+    PyObject* key;
+    PyObject* value;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(tp_subclasses, &pos, &key, &value)) {
+        if (!PyWeakref_Check(value)) {
+            continue;
+        }
+#if PY_VERSION_HEX < 0x030D0000
+        PyObject* obj = PyWeakref_GET_OBJECT(value);
+        if (!obj) {
+            continue;
+        }
+#else
+        PyObject* obj;
+        if (PyWeakref_GetRef(value, &obj) != 0) {
+            continue;
+        }
+        if (!obj) {
+            continue;
+        }
+#endif
+        if (!PyType_Check(obj)) {
+            continue;
+        }
+        PyTypeObject* sub_cls = (PyTypeObject*)obj;
+        type_change_all_slots(sub_cls, name);
+#if PY_VERSION_HEX >= 0x030D0000
+        Py_XDECREF(obj);
+#endif
+    }
+}
+
+static int
 PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
 {
     if (!PyType_Check(cls)) {
@@ -2231,6 +2446,28 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
         return type_setattr(cls, name_str, value);
     }
     Py_XDECREF(now_code);
+    // if name in __getattribute__, __setattr__, __delattr__, __del__, just set to tp_dict
+    if (name_str == "__getattribute__" || name_str == "__getattr__" || name_str == "__setattr__" || name_str == "__delattr__" || name_str == "__del__") {
+        PyObject* tp_dict = ((PyTypeObject*)cls)->tp_dict;
+        if (!tp_dict) {
+            PyErr_SetString(PyExc_TypeError, "type has no tp_dict");
+            return -1;
+        }
+        if (!value) {
+            if (PyDict_DelItem(tp_dict, name) < 0) {
+                return -1;
+            }
+            type_change_all_slots((PyTypeObject*)cls, name_str.c_str());
+            subtype_change_all_slots((PyTypeObject*)cls, name_str.c_str());
+            return 0;
+        }
+        if (PyDict_SetItem(tp_dict, name, value) < 0) {
+            return -1;
+        }
+        type_change_all_slots((PyTypeObject*)cls, name_str.c_str());
+        subtype_change_all_slots((PyTypeObject*)cls, name_str.c_str());
+        return 0;
+    }
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
     while (base && base->tp_base && base->tp_setattro == PrivateAttrType_setattr) {
         base = base->tp_base;
@@ -2316,7 +2553,7 @@ static void
 PrivateAttrType_del(PyObject* cls)
 {
     PrivateAttrType_finalize(cls);
-    (Py_TYPE(cls))->tp_free(cls);
+    PyType_Type.tp_dealloc(cls);
 }
 
 static const char* PrivateAttrBase_doc = "The class to help to create private attribute. It does not have any special behavior.";
@@ -2775,7 +3012,8 @@ static PyModuleDef def = {
 PyMODINIT_FUNC
 PyInit_private_attribute(void)
 {
-    if (PyType_Ready(&PrivateWrapType) < 0 ||
+    if (init_all_slots() <0 ||
+        PyType_Ready(&PrivateWrapType) < 0 ||
         PyType_Ready(&PrivateWrapProxyType) < 0 ||
         PyType_Ready(&PrivateAttrType) < 0 ||
         PyType_Ready(&PrivateModuleType) < 0 ||
