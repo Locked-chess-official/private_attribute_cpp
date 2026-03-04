@@ -1758,6 +1758,21 @@ need_analyse_type(PyObject* type)
     return false;
 }
 
+// python under 3.13 doesn't has PyDict_ContainsString, so we implement it ourselves
+#if PY_VERSION_HEX < 0x030D0000:
+static int
+PyDict_ContainsString(PyObject *op, const char *key)
+{
+    PyObject *key_obj = PyUnicode_FromString(key);
+    if (key_obj == NULL) {
+        return -1;
+    }
+    int res = PyDict_Contains(op, key_obj);
+    Py_DECREF(key_obj);
+    return res;
+}
+#endif
+
 static bool
 PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data) 
 {
