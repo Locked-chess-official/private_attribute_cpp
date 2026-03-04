@@ -1759,7 +1759,7 @@ need_analyse_type(PyObject* type)
 }
 
 // python under 3.13 doesn't has PyDict_ContainsString, so we implement it ourselves
-#if PY_VERSION_HEX < 0x030D0000:
+#if PY_VERSION_HEX < 0x030D0000
 static int
 PyDict_ContainsString(PyObject *op, const char *key)
 {
