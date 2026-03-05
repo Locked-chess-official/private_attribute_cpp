@@ -2970,10 +2970,6 @@ ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass)
     Py_RETURN_NONE;
 }
 
-typedef struct PrivateModule {
-    PyObject_HEAD
-}PrivateModule;
-
 static PyObject*
 PrivateModule_get_PrivateWrapProxy(PyObject* /*self*/, void* /*closure*/)
 {
@@ -3100,7 +3096,7 @@ static PyMethodDef PrivateModule_methods[] = {
 static PyTypeObject PrivateModuleType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "private_attribute_module", //tp_name
-    sizeof(PrivateModule), //tp_basicsize
+    PyModule_Type.tp_basicsize, //tp_basicsize
     0, //tp_itemsize
     0, //tp_dealloc
     0, //tp_print
