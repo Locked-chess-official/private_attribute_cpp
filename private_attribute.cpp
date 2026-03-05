@@ -21,6 +21,21 @@
 #include <memory>
 #include <algorithm>
 
+// python under 3.13 doesn't has PyDict_ContainsString, so we implement it ourselves
+#if PY_VERSION_HEX < 0x030D0000
+static int
+PyDict_ContainsString(PyObject *op, const char *key)
+{
+    PyObject *key_obj = PyUnicode_FromString(key);
+    if (key_obj == NULL) {
+        return -1;
+    }
+    int res = PyDict_Contains(op, key_obj);
+    Py_DECREF(key_obj);
+    return res;
+}
+#endif
+
 static const auto module_running_time = std::chrono::system_clock::now();
 
 static std::string
@@ -128,7 +143,7 @@ namespace {
     };
 };
 
- namespace AllSlots {
+namespace AllSlots {
     static getattrofunc original_getattro = nullptr;
     static setattrofunc original_setattro = nullptr;
     static destructor original_finalize = nullptr;
@@ -1758,20 +1773,156 @@ need_analyse_type(PyObject* type)
     return false;
 }
 
-// python under 3.13 doesn't has PyDict_ContainsString, so we implement it ourselves
-#if PY_VERSION_HEX < 0x030D0000
-static int
-PyDict_ContainsString(PyObject *op, const char *key)
+static void
+get_getattribute_and_getattr(PyTypeObject* cls, PyObject** getattribute, PyObject** getattr)
 {
-    PyObject *key_obj = PyUnicode_FromString(key);
-    if (key_obj == NULL) {
-        return -1;
+    bool has_getattribute = false;
+    bool has_getattr = false;
+    if (PyDict_ContainsString(cls->tp_dict, "__getattribute__")) {
+        *getattribute = PyDict_GetItemString(cls->tp_dict, "__getattribute__");
+        has_getattribute = true;
     }
-    int res = PyDict_Contains(op, key_obj);
-    Py_DECREF(key_obj);
+    if (PyDict_ContainsString(cls->tp_dict, "__getattr__")) {
+        *getattr = PyDict_GetItemString(cls->tp_dict, "__getattr__");
+        has_getattr = true;
+    }
+    if (has_getattribute && has_getattr) {
+        return;
+    }
+    for (PyTypeObject* base = cls->tp_base; base != NULL && base != &PyBaseObject_Type; base = base->tp_base) {
+        if (!has_getattribute && PyDict_ContainsString(base->tp_dict, "__getattribute__")) {
+            *getattribute = PyDict_GetItemString(base->tp_dict, "__getattribute__");
+            has_getattribute = true;
+        }
+        if (!has_getattr && PyDict_ContainsString(base->tp_dict, "__getattr__")) {
+            *getattr = PyDict_GetItemString(base->tp_dict, "__getattr__");
+            has_getattr = true;
+        }
+        if (has_getattribute && has_getattr) {
+            return;
+        }
+    }
+}
+
+static void
+get_setattr_and_delattr(PyTypeObject* cls, PyObject** setattr, PyObject** delattr)
+{
+    bool has_setattr = false;
+    bool has_delattr = false;
+    if (PyDict_ContainsString(cls->tp_dict, "__setattr__")) {
+        *setattr = PyDict_GetItemString(cls->tp_dict, "__setattr__");
+        has_setattr = true;
+    }
+    if (PyDict_ContainsString(cls->tp_dict, "__delattr__")) {
+        *delattr = PyDict_GetItemString(cls->tp_dict, "__delattr__");
+        has_delattr = true;
+    }
+    if (has_setattr && has_delattr) {
+        return;
+    }
+    for (PyTypeObject* base = cls->tp_base; base != NULL && base != &PyBaseObject_Type; base = base->tp_base) {
+        if (!has_setattr && PyDict_ContainsString(base->tp_dict, "__setattr__")) {
+            *setattr = PyDict_GetItemString(base->tp_dict, "__setattr__");
+            has_setattr = true;
+        }
+        if (!has_delattr && PyDict_ContainsString(base->tp_dict, "__delattr__")) {
+            *delattr = PyDict_GetItemString(base->tp_dict, "__delattr__");
+            has_delattr = true;
+        }
+        if (has_setattr && has_delattr) {
+            return;
+        }
+    }
+}
+
+static void
+get_del(PyTypeObject* cls, PyObject** del)
+{
+    if (PyDict_ContainsString(cls->tp_dict, "__del__")) {
+        *del = PyDict_GetItemString(cls->tp_dict, "__del__");
+        return;
+    }
+    for (PyTypeObject* base = cls->tp_base; base != NULL && base != &PyBaseObject_Type; base = base->tp_base) {
+        if (PyDict_ContainsString(base->tp_dict, "__del__")) {
+            *del = PyDict_GetItemString(base->tp_dict, "__del__");
+            return;
+        }
+    }
+}
+
+static PyObject*
+python_original_tp_getattro(PyObject* self, PyObject* name)
+{
+    PyObject* getattriute = NULL;
+    PyObject* getattr = NULL;
+    get_getattribute_and_getattr((PyTypeObject*)self->ob_type, &getattriute, &getattr);
+    PyObject* res = NULL;
+    if (getattriute) {
+        res = PyObject_CallFunctionObjArgs(getattriute, self, name, NULL);
+    } else {
+        res = PyObject_GenericGetAttr(self, name);
+    }
+    if (!res && getattr) {
+        // check if the exception is AttributeError
+        if (!PyErr_ExceptionMatches(PyExc_AttributeError)) {
+            return NULL;
+        }
+        PyErr_Clear();
+        res = PyObject_CallFunctionObjArgs(getattr, self, name, NULL);
+    }
     return res;
 }
-#endif
+
+static int
+python_original_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
+{
+    PyObject* setattr = NULL;
+    PyObject* delattr = NULL;
+    get_setattr_and_delattr((PyTypeObject*)self->ob_type, &setattr, &delattr);
+    if (value && setattr) {
+        PyObject* res = PyObject_CallFunctionObjArgs(setattr, self, name, value, NULL);
+        if (!res) {
+            return -1;
+        }
+        Py_DECREF(res);
+        return 0;
+    } else if (!value && delattr) {
+        PyObject* res = PyObject_CallFunctionObjArgs(delattr, self, name, NULL);
+        if (!res) {
+            return -1;
+        }
+        Py_DECREF(res);
+        return 0;
+    }
+    return PyObject_GenericSetAttr(self, name, value);
+}
+
+static void
+python_original_tp_finalize(PyObject* self)
+{
+    PyObject* del = NULL;
+    get_del((PyTypeObject*)self->ob_type, &del);
+    if (del) {
+        PyObject *exc_type = NULL, *exc_value = NULL, *exc_tb = NULL;
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb); 
+        PyObject *result = PyObject_CallFunctionObjArgs(del, self, NULL);
+        if (result == NULL)  {
+            // python < 3.13 use PyErr_WriteUnraisable, python >= 3.13 use PyErr_FormatUnraisable
+# if PY_VERSION_HEX >= 0x030D0000
+            PyErr_FormatUnraisable("Exception ignored while "
+                                   "calling deallocator %R", del);
+# else
+            PyErr_WriteUnraisable(del);
+# endif
+        }
+        else {
+            Py_DECREF(result);
+        }
+        if (exc_type != NULL) {
+            PyErr_Restore(exc_type, exc_value, exc_tb);
+        }
+    }
+}
 
 static bool
 PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data) 
@@ -2013,12 +2164,16 @@ ensure_tp(PyTypeObject* type_instance)
             }
             type_instance->tp_getattro = PrivateAttr_tp_getattro;
         } else {
-            PyTypeObject* base = type_instance->tp_base;
-            uintptr_t base_id = (uintptr_t)(base);
-            if (::AllData::all_type_getattro.find(base_id) != ::AllData::all_type_getattro.end()) {
-                ::AllData::all_type_getattro[type_id] = ::AllData::all_type_getattro[base_id];
-            } else if (base && base->tp_getattro && base->tp_getattro != PrivateAttr_tp_getattro) {
-                ::AllData::all_type_getattro[type_id] = base->tp_getattro;
+            if (PyDict_ContainsString(type_instance->tp_dict, "__getattribute__") || PyDict_ContainsString(type_instance->tp_dict, "__getattr__")) {
+                ::AllData::all_type_getattro[type_id] = AllSlots::original_getattro;
+            } else {
+                PyTypeObject* base = type_instance->tp_base;
+                uintptr_t base_id = (uintptr_t)(base);
+                if (::AllData::all_type_getattro.find(base_id) != ::AllData::all_type_getattro.end()) {
+                    ::AllData::all_type_getattro[type_id] = ::AllData::all_type_getattro[base_id];
+                } else if (base && base->tp_getattro && base->tp_getattro != PrivateAttr_tp_getattro) {
+                    ::AllData::all_type_getattro[type_id] = base->tp_getattro;
+                }
             }
         }
     }
@@ -2031,12 +2186,16 @@ ensure_tp(PyTypeObject* type_instance)
             }
             type_instance->tp_setattro = PrivateAttr_tp_setattro;
         } else {
-            PyTypeObject* base = type_instance->tp_base;
-            uintptr_t base_id = (uintptr_t)(base);
-            if (::AllData::all_type_setattro.find(base_id) != ::AllData::all_type_setattro.end()) {
-                ::AllData::all_type_setattro[type_id] = ::AllData::all_type_setattro[base_id];
-            } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttr_tp_setattro) {
-                ::AllData::all_type_setattro[type_id] = base->tp_setattro;
+            if (PyDict_ContainsString(type_instance->tp_dict, "__setattr__") || PyDict_ContainsString(type_instance->tp_dict, "__delattr__")) {
+                ::AllData::all_type_setattro[type_id] = AllSlots::original_setattro;
+            } else {
+                PyTypeObject* base = type_instance->tp_base;
+                uintptr_t base_id = (uintptr_t)(base);
+                if (::AllData::all_type_setattro.find(base_id) != ::AllData::all_type_setattro.end()) {
+                    ::AllData::all_type_setattro[type_id] = ::AllData::all_type_setattro[base_id];
+                } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttr_tp_setattro) {
+                    ::AllData::all_type_setattro[type_id] = base->tp_setattro;
+                }
             }
         }
     }
@@ -2049,12 +2208,16 @@ ensure_tp(PyTypeObject* type_instance)
             }
             type_instance->tp_finalize = PrivateAttr_tp_finalize;
         } else {
-            PyTypeObject* base = type_instance->tp_base;
-            uintptr_t base_id = (uintptr_t)(base);
-            if (::AllData::all_type_finalize.find(base_id) != ::AllData::all_type_finalize.end()) {
-                ::AllData::all_type_finalize[type_id] = ::AllData::all_type_finalize[base_id];
-            } else if (base && base->tp_finalize && base->tp_finalize != PrivateAttr_tp_finalize) {
-                ::AllData::all_type_finalize[type_id] = base->tp_finalize;
+            if (PyDict_ContainsString(type_instance->tp_dict, "__del__")) {
+                ::AllData::all_type_finalize[type_id] = AllSlots::original_finalize;
+            } else {
+                PyTypeObject* base = type_instance->tp_base;
+                uintptr_t base_id = (uintptr_t)(base);
+                if (::AllData::all_type_finalize.find(base_id) != ::AllData::all_type_finalize.end()) {
+                    ::AllData::all_type_finalize[type_id] = ::AllData::all_type_finalize[base_id];
+                } else if (base && base->tp_finalize && base->tp_finalize != PrivateAttr_tp_finalize) {
+                    ::AllData::all_type_finalize[type_id] = base->tp_finalize;
+                }
             }
         }
     }
@@ -2110,6 +2273,15 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
     uintptr_t type_id = (uintptr_t)(type_instance);
 
     ensure_tp(type_instance);
+    if (PyDict_ContainsString(type_instance->tp_dict, "__getattribute__") || PyDict_ContainsString(type_instance->tp_dict, "__getattr__")) {
+        ::AllData::all_type_getattro[type_id] = AllSlots::original_getattro;
+    }
+    if (PyDict_ContainsString(type_instance->tp_dict, "__setattr__") || PyDict_ContainsString(type_instance->tp_dict, "__delattr__")) {
+        ::AllData::all_type_setattro[type_id] = AllSlots::original_setattro;
+    }
+    if (PyDict_ContainsString(type_instance->tp_dict, "__del__")) {
+        ::AllData::all_type_finalize[type_id] = AllSlots::original_finalize;
+    }
 
     ::AllData::type_attr_dict[type_id] = {};
     ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
@@ -2266,48 +2438,9 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
 static int
 init_all_slots()
 {
-    PyObject* class_locals = PyDict_New();
-    if (!class_locals) {
-        return -1;
-    }
-    // set "__getattribute__", "__setattr__", "__delattr__", "__del__" to class_locals
-    if (PyDict_SetItemString(class_locals, "__getattribute__", Py_None) < 0) {
-        Py_DECREF(class_locals);
-        return -1;
-    }
-    if (PyDict_SetItemString(class_locals, "__setattr__", Py_None) < 0) {
-        Py_DECREF(class_locals);
-        return -1;
-    }
-    if (PyDict_SetItemString(class_locals, "__delattr__", Py_None) < 0) {
-        Py_DECREF(class_locals);
-        return -1;
-    }
-    if (PyDict_SetItemString(class_locals, "__del__", Py_None) < 0) {
-        Py_DECREF(class_locals);
-        return -1;
-    }
-    PyObject* class_name = PyUnicode_FromString("_TempClass");
-    if (!class_name) {
-        Py_DECREF(class_locals);
-        return -1;
-    }
-    PyObject* args = PyTuple_Pack(3, class_name, PyTuple_New(0), class_locals);
-    if (!args) {
-        Py_DECREF(class_name);
-        Py_DECREF(class_locals);
-        return -1;
-    }
-    PyObject* temp_class = PyType_Type.tp_new(&PyType_Type, args, NULL);
-    Py_DECREF(args);
-    if (!temp_class) {
-        return -1;
-    }
-    PyTypeObject* temp_type = (PyTypeObject*)temp_class;
-    AllSlots::original_getattro = temp_type->tp_getattro;
-    AllSlots::original_setattro = temp_type->tp_setattro;
-    AllSlots::original_finalize = temp_type->tp_finalize;
-    Py_DECREF(temp_class);
+    AllSlots::original_getattro = python_original_tp_getattro;
+    AllSlots::original_setattro = python_original_tp_setattro;
+    AllSlots::original_finalize = python_original_tp_finalize;
     return 0;
 }
 
@@ -2462,7 +2595,11 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
     }
     Py_XDECREF(now_code);
     // if name in __getattribute__, __setattr__, __delattr__, __del__, just set to tp_dict
-    if (name_str == "__getattribute__" || name_str == "__getattr__" || name_str == "__setattr__" || name_str == "__delattr__" || name_str == "__del__") {
+    if (strcmp(name_str.c_str(), "__getattribute__") == 0 ||
+        strcmp(name_str.c_str(), "__getattr__") == 0 ||
+        strcmp(name_str.c_str(), "__setattr__") == 0 ||
+        strcmp(name_str.c_str(), "__delattr__") == 0 ||
+        strcmp(name_str.c_str(), "__del__") == 0) {
         PyObject* tp_dict = ((PyTypeObject*)cls)->tp_dict;
         if (!tp_dict) {
             PyErr_SetString(PyExc_TypeError, "type has no tp_dict");
@@ -2470,6 +2607,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
         }
         if (!value) {
             if (PyDict_DelItem(tp_dict, name) < 0) {
+                PyErr_Format(PyExc_AttributeError, "type object '%.100s' has no attribute '%U'", ((PyTypeObject*)cls)->tp_name, name);
                 return -1;
             }
             type_change_all_slots((PyTypeObject*)cls, name_str.c_str());
