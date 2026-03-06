@@ -3096,7 +3096,7 @@ static PyMethodDef PrivateModule_methods[] = {
 static PyTypeObject PrivateModuleType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "private_attribute_module", //tp_name
-    PyModule_Type.tp_basicsize, //tp_basicsize
+    PyModule_Type.tp_basicsize + 1, //tp_basicsize   size of module object + 1 byte for flag to avoid change attribute '__class__'
     0, //tp_itemsize
     0, //tp_dealloc
     0, //tp_print
