@@ -2297,7 +2297,7 @@ ensure_subclass_tp(PyTypeObject* type_instance)
         ensure_tp((PyTypeObject*)subclass);
 #else
         PyObject* subclass;
-        if (PyWeakref_GetRef(value, (PyObject**)&subclass) == 0) {
+        if (PyWeakref_GetRef(value, (PyObject**)&subclass) != 1) {
             continue;
         }
         if (!subclass || !PyType_Check(subclass)) {
@@ -2597,7 +2597,7 @@ subtype_change_all_slots(PyTypeObject* cls, const char* name)
         }
 #else
         PyObject* obj;
-        if (PyWeakref_GetRef(value, &obj) != 0) {
+        if (PyWeakref_GetRef(value, &obj) != 1) {
             continue;
         }
         if (!obj) {
