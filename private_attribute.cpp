@@ -140,6 +140,7 @@ namespace {
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::vector<PyTypeObject*> all_register_new_metaclass;
         static std::unordered_set<uintptr_t> all_register_new_metaclass_id;
+        static std::unordered_map<uintptr_t, PyObject*> all_register_type_weak_ref;
     };
 };
 
@@ -155,13 +156,11 @@ struct FinalObject
     int status = 0;
     FinalObject(PyObject* result)
         : result(result) {
-            Py_INCREF(result);
+            Py_XINCREF(result);
         }
     FinalObject(int status): status(status) {}
     ~FinalObject() {
-        if (result) {
-            Py_DECREF(result);
-        }
+        Py_XDECREF(result);
     }
 };
 
@@ -185,18 +184,39 @@ is_class_code(uintptr_t typ_id, PyCodeObject* code)
 }
 
 static bool
-is_subclass_code(uintptr_t typ_id, PyCodeObject* code)
+is_type_private(uintptr_t typ_id, std::string name)
 {
-    std::vector<uintptr_t> parent_ids;
-    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()){
-        parent_ids = ::AllData::all_type_parent_id[typ_id];
-        for (auto& parent_id : parent_ids){
-            if (is_class_code(parent_id, code)){
-                return true;
-            }
+    if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()){
+        auto& attr_set = ::AllData::all_type_attr_set[typ_id];
+        TwoStringTuple key = get_string_hash_tuple2(name);
+        if (attr_set.find(key) != attr_set.end()){
+            return true;
         }
     }
     return false;
+}
+
+static bool
+attr_classify(uintptr_t typ_id, std::string name, PyCodeObject* code)
+{
+    if (is_class_code(typ_id, code)) {
+        return true;
+    }
+    if (is_type_private(typ_id, name)) {
+        return false;
+    }
+    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
+        std::vector<uintptr_t> parent_ids = ::AllData::all_type_parent_id[typ_id];
+        for (auto& parent_id : parent_ids) {
+            if (is_class_code(parent_id, code)) {
+                return true;
+            }
+            if (is_type_private(parent_id, name)) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 static std::string
@@ -404,6 +424,9 @@ get_name_from_tp_name(PyTypeObject* typ)
     return final_name;
 }
 
+static void ensure_tp(PyTypeObject* type_instance);
+static void ensure_subclass_tp(PyTypeObject* type_instance);
+
 static PyObject*
 id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
 {
@@ -451,21 +474,23 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
     if (final_object.status != -1) {
         result = final_object.result;
     }
-    PyObject* result_typ = nullptr;
+    PyTypeObject* result_typ = nullptr;
 
     if (result) {
-        result_typ = PyObject_Type(result);
+        result_typ = Py_TYPE(result);
         if (!result_typ) return NULL;
     }
-    int has_get = 0;
-    int has_set = 0;
+    bool has_get = false;
+    bool has_set = false;
     if (result_typ) {
-        has_get = PyObject_HasAttrString(result_typ, "__get__");
-        has_set = PyObject_HasAttrString(result_typ, "__set__");
+        has_get = result_typ->tp_descr_get != NULL;
+        has_set = result_typ->tp_descr_set != NULL;
     }
     if (has_get && has_set) {
-        PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", obj, typ);
-        return python_result;
+        PyObject* final_result = result_typ->tp_descr_get(result, obj, typ);
+        ensure_tp((PyTypeObject*)typ);
+        ensure_subclass_tp((PyTypeObject*)typ);
+        return final_result;
     }
 
     {
@@ -477,10 +502,12 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
                 return NULL;
             }
             // if obj is a type, call result.__get__(None, obj)
-            if (PyType_Check(obj) && PyObject_HasAttrString((PyObject*)PyObject_Type(python_obj), "__get__")) {
-                lock.unlock();
-                PyObject* python_result = PyObject_CallMethod(python_obj, "__get__", "(OO)", Py_None, obj);
-                return python_result;
+            if (PyType_Check(obj)) {
+                PyTypeObject* obj_type = Py_TYPE(python_obj);
+                if (obj_type->tp_descr_get != NULL) {
+                    lock.unlock();
+                    return obj_type->tp_descr_get(python_obj, Py_None, obj);
+                }
             }
             Py_XINCREF(python_obj);
             return python_obj;
@@ -488,8 +515,10 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
     }
 
     if (has_get) {
-        PyObject* python_result = PyObject_CallMethod(result, "__get__", "(OO)", obj, typ);
-        return python_result;
+        PyObject* final_result = result_typ->tp_descr_get(result, obj, typ);
+        ensure_tp((PyTypeObject*)typ);
+        ensure_subclass_tp((PyTypeObject*)typ);
+        return final_result;
     }
     if (result) {
         Py_INCREF(result);
@@ -518,9 +547,12 @@ type_getattr(PyObject* typ, std::string attr_name)
         result = final_object.result;
     }
     if (result) {
-        if (PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__get__")) {
-            PyObject* python_result = PyObject_CallMethod(result, "__get__", "OO", Py_None, typ);
-            return python_result;
+        PyTypeObject* type = Py_TYPE(result);
+        if (type->tp_descr_get != NULL) {
+            PyObject* final_result = type->tp_descr_get(result, Py_None, (PyObject*)type);
+            ensure_tp((PyTypeObject*)type);
+            ensure_subclass_tp((PyTypeObject*)type);
+            return final_result;
         } else {
             Py_INCREF(result);
             return result;
@@ -531,7 +563,7 @@ type_getattr(PyObject* typ, std::string attr_name)
         return NULL;
     }
     std::string string_type_name = type_name;
-    std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
+    std::string message = "type object '" + string_type_name + "' has no attribute '" + attr_name + "'";
     PyErr_SetString(PyExc_AttributeError, message.c_str());
     return NULL;
 }
@@ -584,13 +616,14 @@ id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
     if (final_object.status != -1) {
         result = final_object.result;
     }
-    if (result && PyObject_HasAttrString((PyObject*)PyObject_Type(result), "__set__")) {
-        PyObject* python_result = PyObject_CallMethod(result, "__set__", "(OO)", obj, value);
-        if (!python_result) {
-            return -1;
+    if (result) {
+        PyTypeObject* type = Py_TYPE(result);
+        if (type->tp_descr_set != NULL) {
+            if (type->tp_descr_set(result, obj, value) < 0) {
+                return -1;
+            }
+            return 0;
         }
-        Py_DECREF(python_result);
-        return 0;
     }
 
     // second: set attribute on obj
@@ -727,13 +760,14 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
     if (final_object.status == 0) {
         result = final_object.result;
     }
-    if (result && PyObject_HasAttrString(result, "__delete__")) {
-        PyObject* delete_result = PyObject_CallMethod(result, "__delete__", "(O)", result);
-        if (delete_result == NULL) {
-            return -1;
+    if (result) {
+        PyTypeObject* type = Py_TYPE(result);
+        if (type->tp_descr_set != NULL) {
+            if (type->tp_descr_set(result, result, NULL) < 0) {
+                return -1;
+            }
+            return 0;
         }
-        Py_XDECREF(delete_result);
-        return 0;
     }
     // second: delete attribute on obj
     {
@@ -797,7 +831,7 @@ type_delattr(PyObject* typ, std::string attr_name)
                 return -1;
             }
             std::string string_type_name = type_name;
-            std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
+            std::string message = "type object '" + string_type_name + "' has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, message.c_str());
             return -1;
         }
@@ -825,7 +859,7 @@ type_delattr(PyObject* typ, std::string attr_name)
                 return -1;
             }
             std::string string_type_name = type_name;
-            std::string message = "type '" + string_type_name + "' has no attribute '" + attr_name + "'";
+            std::string message = "type object '" + string_type_name + "' has no attribute '" + attr_name + "'";
             PyErr_SetString(PyExc_AttributeError, message.c_str());
             return -1;
         }
@@ -1210,8 +1244,6 @@ typedef struct {
 } PrivateAttrTypeObject;
 
 static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id);
-static void ensure_tp(PyTypeObject* type_instance);
-static void ensure_subclass_tp(PyTypeObject* type_instance);
 static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value);
 static void PrivateAttr_tp_finalize(PyObject* self);
 
@@ -1224,7 +1256,7 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
     std::string name_str = PyUnicode_AsUTF8(name);
     auto code = get_now_code();
     if (type_private_attr(type_id, name_str)) {
-        if (!code || (!is_class_code(type_id, code) && !is_subclass_code(type_id, code))){
+        if (!code || !attr_classify(type_id, name_str, code)){
             Py_XDECREF(code);
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             return NULL;
@@ -1256,7 +1288,7 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
     std::string name_str(c_name);
     auto code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!code || (!is_class_code(typ_id, code) && !is_subclass_code(typ_id, code))){
+        if (!code || !attr_classify(typ_id, name_str, code)){
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(code);
             return -1;
@@ -1765,10 +1797,25 @@ need_analyse_type(PyObject* type)
         return true;
     }
     std::shared_lock lock(::AllData::all_register_new_metaclass_mutex);
-    for (auto i: ::AllData::all_register_new_metaclass) {
-        if (i && PyObject_IsInstance(type, (PyObject*)i)) {
+    for (auto& [id, metaclassref]: ::AllData::all_register_type_weak_ref){
+        if (!PyWeakref_CheckRef(metaclassref)) {
+            continue;
+        }
+#if PY_VERSION_HEX < 0x030D0000
+        PyObject* metaclass = PyWeakref_GET_OBJECT(metaclassref);
+        if (metaclass == (PyObject*)Py_TYPE(type)) {
             return true;
         }
+#else
+        PyObject* metaclass;
+        if (PyWeakref_GetRef(metaclassref, &metaclass) == 1) {
+            if (PyObject_IsInstance(type, metaclass)) {
+                Py_DECREF(metaclass);
+                return true;
+            }
+            Py_DECREF(metaclass);
+        }
+#endif
     }
     return false;
 }
@@ -2250,7 +2297,7 @@ ensure_subclass_tp(PyTypeObject* type_instance)
         ensure_tp((PyTypeObject*)subclass);
 #else
         PyObject* subclass;
-        if (PyWeakref_GetRef(value, (PyObject**)&subclass) != 0) {
+        if (PyWeakref_GetRef(value, (PyObject**)&subclass) == 0) {
             continue;
         }
         if (!subclass || !PyType_Check(subclass)) {
@@ -2414,7 +2461,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
     std::string name_str = PyUnicode_AsUTF8(name);
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!now_code || (!is_class_code(typ_id, now_code) && !is_subclass_code(typ_id, now_code))) {
+        if (!now_code || !attr_classify(typ_id, name_str, now_code)) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(now_code);
             return NULL;
@@ -2585,7 +2632,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
     }
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!now_code || (!is_class_code(typ_id, now_code) && !is_subclass_code(typ_id, now_code))) {
+        if (!now_code || !attr_classify(typ_id, name_str, now_code)) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(now_code);
             return -1;
@@ -2920,6 +2967,34 @@ register_finalize(PyObject* cls)
     PrivateAttrType_finalize(cls);
 }
 
+
+static PyObject*
+metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/)
+{
+    void* pointer = PyCapsule_GetPointer(self, "metaclass_id");
+    if (!pointer) {
+        Py_RETURN_NONE;
+    }
+    uintptr_t id = (uintptr_t)pointer;
+
+    std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
+
+    auto it = ::AllData::all_register_type_weak_ref.find(id);
+    if (it != ::AllData::all_register_type_weak_ref.end()) {
+        Py_DECREF(it->second);
+        ::AllData::all_register_type_weak_ref.erase(it);
+    }
+
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef weakref_callback_def = {
+    "metaclass_weakref_callback",
+    (PyCFunction)metaclass_weakref_callback,
+    METH_O,
+    NULL
+};
+
 static PyObject*
 register_metaclass(PyObject* /*self*/, PyObject* metaclass)
 {
@@ -2931,12 +3006,30 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass)
         PyErr_SetString(PyExc_TypeError, "metaclass must be a metatype");
         return NULL;
     }
-    Py_INCREF(metaclass);
     uintptr_t id = (uintptr_t)metaclass;
+
     std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
-    if (::AllData::all_register_new_metaclass_id.find(id) != ::AllData::all_register_new_metaclass_id.end()) Py_RETURN_NONE;
-    ::AllData::all_register_new_metaclass_id.insert(id);
-    ::AllData::all_register_new_metaclass.push_back((PyTypeObject*)metaclass);
+    if (::AllData::all_register_type_weak_ref.find(id) != ::AllData::all_register_type_weak_ref.end()) {
+        Py_RETURN_NONE;
+    }
+
+    PyObject* capsule = PyCapsule_New((void*)metaclass, "metaclass_id", NULL);
+    if (!capsule) {
+        return NULL;
+    }
+
+    PyObject* callback = PyCFunction_New(&weakref_callback_def, capsule);
+    if (!callback) {
+        Py_DECREF(capsule);
+        return NULL;
+    }
+    PyObject* ref = PyWeakref_NewRef(metaclass, callback);
+    if (!ref) {
+        Py_DECREF(callback);
+        Py_DECREF(capsule);
+        return NULL;
+    }
+    ::AllData::all_register_type_weak_ref[id] = ref;
     ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
     ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
     ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
@@ -2962,7 +3055,7 @@ static PyObject*
 ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass)
 {
     uintptr_t id = (uintptr_t)metaclass;
-    if (::AllData::all_register_new_metaclass_id.find(id) != ::AllData::all_register_new_metaclass_id.end()) {
+    if (::AllData::all_register_type_weak_ref.find(id) != ::AllData::all_register_type_weak_ref.end()) {
         ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
         ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
         ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
@@ -3002,7 +3095,7 @@ PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/)
 }
 
 static PyObject*
-PrivateModule_dir(PyObject* self)
+PrivateModule_dir(PyObject* self, PyObject* /*args*/)
 {
     PyObject* parent_dir = PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self);
     if (!parent_dir) return NULL;
@@ -3085,18 +3178,18 @@ def ensure_metaclass(metaclass: type) -> None:
 
 static PyMethodDef PrivateModule_methods[] = {
     {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
-    {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS, prepare_and_postprocess_doc},
-    {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS, prepare_and_postprocess_doc},
-    {"register_metaclass", (PyCFunction)register_metaclass, METH_O, prepare_and_postprocess_doc},
-    {"ensure_type", (PyCFunction)ensure_type_tp, METH_O, ensure_type_doc},
-    {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O, ensure_metaclass_doc},
+    {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS | METH_STATIC, prepare_and_postprocess_doc},
+    {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS | METH_STATIC, prepare_and_postprocess_doc},
+    {"register_metaclass", (PyCFunction)register_metaclass, METH_O | METH_STATIC, prepare_and_postprocess_doc},
+    {"ensure_type", (PyCFunction)ensure_type_tp, METH_O | METH_STATIC, ensure_type_doc},
+    {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O | METH_STATIC, ensure_metaclass_doc},
     {NULL}  // Sentinel
 };
 
 static PyTypeObject PrivateModuleType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "private_attribute_module", //tp_name
-    PyModule_Type.tp_basicsize + 1, //tp_basicsize   size of module object + 1 byte for flag to avoid change attribute '__class__'
+    PyModule_Type.tp_basicsize + 8, //tp_basicsize   size of module object + 8 bytes for flag to avoid change attribute '__class__'
     0, //tp_itemsize
     0, //tp_dealloc
     0, //tp_print
