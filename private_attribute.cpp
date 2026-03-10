@@ -1803,7 +1803,7 @@ need_analyse_type(PyObject* type)
         }
 #if PY_VERSION_HEX < 0x030D0000
         PyObject* metaclass = PyWeakref_GET_OBJECT(metaclassref);
-        if (metaclass == (PyObject*)Py_TYPE(type)) {
+        if (PyObject_IsInstance(type, metaclass)) {
             return true;
         }
 #else
