@@ -138,8 +138,6 @@ namespace {
         static std::unordered_map<uintptr_t, destructor> all_type_finalize;
 
         static std::shared_mutex all_register_new_metaclass_mutex;
-        static std::vector<PyTypeObject*> all_register_new_metaclass;
-        static std::unordered_set<uintptr_t> all_register_new_metaclass_id;
         static std::unordered_map<uintptr_t, PyObject*> all_register_type_weak_ref;
     };
 };
@@ -1754,6 +1752,18 @@ struct PrivateAttrCreationData
         if (cleared) {
             return;
         }
+        if (name) {
+            Py_DECREF(name);
+            name = nullptr;
+        }
+        if (bases) {
+            Py_DECREF(bases);
+            bases = nullptr;
+        }
+        if (attrs) {
+            Py_DECREF(attrs);
+            attrs = nullptr;
+        }
         if (attrs_copy) {
             Py_DECREF(attrs_copy);
             attrs_copy = nullptr;
@@ -1987,6 +1997,9 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     if (!PyArg_ParseTuple(args, "OOO", &data.name, &data.bases, &data.attrs)) {
         return false;
     }
+    Py_INCREF(data.name);
+    Py_INCREF(data.bases);
+    Py_INCREF(data.attrs);
 
     if (!PyUnicode_Check(data.name)) {
         PyErr_SetString(PyExc_TypeError, "name must be a string");
@@ -2313,6 +2326,10 @@ static bool
 PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
 {
     if (!new_type) {
+        return false;
+    }
+    if (!PyType_Check(new_type)) {
+        PyErr_SetString(PyExc_TypeError, "created object is not a type");
         return false;
     }
 
