@@ -35,7 +35,7 @@ jobs:
           CIBW_ENABLE: cpython-freethreading
           CIBW_PRERELEASE_PYTHONS: "1"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse
