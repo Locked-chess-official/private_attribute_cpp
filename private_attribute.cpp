@@ -231,7 +231,7 @@ generate_private_attr_name(uintptr_t obj_id, const std::string& attr_name)
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ";
 
     std::uniform_int_distribution<long long> dist(0, printable_chars.size() - 1);
-    
+
     auto generate_random_ascii = [&](int length) {
         std::string result;
         for(int i = 0; i < length; i++) {
@@ -2440,7 +2440,13 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
             analyse_all_code(original_value, ::AllData::type_allowed_code_map[type_id], set);
         }
     }
-    
+
+    // Python >= 3.13, delete the attr "__static_attributes__"
+#if PY_VERSION_HEX >= 0x030D0000
+    PyDict_DelItemString(type_instance->tp_dict, "__static_attributes__");
+    PyErr_Clear();
+#endif
+
     return true;
 }
 
@@ -3206,7 +3212,7 @@ static PyMethodDef PrivateModule_methods[] = {
 static PyTypeObject PrivateModuleType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "private_attribute_module", //tp_name
-    PyModule_Type.tp_basicsize + 8, //tp_basicsize   size of module object + 8 bytes for flag to avoid change attribute '__class__'
+    PyModule_Type.tp_basicsize + 8, //tp_basicsize   size of module object + 8 bytes for basicsize to avoid changing attribute '__class__'
     0, //tp_itemsize
     0, //tp_dealloc
     0, //tp_print
@@ -3279,14 +3285,38 @@ PyInit_private_attribute(void)
         PyType_Ready(&PrivateTempType) < 0) {
         return NULL;
     }
-
+    PyObject* all = PyList_New(0);
+    if (!all) {
+        return NULL;
+    }
     PyObject* m = PyModule_Create(&def);
     if (!m) {
+        Py_DECREF(all);
         return NULL;
     }
 #ifdef Py_GIL_DISABLED
     PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
 #endif
+
+    PyModule_AddObject(m, "__all__", all);
+    /* all contains:
+     * PrivateWrapProxy
+     * PrivateAttrType
+     * PrivateAttrBase
+     * prepare
+     * postprocess
+     * register_metaclass
+     * ensure_type
+     * ensure_metaclass
+     */
+    PyList_Append(all, PyUnicode_FromString("PrivateWrapProxy"));
+    PyList_Append(all, PyUnicode_FromString("PrivateAttrType"));
+    PyList_Append(all, PyUnicode_FromString("PrivateAttrBase"));
+    PyList_Append(all, PyUnicode_FromString("prepare"));
+    PyList_Append(all, PyUnicode_FromString("postprocess"));
+    PyList_Append(all, PyUnicode_FromString("register_metaclass"));
+    PyList_Append(all, PyUnicode_FromString("ensure_type"));
+    PyList_Append(all, PyUnicode_FromString("ensure_metaclass"));
     Py_SET_TYPE(m, &PrivateModuleType);
     return m;
 }

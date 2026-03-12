@@ -19,14 +19,14 @@ from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic
 from types import FunctionType
 
 # define the dict that must have a key "__private_attrs__" and value must be the sequence of strings
-class PrivateAttrDict(TypedDict):
+class _PrivateAttrDict(TypedDict):
     __private_attrs__: Sequence[str]
 
-T = TypeVar('T')
+_T = TypeVar('T')
 
-class _PrivateWrap(Generic[T]):
+class _PrivateWrap(Generic[_T]):
     @property
-    def result(self) -> T:
+    def result(self) -> _T:
         "the final result of decorating"
         ...
 
@@ -38,7 +38,7 @@ class _PrivateWrap(Generic[T]):
     def __getattr__(self, name: str) -> Any:
         return getattr(self.result, name)
 
-TVar = TypeVar('TVar')
+_TVar = TypeVar('TVar')
 
 class PrivateWrapProxy:
     """
@@ -70,13 +70,13 @@ class PrivateWrapProxy:
         def my_method(self): ...
     ```
     """
-    def __init__(self, decorator: Callable[[TVar], T], orig: _PrivateWrap[Any]|None = None, /) -> None: ...
-    def __call__(self, func: TVar, /) -> _PrivateWrap[T]: ...
+    def __init__(self, decorator: Callable[[_TVar], _T], orig: _PrivateWrap[Any]|None = None, /) -> None: ...
+    def __call__(self, func: _TVar, /) -> _PrivateWrap[_T]: ...
 
 class PrivateAttrType(type):
     "metaclass for private attributes"
     def __new__(cls, name: str, bases: tuple,
-                attrs: PrivateAttrDict, /,
+                attrs: _PrivateAttrDict, /,
                 private_func: Callable[[int, str], str]|None = None) -> PrivateAttrType: ...
 
 class PrivateAttrBase(metaclass=PrivateAttrType):
@@ -95,7 +95,7 @@ class _PrivateTemp:
     @property
     def kwds(self) -> dict[str, Any]: ...
 
-def prepare(name: str, bases: tuple, attrs: PrivateAttrDict, /, **kwds) -> _PrivateTemp:
+def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _PrivateTemp:
     """
     function for custom metaclass to create private attributes class.
 
