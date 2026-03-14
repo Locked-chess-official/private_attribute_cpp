@@ -21,7 +21,7 @@
 #include <memory>
 #include <algorithm>
 
-// python under 3.13 doesn't has PyDict_ContainsString, so we implement it ourselves
+// python under 3.13 doesn't have PyDict_ContainsString, so we implement it ourselves
 #if PY_VERSION_HEX < 0x030D0000
 static int
 PyDict_ContainsString(PyObject *op, const char *key)

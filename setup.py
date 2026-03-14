@@ -1,6 +1,5 @@
 from setuptools import setup, Extension
 import sys
-import sysconfig
 
 if sys.platform == "win32":
     extra_compile_args = ['/std:c++17']
