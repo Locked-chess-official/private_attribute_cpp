@@ -10,7 +10,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      workflows: write
 
     runs-on: ubuntu-latest
 
@@ -29,7 +28,7 @@ jobs:
       - name: Run update scripts
         run: |
           python ".update-bot/update_picosha2.py"
-          python ".update-bot/update_actions.py"
+        # python ".update-bot/update_actions.py"
 
       - name: Commit and push changes
         run: |
