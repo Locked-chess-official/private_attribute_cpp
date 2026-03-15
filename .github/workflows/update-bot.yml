@@ -1,0 +1,42 @@
+name: Update Bot
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # 每月 1 日 (UTC)
+  workflow_dispatch:      # 可手动触发
+jobs:
+  update:
+    permissions:
+      contents: write
+      pull-requests: write
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyyaml requests packaging
+
+      - name: Run update scripts
+        run: |
+          python ".update-bot/update_picosha2.py"
+          python ".update-bot/update_actions.py"
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "update-bot"
+          git config user.email "bot@example.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No updates"
+            exit 0
+          fi
+          git commit -m "Automated update"
+          git push
