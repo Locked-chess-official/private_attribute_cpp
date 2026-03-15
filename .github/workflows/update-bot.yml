@@ -2,13 +2,15 @@ name: Update Bot
 
 on:
   schedule:
-    - cron: "0 0 1 * *"   # 每月 1 日 (UTC)
-  workflow_dispatch:      # 可手动触发
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
 jobs:
   update:
     permissions:
       contents: write
       pull-requests: write
+      workflows: write
 
     runs-on: ubuntu-latest
 
