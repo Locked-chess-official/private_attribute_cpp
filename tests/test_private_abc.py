@@ -16,6 +16,7 @@ private_attribute.register_metaclass(PrivateAbcMeta)
 class MyClass(ABC, metaclass=PrivateAbcMeta):
     __private_attrs__ = ["_secret1"]
     _secret1 = 10
+
     @classmethod
     def get_secret1(cls):
         return cls._secret1
@@ -26,6 +27,7 @@ class MyClass(ABC, metaclass=PrivateAbcMeta):
 
 class ConcreteClass(MyClass):
     __private_attrs__ = ["_secret2"]
+
     def __init__(self, secret1, secret2):
         self._secret1 = secret1
         self._secret2 = secret2

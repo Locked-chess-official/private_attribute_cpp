@@ -4,6 +4,7 @@ import unittest
 class MyClass(private_attribute.PrivateAttrBase):
     __private_attrs__ = ["_secret"]
     _secret = 1
+
     @classmethod
     def get_secret(cls):
         return cls._secret

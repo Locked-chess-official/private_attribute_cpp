@@ -4,6 +4,7 @@ import unittest
 class BaseClass(private_attribute.PrivateAttrBase):
     __private_attrs__ = ["_a", "_b"]
     __slots__ = ["c", "d"]
+
     def __init__(self, a, b, c, d):
         self._a = a
         self._b = b
