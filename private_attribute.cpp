@@ -57,7 +57,7 @@ private:
     std::string attr_onehash;
     std::string another_string_hash;
 public:
-    AllPyobjectAttrCacheKey(uintptr_t obj_id, std::string attr_name) : obj_id(obj_id) {
+    AllPyobjectAttrCacheKey(uintptr_t obj_id, const std::string& attr_name) : obj_id(obj_id) {
         std::string one_name = "_" + std::to_string(obj_id) + "_" + attr_name;
         std::string another_name = "_" + module_running_time_string + attr_name;
         picosha2::hash256_hex_string(one_name, attr_onehash);
@@ -82,7 +82,7 @@ private:
     std::string first;
     std::string second;
 public:
-    TwoStringTuple(std::string first, std::string second) : first(first), second(second) {}
+    TwoStringTuple(const std::string& first, const std::string& second) : first(first), second(second) {}
     bool operator==(const TwoStringTuple& other) const {
         return this->first == other.first && this->second == other.second;
     }
@@ -162,11 +162,11 @@ struct FinalObject
     }
 };
 
-static TwoStringTuple get_string_hash_tuple2(std::string name);
+static TwoStringTuple get_string_hash_tuple2(const std::string& name);
 static PyCodeObject* get_now_code();
-static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, std::string name);
-static bool type_private_attr(uintptr_t type, std::string name);
-static FinalObject type_get_final_attr(uintptr_t type_id, std::string name);
+static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, const std::string& name);
+static bool type_private_attr(uintptr_t type, const std::string& name);
+static FinalObject type_get_final_attr(uintptr_t type_id, const std::string& name);
 
 static bool
 is_class_code(uintptr_t typ_id, PyCodeObject* code)
@@ -182,7 +182,7 @@ is_class_code(uintptr_t typ_id, PyCodeObject* code)
 }
 
 static bool
-is_type_private(uintptr_t typ_id, std::string name)
+is_type_private(uintptr_t typ_id, const std::string& name)
 {
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()){
         auto& attr_set = ::AllData::all_type_attr_set[typ_id];
@@ -195,7 +195,7 @@ is_type_private(uintptr_t typ_id, std::string name)
 }
 
 static bool
-attr_classify(uintptr_t typ_id, std::string name, PyCodeObject* code)
+attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code)
 {
     if (is_class_code(typ_id, code)) {
         return true;
@@ -248,7 +248,7 @@ generate_private_attr_name(uintptr_t obj_id, const std::string& attr_name)
 }
 
 static std::string
-default_random_string(uintptr_t obj_id, std::string attr_name)
+default_random_string(uintptr_t obj_id, const std::string& attr_name)
 {
     AllPyobjectAttrCacheKey key(obj_id, attr_name);
     std::string result;
@@ -262,7 +262,7 @@ default_random_string(uintptr_t obj_id, std::string attr_name)
             lock.unlock();
             result = generate_private_attr_name(obj_id, attr_name);
             std::string original_result = result;
-            int i = 1;
+            unsigned long long i = 1;
             std::unique_lock<std::shared_mutex> lock2(::AllData::cache_mutex);
             auto it = ::AllData::cache.find(key); // twice check
             if (it != ::AllData::cache.end()) {
@@ -333,7 +333,7 @@ private:
 };
 
 static std::string
-custom_random_string(uintptr_t obj_id, std::string attr_name, PyObject* func)
+custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* func)
 {
     AllPyobjectAttrCacheKey key(obj_id, attr_name);
     std::string result;
@@ -363,7 +363,7 @@ custom_random_string(uintptr_t obj_id, std::string attr_name, PyObject* func)
                 result = PyUnicode_AsUTF8(python_result);
                 Py_DECREF(python_result);
                 std::string original_result = result;
-                int i = 1;
+                unsigned long long i = 1;
                 std::unique_lock<std::shared_mutex> lock2(::AllData::cache_mutex);
                 auto it = ::AllData::cache.find(key); // twice check
                 if (it != ::AllData::cache.end()) {
@@ -426,7 +426,7 @@ static void ensure_tp(PyTypeObject* type_instance);
 static void ensure_subclass_tp(PyTypeObject* type_instance);
 
 static PyObject*
-id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
+id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ)
 {
     uintptr_t obj_id, typ_id, final_id;
     obj_id = (uintptr_t) obj;
@@ -533,7 +533,7 @@ id_getattr(std::string attr_name, PyObject* obj, PyObject* typ)
 }
 
 static PyObject*
-type_getattr(PyObject* typ, std::string attr_name)
+type_getattr(PyObject* typ, const std::string& attr_name)
 {
     uintptr_t typ_id = (uintptr_t)typ;
     FinalObject final_object = type_get_final_attr(typ_id, attr_name);
@@ -567,7 +567,7 @@ type_getattr(PyObject* typ, std::string attr_name)
 }
 
 static int
-id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
+id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value)
 {
     uintptr_t obj_id, typ_id, final_id;
     obj_id = (uintptr_t) obj;
@@ -636,10 +636,10 @@ id_setattr(std::string attr_name, PyObject* obj, PyObject* typ, PyObject* value)
     return 0;
 }
 
-static int type_delattr(PyObject* typ, std::string attr_name);
+static int type_delattr(PyObject* typ, const std::string& attr_name);
 
 static int
-type_setattr(PyObject* typ, std::string attr_name, PyObject* value)
+type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value)
 {
     if (!value) {
         return type_delattr(typ, attr_name);
@@ -711,7 +711,7 @@ type_setattr(PyObject* typ, std::string attr_name, PyObject* value)
 }
 
 static int
-id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
+id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ)
 {
     uintptr_t obj_id, typ_id, final_id;
     obj_id = (uintptr_t) obj;
@@ -789,7 +789,7 @@ id_delattr(std::string attr_name, PyObject* obj, PyObject* typ)
 }
 
 static int
-type_delattr(PyObject* typ, std::string attr_name)
+type_delattr(PyObject* typ, const std::string& attr_name)
 {
     uintptr_t typ_id = (uintptr_t) typ;
     uintptr_t final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
@@ -1438,7 +1438,7 @@ static PyTypeObject PrivateAttrType = {
 };
 
 static PyObject*
-get_string_hash_tuple(std::string name)
+get_string_hash_tuple(const std::string& name)
 {
     std::string name1;
     std::string name2;
@@ -1452,7 +1452,7 @@ get_string_hash_tuple(std::string name)
 }
 
 static TwoStringTuple
-get_string_hash_tuple2(std::string name)
+get_string_hash_tuple2(const std::string& name)
 {
     std::string name1;
     std::string name2;
@@ -1466,7 +1466,7 @@ get_string_hash_tuple2(std::string name)
 }
 
 static FinalObject
-type_get_final_attr(uintptr_t type_id, std::string name)
+type_get_final_attr(uintptr_t type_id, const std::string& name)
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
@@ -1580,7 +1580,7 @@ type_get_final_attr(uintptr_t type_id, std::string name)
 }
 
 static uintptr_t
-type_set_attr_long_long_guidance(uintptr_t type_id, std::string name)
+type_set_attr_long_long_guidance(uintptr_t type_id, const std::string& name)
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
@@ -1602,7 +1602,7 @@ type_set_attr_long_long_guidance(uintptr_t type_id, std::string name)
 }
 
 static bool
-type_private_attr(uintptr_t type_id, std::string name)
+type_private_attr(uintptr_t type_id, const std::string& name)
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
@@ -1722,7 +1722,7 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& ma
 }
 
 static std::string
-real_class_name(std::string name, std::string class_name)
+real_class_name(const std::string& name, const std::string& class_name)
 {
     // if the name starts with "__" but does not end with "__", change to _ClassName__name
     if (name.length() >= 2 && name.substr(0, 2) == "__" && name.substr(name.length() - 2) != "__") {
