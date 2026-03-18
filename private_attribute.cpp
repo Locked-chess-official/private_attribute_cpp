@@ -2127,6 +2127,11 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return (uintptr_t)0;
     };
 
+    // forbidden to have "__static_attributes__" in attrs, because it exposes the private attributes name.
+    if (PyDict_ContainsString(data.attrs_copy, "__static_attributes__")) {
+        PyDict_DelItemString(data.attrs_copy, "__static_attributes__");
+    }
+
     {
         Py_ssize_t pos = 0;
         PyObject* key, *value;
@@ -2335,6 +2340,10 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
 
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
+    if (PyDict_ContainsString(type_instance->tp_dict, "__static_attributes__")) {
+        PyErr_SetString(PyExc_SystemError, "'__static_attributes__' will expose private attribute names and cannot be used in private attribute types");
+        return false;
+    }
 
     ensure_tp(type_instance);
     if (PyDict_ContainsString(type_instance->tp_dict, "__getattribute__") || PyDict_ContainsString(type_instance->tp_dict, "__getattr__")) {
@@ -2440,12 +2449,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
             analyse_all_code(original_value, ::AllData::type_allowed_code_map[type_id], set);
         }
     }
-
-    // Python >= 3.13, delete the attr "__static_attributes__"
-#if PY_VERSION_HEX >= 0x030D0000
-    PyDict_DelItemString(type_instance->tp_dict, "__static_attributes__");
-    PyErr_Clear();
-#endif
 
     return true;
 }
@@ -2808,6 +2811,7 @@ create_private_attr_base_simple(void)
     PyDict_SetItemString(dict, "__private_attrs__", private_attrs);
     PyDict_SetItemString(dict, "__slots__", private_attrs);
     PyDict_SetItemString(dict, "__doc__", PyUnicode_FromString(PrivateAttrBase_doc));
+    PyDict_SetItemString(dict, "__module__", PyUnicode_FromString("private_attribute"));
     PyObject *args = PyTuple_Pack(3, name, bases, dict);
     PyObject* base_type;
     if (args) {
@@ -2825,8 +2829,6 @@ create_private_attr_base_simple(void)
     if (!base_type) {
         return NULL;
     }
-    // set "__module__"
-    PyType_Type.tp_setattro(base_type, PyUnicode_FromString("__module__"), PyUnicode_FromString("private_attribute"));
     ((PyTypeObject*)base_type)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     return base_type;
 }
