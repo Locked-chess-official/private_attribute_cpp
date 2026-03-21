@@ -24,7 +24,7 @@
 // python under 3.13 doesn't have PyDict_ContainsString, so we implement it ourselves
 #if PY_VERSION_HEX < 0x030D0000
 static int
-PyDict_ContainsString(PyObject *op, const char *key)
+PyDict_ContainsString(PyObject *op, const char *key) noexcept
 {
     PyObject *key_obj = PyUnicode_FromString(key);
     if (key_obj == NULL) {
@@ -39,7 +39,7 @@ PyDict_ContainsString(PyObject *op, const char *key)
 static const auto module_running_time = std::chrono::system_clock::now();
 
 static std::string
-time_to_string()
+time_to_string() noexcept
 {
     std::time_t original_time = std::chrono::system_clock::to_time_t(module_running_time);
     std::tm original_tm = *std::localtime(&original_time);
@@ -50,6 +50,8 @@ time_to_string()
 
 static const auto module_running_time_string = time_to_string();
 
+static const std::string compile_time = __DATE__ " " __TIME__;
+
 class AllPyobjectAttrCacheKey
 {
 private:
@@ -57,21 +59,21 @@ private:
     std::string attr_onehash;
     std::string another_string_hash;
 public:
-    AllPyobjectAttrCacheKey(uintptr_t obj_id, const std::string& attr_name) : obj_id(obj_id) {
-        std::string one_name = "_" + std::to_string(obj_id) + "_" + attr_name;
+    AllPyobjectAttrCacheKey(uintptr_t obj_id, const std::string& attr_name) noexcept : obj_id(obj_id) {
+        std::string one_name = "_" + std::to_string(obj_id) + "_" + compile_time + attr_name;
         std::string another_name = "_" + module_running_time_string + attr_name;
         picosha2::hash256_hex_string(one_name, attr_onehash);
         picosha2::hash256_hex_string(another_name, another_string_hash);
     }
 
-    std::size_t gethash() const {
+    std::size_t gethash() const noexcept {
         std::size_t h1 = std::hash<uintptr_t>{}(obj_id);
         std::size_t h2 = std::hash<std::string>{}(attr_onehash);
         std::size_t h3 = std::hash<std::string>{}(another_string_hash);
         return h1 ^ (h2 << 1) ^ (h3 << 2);
     }
 
-    bool operator==(const AllPyobjectAttrCacheKey& other) const {
+    bool operator==(const AllPyobjectAttrCacheKey& other) const noexcept {
         return this->obj_id == other.obj_id && this->attr_onehash == other.attr_onehash && this->another_string_hash == other.another_string_hash;
     }
 };
@@ -82,12 +84,12 @@ private:
     std::string first;
     std::string second;
 public:
-    TwoStringTuple(const std::string& first, const std::string& second) : first(first), second(second) {}
-    bool operator==(const TwoStringTuple& other) const {
+    TwoStringTuple(const std::string& first, const std::string& second) noexcept : first(first), second(second) {}
+    bool operator==(const TwoStringTuple& other) const noexcept {
         return this->first == other.first && this->second == other.second;
     }
 
-    std::size_t gethash() const {
+    std::size_t gethash() const noexcept {
         std::size_t h1 = std::hash<std::string>{}(first);
         std::size_t h2 = std::hash<std::string>{}(second);
         return h1 ^ (h2 << 1);
@@ -97,14 +99,14 @@ public:
 namespace std {
     template<>
     struct hash<AllPyobjectAttrCacheKey> {
-        std::size_t operator()(const AllPyobjectAttrCacheKey& key) const {
+        std::size_t operator()(const AllPyobjectAttrCacheKey& key) const noexcept {
             return key.gethash();
         }
     };
 
     template<>
     struct hash<TwoStringTuple> {
-        std::size_t operator()(const TwoStringTuple& key) const {
+        std::size_t operator()(const TwoStringTuple& key) const noexcept {
             return key.gethash();
         }
     };
@@ -152,24 +154,24 @@ struct FinalObject
 {
     PyObject* result = NULL;
     int status = 0;
-    FinalObject(PyObject* result)
+    FinalObject(PyObject* result) noexcept
         : result(result) {
             Py_XINCREF(result);
         }
-    FinalObject(int status): status(status) {}
-    ~FinalObject() {
+    FinalObject(int status) noexcept: status(status) {}
+    ~FinalObject() noexcept {
         Py_XDECREF(result);
     }
 };
 
-static TwoStringTuple get_string_hash_tuple2(const std::string& name);
-static PyCodeObject* get_now_code();
-static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, const std::string& name);
-static bool type_private_attr(uintptr_t type, const std::string& name);
-static FinalObject type_get_final_attr(uintptr_t type_id, const std::string& name);
+static TwoStringTuple get_string_hash_tuple2(const std::string& name) noexcept;
+static PyCodeObject* get_now_code() noexcept;
+static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, const std::string& name) noexcept;
+static bool type_private_attr(uintptr_t type, const std::string& name) noexcept;
+static FinalObject type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept;
 
 static bool
-is_class_code(uintptr_t typ_id, PyCodeObject* code)
+is_class_code(uintptr_t typ_id, PyCodeObject* code) noexcept
 {
     if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()){
         auto& code_map = ::AllData::type_allowed_code_map[typ_id];
@@ -182,7 +184,7 @@ is_class_code(uintptr_t typ_id, PyCodeObject* code)
 }
 
 static bool
-is_type_private(uintptr_t typ_id, const std::string& name)
+is_type_private(uintptr_t typ_id, const std::string& name) noexcept
 {
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()){
         auto& attr_set = ::AllData::all_type_attr_set[typ_id];
@@ -195,7 +197,7 @@ is_type_private(uintptr_t typ_id, const std::string& name)
 }
 
 static bool
-attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code)
+attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept
 {
     if (is_class_code(typ_id, code)) {
         return true;
@@ -218,9 +220,9 @@ attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code)
 }
 
 static std::string
-generate_private_attr_name(uintptr_t obj_id, const std::string& attr_name)
+generate_private_attr_name(uintptr_t obj_id, const std::string& attr_name) noexcept
 {
-    std::string combined = std::to_string(obj_id) + "_" + attr_name;
+    std::string combined = std::to_string(obj_id) + "_" + compile_time + "_" + attr_name;
     std::string hash_str = picosha2::hash256_hex_string(combined);
 
     unsigned long long seed = std::stoul(hash_str.substr(0, 8), nullptr, 16);
@@ -248,7 +250,7 @@ generate_private_attr_name(uintptr_t obj_id, const std::string& attr_name)
 }
 
 static std::string
-default_random_string(uintptr_t obj_id, const std::string& attr_name)
+default_random_string(uintptr_t obj_id, const std::string& attr_name) noexcept
 {
     AllPyobjectAttrCacheKey key(obj_id, attr_name);
     std::string result;
@@ -290,7 +292,7 @@ default_random_string(uintptr_t obj_id, const std::string& attr_name)
 class RestorePythonException : public std::exception
 {
 public:
-    RestorePythonException(PyObject* type, PyObject* value, PyObject* traceback)
+    RestorePythonException(PyObject* type, PyObject* value, PyObject* traceback) noexcept
         : type(type), value(value), traceback(traceback) {
     }
 
@@ -321,7 +323,7 @@ public:
         other.traceback = nullptr;
     }
 
-    void restore() {
+    void restore() noexcept {
         PyErr_Restore(type, value, traceback);
         type = value = traceback = nullptr;
     }
@@ -394,7 +396,7 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
 }
 
 static void
-clear_obj(uintptr_t obj_id)
+clear_obj(uintptr_t obj_id) noexcept
 {
     std::unique_lock<std::shared_mutex> lock(::AllData::cache_mutex);
     auto it = ::AllData::obj_attr_keys.find(obj_id);
@@ -409,7 +411,7 @@ clear_obj(uintptr_t obj_id)
 }
 
 static const char*
-get_name_from_tp_name(PyTypeObject* typ)
+get_name_from_tp_name(PyTypeObject* typ) noexcept
 {
     const char* name = typ->tp_name;
     if (name == NULL) {
@@ -422,11 +424,11 @@ get_name_from_tp_name(PyTypeObject* typ)
     return final_name;
 }
 
-static void ensure_tp(PyTypeObject* type_instance);
-static void ensure_subclass_tp(PyTypeObject* type_instance);
+static void ensure_tp(PyTypeObject* type_instance) noexcept;
+static void ensure_subclass_tp(PyTypeObject* type_instance) noexcept;
 
 static PyObject*
-id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ)
+id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 {
     uintptr_t obj_id, typ_id, final_id;
     obj_id = (uintptr_t) obj;
@@ -533,7 +535,7 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ)
 }
 
 static PyObject*
-type_getattr(PyObject* typ, const std::string& attr_name)
+type_getattr(PyObject* typ, const std::string& attr_name) noexcept
 {
     uintptr_t typ_id = (uintptr_t)typ;
     FinalObject final_object = type_get_final_attr(typ_id, attr_name);
@@ -567,7 +569,7 @@ type_getattr(PyObject* typ, const std::string& attr_name)
 }
 
 static int
-id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value)
+id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value) noexcept
 {
     uintptr_t obj_id, typ_id, final_id;
     obj_id = (uintptr_t) obj;
@@ -636,10 +638,10 @@ id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject*
     return 0;
 }
 
-static int type_delattr(PyObject* typ, const std::string& attr_name);
+static int type_delattr(PyObject* typ, const std::string& attr_name) noexcept;
 
 static int
-type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value)
+type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexcept
 {
     if (!value) {
         return type_delattr(typ, attr_name);
@@ -711,7 +713,7 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value)
 }
 
 static int
-id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ)
+id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 {
     uintptr_t obj_id, typ_id, final_id;
     obj_id = (uintptr_t) obj;
@@ -789,7 +791,7 @@ id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ)
 }
 
 static int
-type_delattr(PyObject* typ, const std::string& attr_name)
+type_delattr(PyObject* typ, const std::string& attr_name) noexcept
 {
     uintptr_t typ_id = (uintptr_t) typ;
     uintptr_t final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
@@ -877,12 +879,12 @@ typedef struct {
     PyObject *func_list;
 } PrivateWrapObject;
 
-static PrivateWrapObject* PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list);
-static void PrivateWrap_dealloc(PrivateWrapObject *self);
-static PyObject* PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw);
+static PrivateWrapObject* PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list) noexcept;
+static void PrivateWrap_dealloc(PrivateWrapObject *self) noexcept;
+static PyObject* PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw) noexcept;
 
 static PyObject *
-PrivateWrap_result(PyObject *obj, void* /*closure*/)
+PrivateWrap_result(PyObject *obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         Py_RETURN_NONE;
@@ -894,7 +896,7 @@ PrivateWrap_result(PyObject *obj, void* /*closure*/)
 }
 
 static PyObject *
-PrivateWrap_funcs(PyObject *obj, void* /*closure*/)
+PrivateWrap_funcs(PyObject *obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         Py_RETURN_NONE;
@@ -904,7 +906,7 @@ PrivateWrap_funcs(PyObject *obj, void* /*closure*/)
 }
 
 static PyObject*
-PrivateWrap_doc(PyObject *obj, void* /*closure*/)
+PrivateWrap_doc(PyObject *obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         return PyUnicode_FromString("PrivateWrap");
@@ -918,7 +920,7 @@ PrivateWrap_doc(PyObject *obj, void* /*closure*/)
 }
 
 static PyObject*
-PrivateWrap_module(PyObject *obj, void* /*closure*/)
+PrivateWrap_module(PyObject *obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         return PyUnicode_FromString("private_attribute");
@@ -932,7 +934,7 @@ PrivateWrap_module(PyObject *obj, void* /*closure*/)
 }
 
 static PyObject*
-PrivateWarp_name(PyObject* obj, void* /*closure*/)
+PrivateWarp_name(PyObject* obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         return PyUnicode_FromString("_PrivateWrap");
@@ -961,7 +963,7 @@ PrivateWrap_qualname(PyObject* obj, void* /*closure*/)
 
 // __annotate__
 static PyObject*
-PrivateWrap_annotate(PyObject* obj, void* /*closure*/)
+PrivateWrap_annotate(PyObject* obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         Py_RETURN_NONE;
@@ -976,7 +978,7 @@ PrivateWrap_annotate(PyObject* obj, void* /*closure*/)
 
 // __type_params__
 static PyObject*
-PrivateWrap_type_params(PyObject* obj, void* /*closure*/)
+PrivateWrap_type_params(PyObject* obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         Py_RETURN_NONE;
@@ -1006,7 +1008,7 @@ static PyGetSetDef PrivateWrap_getset[] = {
 };
 
 static PyObject *
-PrivateWrap_getattro(PyObject *obj, PyObject *name)
+PrivateWrap_getattro(PyObject *obj, PyObject *name) noexcept
 {
     PyObject *res = PyObject_GenericGetAttr(obj, name);
     if (res != NULL) {
@@ -1053,7 +1055,7 @@ static PyTypeObject PrivateWrapType = {
 };
 
 static PrivateWrapObject*
-PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list)
+PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list) noexcept
 {
     PrivateWrapObject *self =
         PyObject_New(PrivateWrapObject, &PrivateWrapType);
@@ -1072,7 +1074,7 @@ PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list)
 }
 
 static void
-PrivateWrap_dealloc(PrivateWrapObject *self)
+PrivateWrap_dealloc(PrivateWrapObject *self) noexcept
 {
     Py_XDECREF(self->result);
     Py_XDECREF(self->func_list);
@@ -1080,7 +1082,7 @@ PrivateWrap_dealloc(PrivateWrapObject *self)
 }
 
 static PyObject*
-PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw)
+PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw) noexcept
 {
     return PyObject_Call(self->result, args, kw);
 }
@@ -1095,7 +1097,7 @@ typedef struct {
 } PrivateWrapProxyObject;
 
 static PyObject*
-PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*kwgs */)
+PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*kwgs */) noexcept
 {
     PyObject *func;
     if (!PyArg_ParseTuple(args, "O", &func)) return NULL;
@@ -1121,8 +1123,8 @@ PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*
     );
 }
 
-static void PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self);
-static PyObject* PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject *kwds);
+static void PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self) noexcept;
+static PyObject* PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject *kwds) noexcept;
 static const char* PrivateWrapProxy_doc = R"(
 PrivateWrapProxy is a proxy for private attributes.
 Usage:
@@ -1195,7 +1197,7 @@ static PyTypeObject PrivateWrapProxyType = {
 };
 
 static PyObject*
-PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject* /*kwds*/)
+PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject* /*kwds*/) noexcept
 {
     PrivateWrapProxyObject *self;
     PyObject *decorator;
@@ -1227,7 +1229,7 @@ PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject* /*kwds*/)
 }
 
 static void
-PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self)
+PrivateWrapProxy_dealloc(PrivateWrapProxyObject *self) noexcept
 {
     Py_XDECREF(self->decorator);
     Py_XDECREF(self->func_list);
@@ -1241,12 +1243,12 @@ typedef struct {
     PyHeapTypeObject base; // PyObject_HEAD_INIT(NULL)
 } PrivateAttrTypeObject;
 
-static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id);
-static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value);
-static void PrivateAttr_tp_finalize(PyObject* self);
+static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
+static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept;
+static void PrivateAttr_tp_finalize(PyObject* self) noexcept;
 
 static PyObject*
-PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
+PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
 {
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t type_id = (uintptr_t)typ;
@@ -1275,7 +1277,7 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name)
 }
 
 static int
-PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
+PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
 {
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
@@ -1308,7 +1310,7 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
 }
 
 static void
-PrivateAttr_tp_finalize(PyObject* self)
+PrivateAttr_tp_finalize(PyObject* self) noexcept
 {
     uintptr_t id_self = (uintptr_t)self;
     PyTypeObject* typ = Py_TYPE(self);
@@ -1370,7 +1372,7 @@ PrivateAttr_tp_finalize(PyObject* self)
 }
 
 static void
-PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id)
+PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept
 {
     if (::AllData::all_object_mutex.find(type_id) == ::AllData::all_object_mutex.end()) {
         ::AllData::all_object_mutex[type_id] = {};
@@ -1391,10 +1393,10 @@ PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id)
     }
 }
 
-static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds);
-static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name);
-static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value);
-static void PrivateAttrType_del(PyObject* cls);
+static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept;
+static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept;
+static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept;
+static void PrivateAttrType_del(PyObject* cls) noexcept;
 
 static PyTypeObject PrivateAttrType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -1438,13 +1440,13 @@ static PyTypeObject PrivateAttrType = {
 };
 
 static PyObject*
-get_string_hash_tuple(const std::string& name)
+get_string_hash_tuple(const std::string& name) noexcept
 {
     std::string name1;
     std::string name2;
     name1 = module_running_time_string + "_" + name;
     uintptr_t type_id = reinterpret_cast<uintptr_t>(&PrivateAttrType);
-    name2 = std::to_string(type_id) + "_" + name1;
+    name2 = std::to_string(type_id) + "_" + compile_time + "_" + name1;
     std::string name1hash, name2hash;
     picosha2::hash256_hex_string(name1, name1hash);
     picosha2::hash256_hex_string(name2, name2hash);
@@ -1452,13 +1454,13 @@ get_string_hash_tuple(const std::string& name)
 }
 
 static TwoStringTuple
-get_string_hash_tuple2(const std::string& name)
+get_string_hash_tuple2(const std::string& name) noexcept
 {
     std::string name1;
     std::string name2;
     name1 = module_running_time_string + "_" + name;
     uintptr_t type_id = reinterpret_cast<uintptr_t>(&PrivateAttrType);
-    name2 = std::to_string(type_id) + "_" + name1;
+    name2 = std::to_string(type_id) + "_" + compile_time + "_" + name1;
     std::string name1hash, name2hash;
     picosha2::hash256_hex_string(name1, name1hash);
     picosha2::hash256_hex_string(name2, name2hash);
@@ -1466,7 +1468,7 @@ get_string_hash_tuple2(const std::string& name)
 }
 
 static FinalObject
-type_get_final_attr(uintptr_t type_id, const std::string& name)
+type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
@@ -1580,7 +1582,7 @@ type_get_final_attr(uintptr_t type_id, const std::string& name)
 }
 
 static uintptr_t
-type_set_attr_long_long_guidance(uintptr_t type_id, const std::string& name)
+type_set_attr_long_long_guidance(uintptr_t type_id, const std::string& name) noexcept
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
@@ -1602,7 +1604,7 @@ type_set_attr_long_long_guidance(uintptr_t type_id, const std::string& name)
 }
 
 static bool
-type_private_attr(uintptr_t type_id, const std::string& name)
+type_private_attr(uintptr_t type_id, const std::string& name) noexcept
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
@@ -1624,7 +1626,7 @@ type_private_attr(uintptr_t type_id, const std::string& name)
 }
 
 static PyCodeObject*
-get_now_code()
+get_now_code() noexcept
 {
     PyFrameObject* f = PyEval_GetFrame();
     if (!f) {
@@ -1635,7 +1637,7 @@ get_now_code()
 }
 
 static void
-analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& map, std::unordered_set<uintptr_t>& _seen)
+analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& map, std::unordered_set<uintptr_t>& _seen) noexcept
 {
     uintptr_t obj_id = (uintptr_t)obj;
     if (_seen.find(obj_id) != _seen.end()) {
@@ -1748,7 +1750,7 @@ struct PrivateAttrCreationData
     PyObject* attrs = nullptr;
     bool cleared = false;
 
-    void clear() {
+    void clear() noexcept {
         if (cleared) {
             return;
         }
@@ -1795,13 +1797,13 @@ struct PrivateAttrCreationData
         cleared = true;
     }
     
-    ~PrivateAttrCreationData() {
+    ~PrivateAttrCreationData() noexcept {
         clear();
     }
 };
 
 static bool
-need_analyse_type(PyObject* type)
+need_analyse_type(PyObject* type) noexcept
 {
     if (PyObject_IsInstance(type, (PyObject*)&PrivateAttrType)) {
         return true;
@@ -1831,7 +1833,7 @@ need_analyse_type(PyObject* type)
 }
 
 static void
-get_getattribute_and_getattr(PyTypeObject* cls, PyObject** getattribute, PyObject** getattr)
+get_getattribute_and_getattr(PyTypeObject* cls, PyObject** getattribute, PyObject** getattr) noexcept
 {
     bool has_getattribute = false;
     bool has_getattr = false;
@@ -1862,7 +1864,7 @@ get_getattribute_and_getattr(PyTypeObject* cls, PyObject** getattribute, PyObjec
 }
 
 static void
-get_setattr_and_delattr(PyTypeObject* cls, PyObject** setattr, PyObject** delattr)
+get_setattr_and_delattr(PyTypeObject* cls, PyObject** setattr, PyObject** delattr) noexcept
 {
     bool has_setattr = false;
     bool has_delattr = false;
@@ -1893,7 +1895,7 @@ get_setattr_and_delattr(PyTypeObject* cls, PyObject** setattr, PyObject** delatt
 }
 
 static void
-get_del(PyTypeObject* cls, PyObject** del)
+get_del(PyTypeObject* cls, PyObject** del) noexcept
 {
     if (PyDict_ContainsString(cls->tp_dict, "__del__")) {
         *del = PyDict_GetItemString(cls->tp_dict, "__del__");
@@ -1908,7 +1910,7 @@ get_del(PyTypeObject* cls, PyObject** del)
 }
 
 static PyObject*
-python_original_tp_getattro(PyObject* self, PyObject* name)
+python_original_tp_getattro(PyObject* self, PyObject* name) noexcept
 {
     PyObject* getattriute = NULL;
     PyObject* getattr = NULL;
@@ -1931,7 +1933,7 @@ python_original_tp_getattro(PyObject* self, PyObject* name)
 }
 
 static int
-python_original_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
+python_original_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
 {
     PyObject* setattr = NULL;
     PyObject* delattr = NULL;
@@ -1955,7 +1957,7 @@ python_original_tp_setattro(PyObject* self, PyObject* name, PyObject* value)
 }
 
 static void
-python_original_tp_finalize(PyObject* self)
+python_original_tp_finalize(PyObject* self) noexcept
 {
     PyObject* del = NULL;
     get_del((PyTypeObject*)self->ob_type, &del);
@@ -1982,7 +1984,7 @@ python_original_tp_finalize(PyObject* self)
 }
 
 static bool
-PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data) 
+PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data) noexcept
 {
     static const char* invalid_name[] = {"__private_attrs__", "__slots__", "__getattribute__", "__getattr__", "__init__",
         "__setattr__", "__delattr__", "__name__", "__module__", "__doc__", "__getstate__", "__setstate__",
@@ -2187,7 +2189,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 }
 
 static PyObject*
-PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
+PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexcept
 {
     PyObject* type_args = PyTuple_Pack(3, data.name, data.bases, data.attrs_copy);
     if (!type_args) {
@@ -2212,12 +2214,12 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data)
     return new_type;
 }
 
-static getattrofunc get_need_tp_getattro(PyTypeObject* cls);
-static setattrofunc get_need_tp_setattro(PyTypeObject* cls);
-static destructor get_need_tp_finalize(PyTypeObject* cls);
+static getattrofunc get_need_tp_getattro(PyTypeObject* cls) noexcept;
+static setattrofunc get_need_tp_setattro(PyTypeObject* cls) noexcept;
+static destructor get_need_tp_finalize(PyTypeObject* cls) noexcept;
 
 static void
-ensure_tp(PyTypeObject* type_instance)
+ensure_tp(PyTypeObject* type_instance) noexcept
 {
     uintptr_t type_id = (uintptr_t)(type_instance);
     {
@@ -2289,7 +2291,7 @@ ensure_tp(PyTypeObject* type_instance)
 }
 
 static void
-ensure_subclass_tp(PyTypeObject* type_instance)
+ensure_subclass_tp(PyTypeObject* type_instance) noexcept
 {
     // type.__subclasses__
     PyObject* type_subclasses = (PyObject*)type_instance->tp_subclasses;
@@ -2328,7 +2330,7 @@ ensure_subclass_tp(PyTypeObject* type_instance)
 }
 
 static bool
-PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
+PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) noexcept
 {
     if (!new_type) {
         return false;
@@ -2341,7 +2343,8 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
     if (PyDict_ContainsString(type_instance->tp_dict, "__static_attributes__")) {
-        PyErr_SetString(PyExc_SystemError, "'__static_attributes__' will expose private attribute names and cannot be used in private attribute types");
+        PyErr_Format(PyExc_SystemError,
+            "%s: %d: '__static_attributes__' will expose private attribute names and cannot be used in private attribute types", __FILE__, __LINE__);
         return false;
     }
 
@@ -2454,7 +2457,7 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data)
 }
 
 static PyObject*
-PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) 
+PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
 {
     PrivateAttrCreationData data;
     PyObject* new_type = nullptr;
@@ -2477,7 +2480,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 }
 
 static PyObject*
-PrivateAttrType_getattr(PyObject* cls, PyObject* name)
+PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
 {
     if (!PyType_Check(cls)) {
         PyErr_SetString(PyExc_TypeError, "cls must be a type");
@@ -2509,7 +2512,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name)
 }
 
 static int
-init_all_slots()
+init_all_slots() noexcept
 {
     AllSlots::original_getattro = python_original_tp_getattro;
     AllSlots::original_setattro = python_original_tp_setattro;
@@ -2518,7 +2521,7 @@ init_all_slots()
 }
 
 static getattrofunc
-get_need_tp_getattro(PyTypeObject* cls)
+get_need_tp_getattro(PyTypeObject* cls) noexcept
 {
     if (PyDict_ContainsString(cls->tp_dict, "__getattribute__") || PyDict_ContainsString(cls->tp_dict, "__getattr__")) {
         return AllSlots::original_getattro;
@@ -2540,7 +2543,7 @@ get_need_tp_getattro(PyTypeObject* cls)
 }
 
 static setattrofunc
-get_need_tp_setattro(PyTypeObject* cls)
+get_need_tp_setattro(PyTypeObject* cls) noexcept
 {
     if (PyDict_ContainsString(cls->tp_dict, "__setattr__") || PyDict_ContainsString(cls->tp_dict, "__delattr__")) {
         return AllSlots::original_setattro;
@@ -2562,7 +2565,7 @@ get_need_tp_setattro(PyTypeObject* cls)
 }
 
 static destructor
-get_need_tp_finalize(PyTypeObject* cls)
+get_need_tp_finalize(PyTypeObject* cls) noexcept
 {
     if (PyDict_ContainsString(cls->tp_dict, "__del__")) {
         return AllSlots::original_finalize;
@@ -2584,7 +2587,7 @@ get_need_tp_finalize(PyTypeObject* cls)
 }
 
 static void
-type_change_all_slots(PyTypeObject* cls, const char* name)
+type_change_all_slots(PyTypeObject* cls, const char* name) noexcept
 {
     if (strcmp(name, "__getattribute__") == 0 || strcmp(name, "__getattr__") == 0) {
         cls->tp_getattro = PrivateAttr_tp_getattro;
@@ -2599,7 +2602,7 @@ type_change_all_slots(PyTypeObject* cls, const char* name)
 }
 
 static void
-subtype_change_all_slots(PyTypeObject* cls, const char* name)
+subtype_change_all_slots(PyTypeObject* cls, const char* name) noexcept
 {
     // tp_subclasses: {id(type): weakref.ref(type)}
     PyObject* tp_subclasses = (PyObject*)cls->tp_subclasses;
@@ -2642,7 +2645,7 @@ subtype_change_all_slots(PyTypeObject* cls, const char* name)
 }
 
 static int
-PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
+PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
 {
     if (!PyType_Check(cls)) {
         PyErr_SetString(PyExc_TypeError, "cls must be a type");
@@ -2711,7 +2714,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value)
 }
 
 static void
-PrivateAttrType_finalize(PyObject* cls)
+PrivateAttrType_finalize(PyObject* cls) noexcept
 {
     uintptr_t typ_id = (uintptr_t) cls;
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()) {
@@ -2776,7 +2779,7 @@ PrivateAttrType_finalize(PyObject* cls)
 }
 
 static void
-PrivateAttrType_del(PyObject* cls)
+PrivateAttrType_del(PyObject* cls) noexcept
 {
     PrivateAttrType_finalize(cls);
     PyType_Type.tp_dealloc(cls);
@@ -2786,7 +2789,7 @@ static const char* PrivateAttrBase_doc = "The class to help to create private at
 
 // PrivateAttrBase
 static PyObject*
-create_private_attr_base_simple(void)
+create_private_attr_base_simple(void) noexcept
 {
     PyObject* name = PyUnicode_FromString("PrivateAttrBase");
     if (!name) return NULL;
@@ -2839,7 +2842,7 @@ typedef struct {
 } PrivateTempObject;
 
 static PyObject*
-PrivateTempObject_name(PyObject* self, void* /*closure*/)
+PrivateTempObject_name(PyObject* self, void* /*closure*/) noexcept
 {
     PyObject* name = ((PrivateTempObject*)self)->tmp->name;
     if (!name) {
@@ -2851,7 +2854,7 @@ PrivateTempObject_name(PyObject* self, void* /*closure*/)
 }
 
 static PyObject*
-PrivateTempObject_base(PyObject* self, void* /*closure*/)
+PrivateTempObject_base(PyObject* self, void* /*closure*/) noexcept
 {
     PyObject* base = ((PrivateTempObject*)self)->tmp->bases;
     if (!base) {
@@ -2863,7 +2866,7 @@ PrivateTempObject_base(PyObject* self, void* /*closure*/)
 }
 
 static PyObject*
-PrivateTempObject_attrs(PyObject* self, void* /*closure*/)
+PrivateTempObject_attrs(PyObject* self, void* /*closure*/) noexcept
 {
     PyObject* attrs = ((PrivateTempObject*)self)->tmp->attrs_copy;
     if (!attrs) {
@@ -2875,7 +2878,7 @@ PrivateTempObject_attrs(PyObject* self, void* /*closure*/)
 }
 
 static PyObject*
-PrivateTempObject_kwds(PyObject* self, void* /*closure*/)
+PrivateTempObject_kwds(PyObject* self, void* /*closure*/) noexcept
 {
     PyObject* kwds = ((PrivateTempObject*)self)->tmp->base_kwds;
     if (!kwds) {
@@ -2895,7 +2898,7 @@ static PyGetSetDef PrivateTempObject_getsets[] = {
 };
 
 static void
-PrivateTempObject_dealloc(PyObject* self)
+PrivateTempObject_dealloc(PyObject* self) noexcept
 {
     ((PrivateTempObject*)self)->tmp->clear();
     delete ((PrivateTempObject*)self)->tmp;
@@ -2936,7 +2939,7 @@ static PyTypeObject PrivateTempType = {
 };
 
 static PyObject*
-prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs)
+prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs) noexcept
 {
     PrivateAttrCreationData* tmp_data = new PrivateAttrCreationData();
     if (!PrivateAttrType_preprocess(args, kwargs, *tmp_data)) {
@@ -2955,7 +2958,7 @@ prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs)
 }
 
 static PyObject*
-postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args)
+postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args) noexcept
 {
     PyObject* type;
     PyObject* tmp;
@@ -2978,7 +2981,7 @@ postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args)
 }
 
 static void
-register_finalize(PyObject* cls)
+register_finalize(PyObject* cls) noexcept
 {
     Py_ssize_t original_ref = Py_REFCNT(cls);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
@@ -2994,7 +2997,7 @@ register_finalize(PyObject* cls)
 
 
 static PyObject*
-metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/)
+metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
 {
     void* pointer = PyCapsule_GetPointer(self, "metaclass_id");
     if (!pointer) {
@@ -3021,7 +3024,7 @@ static PyMethodDef weakref_callback_def = {
 };
 
 static PyObject*
-register_metaclass(PyObject* /*self*/, PyObject* metaclass)
+register_metaclass(PyObject* /*self*/, PyObject* metaclass) noexcept
 {
     if (!PyType_Check(metaclass)) {
         PyErr_SetString(PyExc_TypeError, "metaclass must be a type");
@@ -3062,7 +3065,7 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass)
 }
 
 static PyObject*
-ensure_type_tp(PyObject* /*self*/, PyObject* type)
+ensure_type_tp(PyObject* /*self*/, PyObject* type) noexcept
 {
     if (!PyType_Check(type)) {
         PyErr_SetString(PyExc_TypeError, "type must be a type");
@@ -3077,7 +3080,7 @@ ensure_type_tp(PyObject* /*self*/, PyObject* type)
 }
 
 static PyObject*
-ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass)
+ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass) noexcept
 {
     uintptr_t id = (uintptr_t)metaclass;
     if (::AllData::all_register_type_weak_ref.find(id) != ::AllData::all_register_type_weak_ref.end()) {
@@ -3089,7 +3092,7 @@ ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass)
 }
 
 static PyObject*
-PrivateModule_get_PrivateWrapProxy(PyObject* /*self*/, void* /*closure*/)
+PrivateModule_get_PrivateWrapProxy(PyObject* /*self*/, void* /*closure*/) noexcept
 {
     PyObject* PythonPrivateWrapProxy = (PyObject*)&PrivateWrapProxyType;
     Py_INCREF(PythonPrivateWrapProxy);
@@ -3098,7 +3101,7 @@ PrivateModule_get_PrivateWrapProxy(PyObject* /*self*/, void* /*closure*/)
 
 // type PrivateAttrType
 static PyObject*
-PrivateModule_get_PrivateAttrType(PyObject* /*self*/, void* /*closure*/)
+PrivateModule_get_PrivateAttrType(PyObject* /*self*/, void* /*closure*/) noexcept
 {
     PyObject* PythonPrivateAttrType = (PyObject*)&PrivateAttrType;
     Py_INCREF(PythonPrivateAttrType);
@@ -3106,7 +3109,7 @@ PrivateModule_get_PrivateAttrType(PyObject* /*self*/, void* /*closure*/)
 }
 
 static PyObject*
-PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/)
+PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/) noexcept
 {
     static PyObject* PrivateAttrBase = create_private_attr_base_simple();
     if (!PrivateAttrBase) {
@@ -3120,7 +3123,7 @@ PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/)
 }
 
 static PyObject*
-PrivateModule_dir(PyObject* self, PyObject* /*args*/)
+PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
 {
     PyObject* parent_dir = PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self);
     if (!parent_dir) return NULL;
@@ -3144,7 +3147,7 @@ PrivateModule_dir(PyObject* self, PyObject* /*args*/)
 }
 
 static int
-PrivateModule_setattro(PyObject* cls, PyObject* name, PyObject* value)
+PrivateModule_setattro(PyObject* cls, PyObject* name, PyObject* value) noexcept
 {
     // if name is "__class__" it do nothing and return success
     if (PyUnicode_Check(name)) {
@@ -3277,7 +3280,7 @@ static PyModuleDef def = {
 };
 
 PyMODINIT_FUNC
-PyInit_private_attribute(void)
+PyInit_private_attribute(void) noexcept
 {
     if (init_all_slots() <0 ||
         PyType_Ready(&PrivateWrapType) < 0 ||
