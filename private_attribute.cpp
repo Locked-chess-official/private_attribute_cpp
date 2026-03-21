@@ -1724,7 +1724,7 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& ma
 }
 
 static std::string
-real_class_name(const std::string& name, const std::string& class_name)
+real_class_name(const std::string& name, const std::string& class_name) noexcept
 {
     // if the name starts with "__" but does not end with "__", change to _ClassName__name
     if (name.length() >= 2 && name.substr(0, 2) == "__" && name.substr(name.length() - 2) != "__") {
