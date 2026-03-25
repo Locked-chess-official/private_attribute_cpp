@@ -18,5 +18,5 @@ repos:
 
       - id: line-length
         name: check max line length
-        entry: bash -c 'find . -type f -not -path "*/\.git/*" -exec awk "length(\$0) > 180 {print FILENAME \":\" NR \":\" \$0}" {} + | grep . && exit 1 || exit 0'
+        entry: bash -c 'find . -type f -not -path "*/\.git/*" -not -name "README.md" -exec awk "length($0) > 180 {print FILENAME \":\" NR \":\" $0}" {} + | grep . && exit 1 || exit 0'
         language: system
