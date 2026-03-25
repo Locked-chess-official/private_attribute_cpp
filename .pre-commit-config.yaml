@@ -1,0 +1,22 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-case-conflict
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: bidi-check
+        name: forbidden bidi chars
+        entry: bash -c 'grep -RIn --color "[\u202A-\u202E\u2066-\u2069]" . && exit 1 || exit 0'
+        language: system
+
+      - id: line-length
+        name: check max line length
+        entry: bash -c 'awk "length(\$0) > 120" **/*.cpp && exit 1 || exit 0'
+        language: system
