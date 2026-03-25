@@ -229,7 +229,7 @@ generate_private_attr_name(uintptr_t obj_id, const std::string& attr_name) noexc
 
     std::mt19937 rng(seed);
 
-    static const std::string printable_chars = 
+    static const std::string printable_chars =
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ";
 
     std::uniform_int_distribution<long long> dist(0, printable_chars.size() - 1);
@@ -1796,7 +1796,7 @@ struct PrivateAttrCreationData
         need_remove_subclass.clear();
         cleared = true;
     }
-    
+
     ~PrivateAttrCreationData() noexcept {
         clear();
     }
@@ -1963,7 +1963,7 @@ python_original_tp_finalize(PyObject* self) noexcept
     get_del((PyTypeObject*)self->ob_type, &del);
     if (del) {
         PyObject *exc_type = NULL, *exc_value = NULL, *exc_tb = NULL;
-        PyErr_Fetch(&exc_type, &exc_value, &exc_tb); 
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
         PyObject *result = PyObject_CallFunctionObjArgs(del, self, NULL);
         if (result == NULL)  {
             // python < 3.13 use PyErr_WriteUnraisable, python >= 3.13 use PyErr_FormatUnraisable
@@ -2206,7 +2206,7 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexce
     if (!PyObject_IsInstance(new_type, (PyObject*)type)) {
         Py_DECREF(new_type);
         PyErr_SetString(PyExc_TypeError, 
-                       ("base type creation did not return an instance of '" + 
+                       ("base type creation did not return an instance of '" +
                         std::string(type->tp_name) + "'").c_str());
         return nullptr;
     }
