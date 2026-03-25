@@ -2205,7 +2205,7 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexce
 
     if (!PyObject_IsInstance(new_type, (PyObject*)type)) {
         Py_DECREF(new_type);
-        PyErr_SetString(PyExc_TypeError, 
+        PyErr_SetString(PyExc_TypeError,
                        ("base type creation did not return an instance of '" +
                         std::string(type->tp_name) + "'").c_str());
         return nullptr;
