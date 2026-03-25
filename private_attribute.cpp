@@ -296,7 +296,7 @@ public:
         : type(type), value(value), traceback(traceback) {
     }
 
-    ~RestorePythonException() {
+    ~RestorePythonException() noexcept {
         Py_XDECREF(type);
         Py_XDECREF(value);
         Py_XDECREF(traceback);
@@ -948,7 +948,7 @@ PrivateWarp_name(PyObject* obj, void* /*closure*/) noexcept
 }
 
 static PyObject*
-PrivateWrap_qualname(PyObject* obj, void* /*closure*/)
+PrivateWrap_qualname(PyObject* obj, void* /*closure*/) noexcept
 {
     if (!obj) {
         return PyUnicode_FromString("_PrivateWrap");
