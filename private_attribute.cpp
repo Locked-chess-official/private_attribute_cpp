@@ -498,7 +498,7 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
         if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) != ::AllData::all_object_attr[final_id][obj_id].end()) {
             PyObject* python_obj = ::AllData::all_object_attr[final_id][obj_id][obj_private_name];
             if (!python_obj) {
-                PyErr_SetString(PyExc_SystemError, "attribute is NULL");
+                PyErr_Format(PyExc_SystemError, "%s (%d): attribute is NULL", __FILE__, __LINE__);
                 return NULL;
             }
             // if obj is a type, call result.__get__(None, obj)
@@ -1097,7 +1097,7 @@ typedef struct {
 } PrivateWrapProxyObject;
 
 static PyObject*
-PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*kwgs */) noexcept
+PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /* kwgs */) noexcept
 {
     PyObject *func;
     if (!PyArg_ParseTuple(args, "O", &func)) return NULL;
@@ -1709,6 +1709,15 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& ma
     }
     PyObject* wrap = PyObject_GetAttrString(obj, "__wrapped__");
     if (wrap) {
+        if (wrap == obj) {
+            PyObject* code = PyObject_GetAttrString(obj, "__code__");
+            if (code) {
+                analyse_all_code(code, map, _seen);
+            } else {
+                PyErr_Clear();
+            }
+            return;
+        }
         analyse_all_code(wrap, map, _seen);
         return;
     }
@@ -1991,7 +2000,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         "__get__", "__set__", "__delete__", "__new__", "__set_name__", "__class__", NULL};
 
     if (!args) {
-        PyErr_SetString(PyExc_SystemError, "arg is NULL");
+        PyErr_Format(PyExc_SystemError, "%s (%d): args is NULL", __FILE__, __LINE__);
         return false;
     }
 
@@ -2344,7 +2353,7 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     uintptr_t type_id = (uintptr_t)(type_instance);
     if (PyDict_ContainsString(type_instance->tp_dict, "__static_attributes__")) {
         PyErr_Format(PyExc_SystemError,
-            "%s: %d: '__static_attributes__' will expose private attribute names and cannot be used in private attribute types", __FILE__, __LINE__);
+            "%s (%d): '__static_attributes__' will expose private attribute names and cannot be used in private attribute types", __FILE__, __LINE__);
         return false;
     }
 

@@ -18,7 +18,7 @@ readme = open('README.md').read()
 
 setup(
     name='private_attribute_cpp',
-    version='1.4.8',
+    version='1.4.9',
     author="HuangHaoHua",
     author_email="13140752715@example.com",
     description='A Python package that provides a way to define private attributes in C++ implementation.',
