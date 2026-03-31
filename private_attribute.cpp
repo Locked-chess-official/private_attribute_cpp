@@ -2891,8 +2891,7 @@ PrivateTempObject_kwds(PyObject* self, void* /*closure*/) noexcept
 {
     PyObject* kwds = ((PrivateTempObject*)self)->tmp->base_kwds;
     if (!kwds) {
-        PyErr_SetString(PyExc_RuntimeError, "object not init or have been used");
-        return nullptr;
+        return PyDict_New();
     }
     Py_INCREF(kwds);
     return kwds;
@@ -3141,14 +3140,14 @@ PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
         Py_DECREF(parent_dir);
         return NULL;
     }
-    PyList_Append(attr_list, PyUnicode_FromString("PrivateWrapProxy"));
-    PyList_Append(attr_list, PyUnicode_FromString("PrivateAttrType"));
-    PyList_Append(attr_list, PyUnicode_FromString("PrivateAttrBase"));
-    PyList_Append(attr_list, PyUnicode_FromString("prepare"));
-    PyList_Append(attr_list, PyUnicode_FromString("postprocess"));
-    PyList_Append(attr_list, PyUnicode_FromString("register_metaclass"));
-    PyList_Append(attr_list, PyUnicode_FromString("ensure_type"));
-    PyList_Append(attr_list, PyUnicode_FromString("ensure_metaclass"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("PrivateWrapProxy"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("PrivateAttrType"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("PrivateAttrBase"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("prepare"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("postprocess"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("register_metaclass"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("ensure_type"));
+    PyList_Append(attr_list, PyUnicode_InternFromString("ensure_metaclass"));
     PyObject* result = PySequence_Concat(parent_dir, attr_list);
     Py_DECREF(parent_dir);
     Py_DECREF(attr_list);
@@ -3167,13 +3166,6 @@ PrivateModule_setattro(PyObject* cls, PyObject* name, PyObject* value) noexcept
     }
     return PyObject_GenericSetAttr(cls, name, value);
 }
-
-static PyGetSetDef PrivateModule_getsetters[] = {
-    {"PrivateWrapProxy", (getter)PrivateModule_get_PrivateWrapProxy, NULL, NULL, NULL},
-    {"PrivateAttrType", (getter)PrivateModule_get_PrivateAttrType, NULL, NULL, NULL},
-    {"PrivateAttrBase", (getter)PrivateModule_get_PrivateAttrBase, NULL, NULL, NULL},
-    {NULL}
-};
 
 static const char* prepare_and_postprocess_doc = R"(function for custom metaclass to create private attributes class.
 
@@ -3214,12 +3206,58 @@ def ensure_metaclass(metaclass: type) -> None:
 )";
 
 static PyMethodDef PrivateModule_methods[] = {
-    {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
     {"prepare", (PyCFunction)prepare_for_PrivateAttr, METH_VARARGS | METH_KEYWORDS | METH_STATIC, prepare_and_postprocess_doc},
     {"postprocess", (PyCFunction)postprocess_for_PrivateAttr, METH_VARARGS | METH_STATIC, prepare_and_postprocess_doc},
     {"register_metaclass", (PyCFunction)register_metaclass, METH_O | METH_STATIC, prepare_and_postprocess_doc},
     {"ensure_type", (PyCFunction)ensure_type_tp, METH_O | METH_STATIC, ensure_type_doc},
     {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O | METH_STATIC, ensure_metaclass_doc},
+    {NULL}  // Sentinel
+};
+
+static PyObject*
+PrivateModule_get_prepare(PyObject* /*self*/, void* /*closure*/) noexcept
+{
+    return PyCFunction_NewEx(&PrivateModule_methods[0], NULL, NULL);
+}
+
+static PyObject*
+PrivateModule_get_postprocess(PyObject* /*self*/, void* /*closure*/) noexcept
+{
+    return PyCFunction_NewEx(&PrivateModule_methods[1], NULL, NULL);
+}
+
+static PyObject*
+PrivateModule_get_register_metaclass(PyObject* /*self*/, void* /*closure*/) noexcept
+{
+    return PyCFunction_NewEx(&PrivateModule_methods[2], NULL, NULL);
+}
+
+static PyObject*
+PrivateModule_get_ensure_type(PyObject* /*self*/, void* /*closure*/) noexcept
+{
+    return PyCFunction_NewEx(&PrivateModule_methods[3], NULL, NULL);
+}
+
+static PyObject*
+PrivateModule_get_ensure_metaclass(PyObject* /*self*/, void* /*closure*/) noexcept
+{
+    return PyCFunction_NewEx(&PrivateModule_methods[4], NULL, NULL);
+}
+
+static PyGetSetDef PrivateModule_getsetters[] = {
+    {"PrivateWrapProxy", (getter)PrivateModule_get_PrivateWrapProxy, NULL, NULL, NULL},
+    {"PrivateAttrType", (getter)PrivateModule_get_PrivateAttrType, NULL, NULL, NULL},
+    {"PrivateAttrBase", (getter)PrivateModule_get_PrivateAttrBase, NULL, NULL, NULL},
+    {"prepare", (getter)PrivateModule_get_prepare, NULL, NULL, NULL},
+    {"postprocess", (getter)PrivateModule_get_postprocess, NULL, NULL, NULL},
+    {"register_metaclass", (getter)PrivateModule_get_register_metaclass, NULL, NULL, NULL},
+    {"ensure_type", (getter)PrivateModule_get_ensure_type, NULL, NULL, NULL},
+    {"ensure_metaclass", (getter)PrivateModule_get_ensure_metaclass, NULL, NULL, NULL},
+    {NULL}
+};
+
+static PyMethodDef PrivateModule_methods_def[] = {
+    {"__dir__", (PyCFunction)PrivateModule_dir, METH_NOARGS, NULL},
     {NULL}  // Sentinel
 };
 
@@ -3251,7 +3289,7 @@ static PyTypeObject PrivateModuleType = {
     0, //tp_weaklistoffset
     0, //tp_iter
     0, //tp_iternext
-    PrivateModule_methods, //tp_methods
+    PrivateModule_methods_def, //tp_methods
     0, //tp_members
     PrivateModule_getsetters, //tp_getset
     &PyModule_Type, //tp_base
@@ -3323,14 +3361,14 @@ PyInit_private_attribute(void) noexcept
      * ensure_type
      * ensure_metaclass
      */
-    PyList_Append(all, PyUnicode_FromString("PrivateWrapProxy"));
-    PyList_Append(all, PyUnicode_FromString("PrivateAttrType"));
-    PyList_Append(all, PyUnicode_FromString("PrivateAttrBase"));
-    PyList_Append(all, PyUnicode_FromString("prepare"));
-    PyList_Append(all, PyUnicode_FromString("postprocess"));
-    PyList_Append(all, PyUnicode_FromString("register_metaclass"));
-    PyList_Append(all, PyUnicode_FromString("ensure_type"));
-    PyList_Append(all, PyUnicode_FromString("ensure_metaclass"));
+    PyList_Append(all, PyUnicode_InternFromString("PrivateWrapProxy"));
+    PyList_Append(all, PyUnicode_InternFromString("PrivateAttrType"));
+    PyList_Append(all, PyUnicode_InternFromString("PrivateAttrBase"));
+    PyList_Append(all, PyUnicode_InternFromString("prepare"));
+    PyList_Append(all, PyUnicode_InternFromString("postprocess"));
+    PyList_Append(all, PyUnicode_InternFromString("register_metaclass"));
+    PyList_Append(all, PyUnicode_InternFromString("ensure_type"));
+    PyList_Append(all, PyUnicode_InternFromString("ensure_metaclass"));
     Py_SET_TYPE(m, &PrivateModuleType);
     return m;
 }
