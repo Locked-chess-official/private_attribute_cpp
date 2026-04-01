@@ -228,6 +228,7 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 - All of the object that is the instance of the class "PrivateAttrBase" or its subclass are default to be unable to be pickled.
 - Finally the attributes' names in `__private_attrs__` will be change to a tuple with two hash.
 - Finally the `_PrivateWrap` object will be recoveried to the original object.
+- Don't use a decorator which will return the `_PrivateWrap` in `PrivateWrapProxy` which will raise `TypeError`.
 - One class defined in another class cannot use another class's private attribute.
 - One parent class defined an attribute which not in `__private_attrs__` or not a `PrivateAttrType` instance, the child class shouldn't contain the attribute in its `__private_attrs__`.
 - CPython may change "tp_getattro", "tp_setattro" and so on when you change the attribute "\_\_getattribute\_\_", "\_\_setattr\_\_" and so on. If you are fear about it, you can use `ensure_type` to reset those tp slots. For the other metaclasses, you can use `ensure_metaclass` to reset those tp slots. Also, don't set those methods on these classes in your code.

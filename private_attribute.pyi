@@ -76,7 +76,7 @@ class PrivateWrapProxy:
 class PrivateAttrType(type):
     "metaclass for private attributes"
     def __new__(cls, name: str, bases: tuple,
-                attrs: _PrivateAttrDict, /,
+                attrs: _PrivateAttrDict, /, *,
                 private_func: Callable[[int, str], str]|None = None) -> PrivateAttrType: ...
 
 class PrivateAttrBase(metaclass=PrivateAttrType):

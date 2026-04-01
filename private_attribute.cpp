@@ -271,10 +271,7 @@ default_random_string(uintptr_t obj_id, const std::string& attr_name) noexcept
                 result = it->second;
                 return result;
             }
-            while (true) {
-                if (::AllData::all_exist_name.find(result) == ::AllData::all_exist_name.end()) {
-                    break;
-                }
+            while (::AllData::all_exist_name.find(result) != ::AllData::all_exist_name.end()) {
                 result = original_result + "_" + std::to_string(i);
                 i++;
             }
@@ -372,10 +369,7 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
                     result = it->second;
                     return result;
                 }
-                while (true) {
-                    if (::AllData::all_exist_name.find(result) == ::AllData::all_exist_name.end()) {
-                        break;
-                    }
+                while (::AllData::all_exist_name.find(result) != ::AllData::all_exist_name.end()) {
                     result = original_result + "_" + std::to_string(i);
                     i++;
                 }
@@ -883,17 +877,11 @@ static PrivateWrapObject* PrivateWrap_New(PyObject *decorator, PyObject *func, P
 static void PrivateWrap_dealloc(PrivateWrapObject *self) noexcept;
 static PyObject* PrivateWrap_call(PrivateWrapObject *self, PyObject *args, PyObject *kw) noexcept;
 
-static PyObject *
-PrivateWrap_result(PyObject *obj, void* /*closure*/) noexcept
-{
-    if (!obj) {
-        Py_RETURN_NONE;
-    }
-
-    PyObject *res = ((PrivateWrapObject*)obj)->result;
-    Py_INCREF(res);
-    return res;
-}
+static PyMemberDef PrivateWrap_members[] = {
+    {"result", T_OBJECT, offsetof(PrivateWrapObject, result), READONLY, "The result object"},
+    {"__wrapped__", T_OBJECT, offsetof(PrivateWrapObject, result), READONLY, "The result object"},
+    {NULL}
+};
 
 static PyObject *
 PrivateWrap_funcs(PyObject *obj, void* /*closure*/) noexcept
@@ -995,9 +983,7 @@ static const char* PrivateWrap_result_doc = "the final result of decorating";
 static const char* PrivateWrap_funcs_doc = "the original functions";
 
 static PyGetSetDef PrivateWrap_getset[] = {
-    {"result", (getter)PrivateWrap_result, NULL, PrivateWrap_result_doc, NULL},
     {"funcs", (getter)PrivateWrap_funcs, NULL, PrivateWrap_funcs_doc, NULL},
-    {"__wrapped__", (getter)PrivateWrap_result, NULL, NULL, NULL},
     {"__doc__", (getter)PrivateWrap_doc, NULL, NULL, NULL},
     {"__module__", (getter)PrivateWrap_module, NULL, NULL, NULL},
     {"__name__", (getter)PrivateWarp_name, NULL, NULL, NULL},
@@ -1050,21 +1036,25 @@ static PyTypeObject PrivateWrapType = {
     0,                                 // tp_iter
     0,                                 // tp_iternext
     0,                                 // tp_methods
-    0,                                 // tp_members
+    PrivateWrap_members,               // tp_members
     PrivateWrap_getset,                // tp_getset
 };
 
 static PrivateWrapObject*
 PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list) noexcept
 {
-    PrivateWrapObject *self =
-        PyObject_New(PrivateWrapObject, &PrivateWrapType);
     PyObject *wrapped = PyObject_CallFunctionObjArgs(decorator, func, NULL);
     if (!wrapped) {
-        Py_DECREF(self);
+        return NULL;
+    }
+    if (PyObject_TypeCheck(wrapped, &PrivateWrapType)) {
+        PyErr_SetString(PyExc_TypeError, "decorator returned a '_PrivateWrap' object which is not allowed");
+        Py_DECREF(wrapped);
         return NULL;
     }
 
+    PrivateWrapObject *self =
+        PyObject_New(PrivateWrapObject, &PrivateWrapType);
     self->func_list = list;
     Py_INCREF(list);
 
