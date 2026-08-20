@@ -2505,7 +2505,9 @@ init_all_slots() noexcept
     for (Py_ssize_t i = 0; i < list_len; i++) {
         PyObject* metaclass = PyList_GET_ITEM(all_metaclasses, i);
         if (!PyType_Check(metaclass)) {continue;}
-        ((PyTypeObject*)metaclass)->tp_setattro = new_type_tp_setattro;
+        if (((PyTypeObject*)metaclass)->tp_setattro == original_type_tp_setattro) {
+            ((PyTypeObject*)metaclass)->tp_setattro = new_type_tp_setattro;
+        }
     }
     Py_DECREF(all_metaclasses);
     return 0;
@@ -3294,8 +3296,8 @@ static PyTypeObject PrivateModuleType = {
 
 static const char* module_doc = R"(
 A module that provides a metaclass for creating classes with private attributes.
-Private attributes are defined in the `__private_attrs__` sequence and are only
-You can use the `PrivateAttrBase` metaclass to create classes with private attributes.
+Private attributes are defined in the `__private_attrs__` sequence and are only visitable in class codes.
+You can use the `PrivateAttrBase` as the base class to create classes with private attributes.
 The attributes which are private are not on the instance's `__dict__` and cannot be accessed outside
 but in the methods defined in class it is reachable.
 Usage example:
