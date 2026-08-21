@@ -33,6 +33,12 @@ PyDict_ContainsString(PyObject *op, const char *key) noexcept
     return res;
 }
 #endif
+
+// python >= 3.15 has PyAnyDict_Check. Under 3.15 defined it as PyDict_Check
+#if PY_VERSION_HEX < 0x030F0000
+#define PyAnyDict_Check(op) PyDict_Check(op)
+#endif
+
 static const auto module_running_time = std::chrono::system_clock::now();
 
 static std::string
@@ -400,13 +406,12 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
             return result;
         } else {
             lock.unlock();
-            PyObject* args = PyTuple_New(2);
-            PyTuple_SetItem(args, 0, PyLong_FromSize_t(static_cast<size_t>(obj_id)));
-            PyTuple_SetItem(args, 1, PyUnicode_FromString(attr_name.c_str()));
-
-            PyObject* python_result = PyObject_CallObject((PyObject*)func, args);
-
-            Py_DECREF(args);
+            PyObject* python_result = PyObject_CallFunction(
+                func,
+                "ns",
+                static_cast<Py_ssize_t>(obj_id),
+                attr_name.c_str()
+            );
             if (python_result) {
                 if (!PyUnicode_Check(python_result)) {
                     Py_DECREF(python_result);
@@ -1975,7 +1980,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    if (!PyDict_Check(data.attrs)) {
+    if (!PyAnyDict_Check(data.attrs)) {
         PyErr_SetString(PyExc_TypeError, "attrs must be a dict");
         return false;
     }
@@ -3136,7 +3141,7 @@ PrivateModule_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
         const size_t num_attrs = sizeof(unsetable_attrs) / sizeof(unsetable_attrs[0]);
         for (size_t i = 0; i < num_attrs; ++i) {
             if (strcmp(name_cstr, unsetable_attrs[i]) == 0) {
-                PyErr_Format(PyExc_AttributeError, "attribute '%s' of 'private_attribute_module' objects is not writable", name_cstr);
+                PyErr_Format(PyExc_AttributeError, "attribute '%s' of 'private_attribute.private_attribute_module' objects is not writable", name_cstr);
                 return -1;
             }
         }
