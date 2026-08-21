@@ -283,126 +283,21 @@ default_random_string(uintptr_t obj_id, const std::string& attr_name) noexcept
     return result;
 }
 
-class RestorePythonException : public std::exception
-{
-public:
-    RestorePythonException(PyObject* type, PyObject* value, PyObject* traceback) noexcept
-        : type(type), value(value), traceback(traceback) {
-    }
-
-    ~RestorePythonException() noexcept {
-        Py_XDECREF(type);
-        Py_XDECREF(value);
-        Py_XDECREF(traceback);
-    }
-
-    RestorePythonException(const RestorePythonException&) = delete;
-    RestorePythonException& operator=(RestorePythonException&& other) noexcept {
-        if (this != &other) {
-            type = other.type;
-            value = other.value;
-            traceback = other.traceback;
-            other.type = nullptr;
-            other.value = nullptr;
-            other.traceback = nullptr;
-        }
-        return *this;
-    }
-
-    // Move constructor
-    RestorePythonException(RestorePythonException&& other) noexcept
-        : type(other.type), value(other.value), traceback(other.traceback) {
-        other.type = nullptr;
-        other.value = nullptr;
-        other.traceback = nullptr;
-    }
-
-    void restore() noexcept {
-        PyErr_Restore(type, value, traceback);
-        type = value = traceback = nullptr;
-    }
-
-    const char* what() const noexcept override {
-        if (!msg_.empty())
-            return msg_.c_str();
-
-        if (!type || !value) {
-            msg_ = "cannot format this exception (missing type/value)";
-            return msg_.c_str();
-        }
-
-        PyObject* tb_mod = PyImport_ImportModule("traceback");
-        if (!tb_mod) {
-            msg_ = "cannot format this exception (import traceback failed)";
-            return msg_.c_str();
-        }
-
-        PyObject* format_exc = PyObject_GetAttrString(tb_mod, "format_exception");
-        Py_DECREF(tb_mod);
-        if (!format_exc) {
-            msg_ = "cannot format this exception (get format_exception failed)";
-            return msg_.c_str();
-        }
-
-        PyObject* result = PyObject_CallFunctionObjArgs(
-            format_exc, type, value, traceback ? traceback : Py_None, nullptr);
-        Py_DECREF(format_exc);
-
-        if (!result) {
-            msg_ = "cannot format this exception (format_exception failed)";
-            return msg_.c_str();
-        }
-
-        PyObject* empty = PyUnicode_FromString("");
-        if (!empty) {
-            Py_DECREF(result);
-            msg_ = "cannot format this exception (create empty string failed)";
-            return msg_.c_str();
-        }
-
-        PyObject* joined = PyUnicode_Join(empty, result);
-        Py_DECREF(empty);
-        Py_DECREF(result);
-
-        if (!joined) {
-            msg_ = "cannot format this exception (join failed)";
-            return msg_.c_str();
-        }
-
-        const char* utf8 = PyUnicode_AsUTF8(joined);
-        if (utf8)
-            msg_ = utf8;
-        else
-            msg_ = "cannot format this exception (AsUTF8 failed)";
-
-        Py_DECREF(joined);
-        return msg_.c_str();
-    }
-
-private:
-    PyObject* type = nullptr;
-    PyObject* value = nullptr;
-    PyObject* traceback = nullptr;
-    mutable std::string msg_;
+struct RestorePythonExceptionResult {
+    std::string value;
+    bool ok = true;
 };
 
-// In MSVC, disable warning C5272
-// The custom_random_string will throw RestorePythonException, which cannot be copied and will be caught anyway.
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable: 5272)
-#endif
-
-static std::string
-custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* func)
+static RestorePythonExceptionResult
+custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* func) noexcept
 {
+    RestorePythonExceptionResult result;
     AllPyobjectAttrCacheKey key(obj_id, attr_name);
-    std::string result;
     {
         std::shared_lock<std::shared_mutex> lock(::AllData::cache_mutex);
         auto it = ::AllData::cache.find(key);
         if (it != ::AllData::cache.end()) {
-            result = it->second;
+            result.value = it->second;
             return result;
         } else {
             lock.unlock();
@@ -418,41 +313,42 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
                     PyErr_SetString(PyExc_TypeError, "private_func function must return a string");
                     PyObject *type, *value, *traceback;
                     PyErr_Fetch(&type, &value, &traceback);
-                    throw RestorePythonException(type, value, traceback);
+                    PyErr_Restore(type, value, traceback);
+                    result.ok = false;
+                    result.value = "private_func function must return a string";
+                    return result;
                 }
-                result = PyUnicode_AsUTF8(python_result);
+                result.value = PyUnicode_AsUTF8(python_result);
                 Py_DECREF(python_result);
-                std::string original_result = result;
+                std::string original_result = result.value;
                 unsigned long long i = 1;
                 std::unique_lock<std::shared_mutex> lock2(::AllData::cache_mutex);
                 auto it = ::AllData::cache.find(key); // twice check
                 if (it != ::AllData::cache.end()) {
-                    result = it->second;
+                    result.value = it->second;
                     return result;
                 }
-                while (::AllData::all_exist_name.find(result) != ::AllData::all_exist_name.end()) {
-                    result = original_result + "_" + std::to_string(i);
+                while (::AllData::all_exist_name.find(result.value) != ::AllData::all_exist_name.end()) {
+                    result.value = original_result + "_" + std::to_string(i);
                     i++;
                 }
                 if (::AllData::obj_attr_keys.find(obj_id) == ::AllData::obj_attr_keys.end()) {
                     ::AllData::obj_attr_keys[obj_id] = {};
                 }
                 ::AllData::obj_attr_keys[obj_id].push_back(key);
-                ::AllData::cache[key] = result;
-                ::AllData::all_exist_name.insert(result);
+                ::AllData::cache[key] = result.value;
+                ::AllData::all_exist_name.insert(result.value);
             } else {
                 PyObject *type, *value, *traceback;
                 PyErr_Fetch(&type, &value, &traceback);
-                throw RestorePythonException(type, value, traceback);
+                PyErr_Restore(type, value, traceback);
+                result.ok = false;
+                result.value = "python exception while calling private function";
             }
         }
     }
     return result;
 }
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
 
 static void
 clear_obj(uintptr_t obj_id) noexcept
@@ -505,12 +401,11 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
         obj_need_call = ::AllData::type_need_call[final_id];
     }
     if (obj_need_call) {
-        try {
-            obj_private_name = custom_random_string(obj_id, attr_name, obj_need_call);
-        } catch (RestorePythonException& e) {
-            e.restore();
+        auto private_name_result = custom_random_string(obj_id, attr_name, obj_need_call);
+        if (!private_name_result.ok) {
             return NULL;
         }
+        obj_private_name = private_name_result.value;
     } else {
         obj_private_name = default_random_string(obj_id, attr_name);
     }
@@ -646,12 +541,11 @@ id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject*
         obj_need_call = ::AllData::type_need_call[final_id];
     }
     if (obj_need_call) {
-        try {
-            obj_private_name = custom_random_string(obj_id, attr_name, obj_need_call);
-        } catch (RestorePythonException& e) {
-            e.restore();
+        auto private_name_result = custom_random_string(obj_id, attr_name, obj_need_call);
+        if (!private_name_result.ok) {
             return -1;
         }
+        obj_private_name = private_name_result.value;
     } else {
         obj_private_name = default_random_string(obj_id, attr_name);
     }
@@ -715,12 +609,11 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
         type_need_call = NULL;
     }
     if (type_need_call) {
-        try {
-            final_key = custom_random_string(typ_id, attr_name, type_need_call);
-        } catch (RestorePythonException& e) {
-            e.restore();
+        auto private_name_result = custom_random_string(typ_id, attr_name, type_need_call);
+        if (!private_name_result.ok) {
             return -1;
         }
+        final_key = private_name_result.value;
     } else {
         final_key = default_random_string(typ_id, attr_name);
     }
@@ -790,12 +683,11 @@ id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
         obj_need_call = ::AllData::type_need_call[final_id];
     }
     if (obj_need_call) {
-        try {
-            obj_private_name = custom_random_string(obj_id, attr_name, obj_need_call);
-        } catch (RestorePythonException& e) {
-            e.restore();
+        auto private_name_result = custom_random_string(obj_id, attr_name, obj_need_call);
+        if (!private_name_result.ok) {
             return -1;
         }
+        obj_private_name = private_name_result.value;
     } else {
         obj_private_name = default_random_string(obj_id, attr_name);
     }
@@ -862,12 +754,11 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
         type_need_call = NULL;
     }
     if (type_need_call) {
-        try {
-            final_key = custom_random_string(typ_id, attr_name, type_need_call);
-        } catch (RestorePythonException& e) {
-            e.restore();
+        auto private_name_result = custom_random_string(typ_id, attr_name, type_need_call);
+        if (!private_name_result.ok) {
             return -1;
         }
+        final_key = private_name_result.value;
     } else {
         final_key = default_random_string(typ_id, attr_name);
     }
@@ -1582,12 +1473,11 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
             }
             std::string key;
             if (type_need_call != NULL) {
-                try {
-                    key = custom_random_string(type_id, name, type_need_call);
-                } catch (RestorePythonException& e) {
-                    e.restore();
+                auto private_name_result = custom_random_string(type_id, name, type_need_call);
+                if (!private_name_result.ok) {
                     return -2; // -2 means exception
                 }
+                key = private_name_result.value;
             } else {
                 key = default_random_string(type_id, name);
             }
@@ -1621,12 +1511,11 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
                                 if (::AllData::type_need_call.find(now_visited_id) != ::AllData::type_need_call.end()) {
                                     PyObject* func = ::AllData::type_need_call[now_visited_id];
                                     if (func != NULL) {
-                                        try {
-                                            key = custom_random_string(now_visited_id, name, func);
-                                        } catch (RestorePythonException& e) {
-                                            e.restore();
+                                        auto private_name_result = custom_random_string(now_visited_id, name, func);
+                                        if (!private_name_result.ok) {
                                             return -2; // -2 means exception
                                         }
+                                        key = private_name_result.value;
                                     } else {
                                         key = default_random_string(now_visited_id, name);
                                     }
@@ -1652,12 +1541,11 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
                     if (::AllData::type_need_call.find(parent_id) != ::AllData::type_need_call.end()) {
                         PyObject* func = ::AllData::type_need_call[parent_id];
                         if (func != NULL) {
-                            try {
-                                key = custom_random_string(parent_id, name, ::AllData::type_need_call[parent_id]);
-                            } catch (RestorePythonException& e) {
-                                e.restore();
+                            auto private_name_result = custom_random_string(parent_id, name, func);
+                            if (!private_name_result.ok) {
                                 return -2; // -2 means exception
                             }
+                            key = private_name_result.value;
                         } else {
                             key = default_random_string(parent_id, name);
                         }
@@ -2317,12 +2205,11 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     for (auto& [key, value]: data.need_remove_itself) {
         std::string final_key;
         if (data.private_func) {
-            try {
-                final_key = custom_random_string(type_id, key, data.private_func);
-            } catch (RestorePythonException& e) {
-                e.restore();
+            auto private_name_result = custom_random_string(type_id, key, data.private_func);
+            if (!private_name_result.ok) {
                 return false;
             }
+            final_key = private_name_result.value;
         } else {
             final_key = default_random_string(type_id, key);
         }
@@ -2346,12 +2233,11 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
         for (auto& [key, value]: map) {
             std::string final_key;
             if (data.private_func) {
-                try {
-                    final_key = custom_random_string(type_id, key, data.private_func);
-                } catch (RestorePythonException& e) {
-                    e.restore();
+                auto private_name_result = custom_random_string(type_id, key, data.private_func);
+                if (!private_name_result.ok) {
                     return false;
                 }
+                final_key = private_name_result.value;
             } else {
                 final_key = default_random_string(type_id, key);
             }
