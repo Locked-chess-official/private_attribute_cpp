@@ -141,6 +141,10 @@ namespace {
         static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
         // all type tp_finalizer map
         static std::unordered_map<uintptr_t, destructor> all_type_finalize;
+        // all type tp_traverse map (original pointers)
+        static std::unordered_map<uintptr_t, traverseproc> all_type_traverse;
+        // all type tp_clear map (original pointers)
+        static std::unordered_map<uintptr_t, inquiry> all_type_clear;
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObject*> all_register_type_weak_ref;
@@ -1232,11 +1236,13 @@ typedef struct {
 } PrivateAttrTypeObject;
 
 static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
-static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept;
-static void PrivateAttr_tp_finalize(PyObject* self) noexcept;
+static int PrivateAttrObject_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept;
+static void PrivateAttrObject_tp_finalize(PyObject* self) noexcept;
+static int PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept;
+static int PrivateAttrType_tp_clear(PyObject* self) noexcept;
 
 static PyObject*
-PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
+PrivateAttrObject_tp_getattro(PyObject* self, PyObject* name) noexcept
 {
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t type_id = (uintptr_t)typ;
@@ -1265,7 +1271,7 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
 }
 
 static int
-PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
+PrivateAttrObject_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
 {
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
@@ -1298,7 +1304,7 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcep
 }
 
 static void
-PrivateAttr_tp_finalize(PyObject* self) noexcept
+PrivateAttrObject_tp_finalize(PyObject* self) noexcept
 {
     uintptr_t id_self = (uintptr_t)self;
     PyTypeObject* typ = Py_TYPE(self);
@@ -1359,6 +1365,176 @@ PrivateAttr_tp_finalize(PyObject* self) noexcept
     }
 }
 
+static int
+PrivateAttrObject_tp_traverse(PyObject* obj, visitproc visit, void* arg) noexcept
+{
+    uintptr_t obj_id = (uintptr_t)obj;
+    uintptr_t type_id = (uintptr_t)Py_TYPE(obj);
+    auto original_it = ::AllData::all_type_traverse.find(type_id);
+    if (original_it != ::AllData::all_type_traverse.end() && original_it->second && original_it->second != PrivateAttrObject_tp_traverse) {
+        int result = original_it->second(obj, visit, arg);
+        if (result != 0) {
+            return result;
+        }
+    }
+    std::vector<uintptr_t> checked_types = {type_id};
+    if (::AllData::all_type_parent_id.find(type_id) != ::AllData::all_type_parent_id.end()) {
+        checked_types.insert(checked_types.end(),
+            ::AllData::all_type_parent_id[type_id].begin(),
+            ::AllData::all_type_parent_id[type_id].end());
+    }
+    for (auto visit_type_id : checked_types) {
+        auto type_it = ::AllData::all_object_attr.find(visit_type_id);
+        if (type_it == ::AllData::all_object_attr.end()) {
+            continue;
+        }
+        auto& obj_map = type_it->second;
+        auto it = obj_map.find(obj_id);
+        if (it == obj_map.end()) {
+            continue;
+        }
+        auto& attr_map = it->second;
+        for (auto& kv : attr_map) {
+            Py_VISIT(kv.second);
+        }
+    }
+    return 0;
+}
+
+static int
+PrivateAttrObject_tp_clear(PyObject* obj) noexcept
+{
+    uintptr_t obj_id = (uintptr_t)obj;
+    uintptr_t type_id = (uintptr_t)Py_TYPE(obj);
+    auto original_it = ::AllData::all_type_clear.find(type_id);
+    if (original_it != ::AllData::all_type_clear.end() && original_it->second && original_it->second != PrivateAttrObject_tp_clear) {
+        int result = original_it->second(obj);
+        if (result != 0) {
+            return result;
+        }
+    }
+    std::vector<uintptr_t> checked_types = {type_id};
+    if (::AllData::all_type_parent_id.find(type_id) != ::AllData::all_type_parent_id.end()) {
+        checked_types.insert(checked_types.end(),
+            ::AllData::all_type_parent_id[type_id].begin(),
+            ::AllData::all_type_parent_id[type_id].end());
+    }
+    for (auto visit_type_id : checked_types) {
+        auto type_it = ::AllData::all_object_attr.find(visit_type_id);
+        if (type_it == ::AllData::all_object_attr.end()) {
+            continue;
+        }
+        auto& obj_map = type_it->second;
+        auto it = obj_map.find(obj_id);
+        if (it == obj_map.end()) {
+            continue;
+        }
+        auto& attr_map = it->second;
+        for (auto& kv : attr_map) {
+            Py_CLEAR(kv.second);
+        }
+        attr_map.clear();
+        obj_map.erase(it);
+    }
+    for (auto visit_type_id : checked_types) {
+        auto mutex_it = ::AllData::all_object_mutex.find(visit_type_id);
+        if (mutex_it == ::AllData::all_object_mutex.end()) {
+            continue;
+        }
+        auto& mutex_map = mutex_it->second;
+        auto lock_it = mutex_map.find(obj_id);
+        if (lock_it != mutex_map.end()) {
+            mutex_map.erase(lock_it);
+        }
+    }
+    clear_obj(obj_id);
+    return 0;
+}
+
+static int
+PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
+{
+    uintptr_t typ_id = (uintptr_t)self;
+    auto orig_it = ::AllData::all_type_traverse.find(typ_id);
+    if (orig_it != ::AllData::all_type_traverse.end() && orig_it->second && orig_it->second != PrivateAttrType_tp_traverse) {
+        int result = orig_it->second(self, visit, arg);
+        if (result != 0) {
+            return result;
+        }
+    }
+    if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
+        auto &m = ::AllData::type_attr_dict[typ_id];
+        for (auto &kv : m) {
+            Py_VISIT(kv.second);
+        }
+    }
+    if (::AllData::all_type_subclass_attr.find(typ_id) != ::AllData::all_type_subclass_attr.end()) {
+        auto &parent_map = ::AllData::all_type_subclass_attr[typ_id];
+        for (auto &p : parent_map) {
+            for (auto &kv : p.second) {
+                Py_VISIT(kv.second);
+            }
+        }
+    }
+    if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
+        Py_VISIT(::AllData::type_need_call[typ_id]);
+    }
+    if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()) {
+        auto &cm = ::AllData::type_allowed_code_map[typ_id];
+        for (auto &kv : cm) {
+            Py_VISIT(kv.second);
+        }
+    }
+    return 0;
+}
+
+static int
+PrivateAttrType_tp_clear(PyObject* self) noexcept
+{
+    uintptr_t typ_id = (uintptr_t)self;
+    auto orig_it = ::AllData::all_type_clear.find(typ_id);
+    if (orig_it != ::AllData::all_type_clear.end() && orig_it->second && orig_it->second != PrivateAttrType_tp_clear) {
+        int result = orig_it->second(self);
+        if (result != 0) {
+            return result;
+        }
+    }
+    if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
+        auto &m = ::AllData::type_attr_dict[typ_id];
+        for (auto &kv : m) {
+            Py_CLEAR(kv.second);
+        }
+        m.clear();
+    }
+    if (::AllData::all_type_subclass_attr.find(typ_id) != ::AllData::all_type_subclass_attr.end()) {
+        auto &parent_map = ::AllData::all_type_subclass_attr[typ_id];
+        for (auto &p : parent_map) {
+            for (auto &kv : p.second) {
+                Py_CLEAR(kv.second);
+            }
+            p.second.clear();
+        }
+    }
+    if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
+        Py_CLEAR(::AllData::type_need_call[typ_id]);
+        ::AllData::type_need_call.erase(typ_id);
+    }
+    if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()) {
+        auto &cm = ::AllData::type_allowed_code_map[typ_id];
+        for (auto &kv : cm) {
+            Py_CLEAR(kv.second);
+        }
+        cm.clear();
+    }
+    if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()) {
+        ::AllData::all_object_attr[typ_id].clear();
+    }
+    if (::AllData::all_object_mutex.find(typ_id) != ::AllData::all_object_mutex.end()) {
+        ::AllData::all_object_mutex[typ_id].clear();
+    }
+    return 0;
+}
+
 static void
 PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept
 {
@@ -1384,6 +1560,7 @@ PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexce
 static PyObject* PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept;
 static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept;
 static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept;
+static void register_finalize(PyObject* cls) noexcept;
 static void PrivateAttrType_del(PyObject* cls) noexcept;
 
 static PyTypeObject PrivateAttrType = {
@@ -1406,10 +1583,10 @@ static PyTypeObject PrivateAttrType = {
     (getattrofunc)PrivateAttrType_getattr,      // tp_getattro
     (setattrofunc)PrivateAttrType_setattr,      // tp_setattro
     0,                                          // tp_as_buffer
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,   // tp_flags
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC, // tp_flags
     "metaclass for private attributes",         // tp_doc
-    0,                                          // tp_travers
-    0,                                          // tp_clear
+    (traverseproc)PrivateAttrType_tp_traverse,   // tp_traverse
+    (inquiry)PrivateAttrType_tp_clear,           // tp_clear
     0,                                          // tp_richcompare
     0,                                          // tp_weaklistoffset
     0,                                          // tp_iter
@@ -2065,65 +2242,103 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexce
 static getattrofunc get_need_tp_getattro(PyTypeObject* cls) noexcept;
 static setattrofunc get_need_tp_setattro(PyTypeObject* cls) noexcept;
 static destructor get_need_tp_finalize(PyTypeObject* cls) noexcept;
+static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
+static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 
 static void
 ensure_tp(PyTypeObject* type_instance) noexcept
 {
     uintptr_t type_id = (uintptr_t)(type_instance);
     {
-        if (type_instance->tp_getattro != PrivateAttr_tp_getattro) {
+        if (type_instance->tp_getattro != PrivateAttrObject_tp_getattro) {
             if (!type_instance->tp_getattro && ::AllData::all_type_getattro.find(type_id) == ::AllData::all_type_getattro.end()) {
                 ::AllData::all_type_getattro[type_id] = get_need_tp_getattro(type_instance);
             } else {
                 ::AllData::all_type_getattro[type_id] = type_instance->tp_getattro;
             }
-            type_instance->tp_getattro = PrivateAttr_tp_getattro;
+            type_instance->tp_getattro = PrivateAttrObject_tp_getattro;
         } else if (::AllData::all_type_getattro.find(type_id) == ::AllData::all_type_getattro.end()) {
             PyTypeObject* base = type_instance->tp_base;
             uintptr_t base_id = (uintptr_t)(base);
             if (::AllData::all_type_getattro.find(base_id) != ::AllData::all_type_getattro.end()) {
                 ::AllData::all_type_getattro[type_id] = ::AllData::all_type_getattro[base_id];
-            } else if (base && base->tp_getattro && base->tp_getattro != PrivateAttr_tp_getattro) {
+            } else if (base && base->tp_getattro && base->tp_getattro != PrivateAttrObject_tp_getattro) {
                 ::AllData::all_type_getattro[type_id] = base->tp_getattro;
             }
         }
     }
     {
-        if (type_instance->tp_setattro != PrivateAttr_tp_setattro) {
+        if (type_instance->tp_setattro != PrivateAttrObject_tp_setattro) {
             if (!type_instance->tp_setattro && ::AllData::all_type_setattro.find(type_id) == ::AllData::all_type_setattro.end()) {
                 ::AllData::all_type_setattro[type_id] = get_need_tp_setattro(type_instance);
             } else {
                 ::AllData::all_type_setattro[type_id] = type_instance->tp_setattro;
             }
-            type_instance->tp_setattro = PrivateAttr_tp_setattro;
+            type_instance->tp_setattro = PrivateAttrObject_tp_setattro;
         } else if (::AllData::all_type_setattro.find(type_id) == ::AllData::all_type_setattro.end()){
             PyTypeObject* base = type_instance->tp_base;
             uintptr_t base_id = (uintptr_t)(base);
             if (::AllData::all_type_setattro.find(base_id) != ::AllData::all_type_setattro.end()) {
                 ::AllData::all_type_setattro[type_id] = ::AllData::all_type_setattro[base_id];
-            } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttr_tp_setattro) {
+            } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttrObject_tp_setattro) {
                 ::AllData::all_type_setattro[type_id] = base->tp_setattro;
             }
         }
     }
     {
-        if (type_instance->tp_finalize != PrivateAttr_tp_finalize) {
+        if (type_instance->tp_finalize != PrivateAttrObject_tp_finalize) {
             if (!type_instance->tp_finalize && ::AllData::all_type_finalize.find(type_id) == ::AllData::all_type_finalize.end()) {
                 ::AllData::all_type_finalize[type_id] = get_need_tp_finalize(type_instance);
             } else {
                 ::AllData::all_type_finalize[type_id] = type_instance->tp_finalize;
             }
-            type_instance->tp_finalize = PrivateAttr_tp_finalize;
+            type_instance->tp_finalize = PrivateAttrObject_tp_finalize;
         } else if (::AllData::all_type_finalize.find(type_id) == ::AllData::all_type_finalize.end()) {
             PyTypeObject* base = type_instance->tp_base;
             uintptr_t base_id = (uintptr_t)(base);
             if (::AllData::all_type_finalize.find(base_id) != ::AllData::all_type_finalize.end()) {
                 ::AllData::all_type_finalize[type_id] = ::AllData::all_type_finalize[base_id];
-            } else if (base && base->tp_finalize && base->tp_finalize != PrivateAttr_tp_finalize) {
+            } else if (base && base->tp_finalize && base->tp_finalize != PrivateAttrObject_tp_finalize) {
                 ::AllData::all_type_finalize[type_id] = base->tp_finalize;
             }
         }
     }
+{
+    if (type_instance->tp_traverse != PrivateAttrObject_tp_traverse) {
+        if (!type_instance->tp_traverse && ::AllData::all_type_traverse.find(type_id) == ::AllData::all_type_traverse.end()) {
+            ::AllData::all_type_traverse[type_id] = get_need_tp_traverse(type_instance);
+        } else {
+            ::AllData::all_type_traverse[type_id] = type_instance->tp_traverse;
+        }
+        type_instance->tp_traverse = PrivateAttrObject_tp_traverse;
+    } else if (::AllData::all_type_traverse.find(type_id) == ::AllData::all_type_traverse.end()) {
+        PyTypeObject* base = type_instance->tp_base;
+        uintptr_t base_id = (uintptr_t)(base);
+        if (::AllData::all_type_traverse.find(base_id) != ::AllData::all_type_traverse.end()) {
+            ::AllData::all_type_traverse[type_id] = ::AllData::all_type_traverse[base_id];
+        } else if (base && base->tp_traverse && base->tp_traverse != PrivateAttrObject_tp_traverse) {
+            ::AllData::all_type_traverse[type_id] = base->tp_traverse;
+        }
+    }
+}
+{
+    if (type_instance->tp_clear != PrivateAttrObject_tp_clear) {
+        if (!type_instance->tp_clear && ::AllData::all_type_clear.find(type_id) == ::AllData::all_type_clear.end()) {
+            ::AllData::all_type_clear[type_id] = get_need_tp_clear(type_instance);
+        } else {
+            ::AllData::all_type_clear[type_id] = type_instance->tp_clear;
+        }
+        type_instance->tp_clear = PrivateAttrObject_tp_clear;
+    } else if (::AllData::all_type_clear.find(type_id) == ::AllData::all_type_clear.end()) {
+        PyTypeObject* base = type_instance->tp_base;
+        uintptr_t base_id = (uintptr_t)(base);
+        if (::AllData::all_type_clear.find(base_id) != ::AllData::all_type_clear.end()) {
+            ::AllData::all_type_clear[type_id] = ::AllData::all_type_clear[base_id];
+        } else if (base && base->tp_clear && base->tp_clear != PrivateAttrObject_tp_clear) {
+            ::AllData::all_type_clear[type_id] = base->tp_clear;
+        }
+    }
+}
 }
 
 static void
@@ -2300,15 +2515,27 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
         return type_getattr(cls, name_str);
     }
     Py_XDECREF(now_code);
+    auto orig_it = ::AllData::all_type_getattro.find(typ_id);
+    if (orig_it != ::AllData::all_type_getattro.end() && orig_it->second && orig_it->second != PrivateAttrType_getattr) {
+        PyObject* result = orig_it->second(cls, name);
+        if (result != NULL || PyErr_Occurred()) {
+            return result;
+        }
+        PyErr_Clear();
+    }
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
     while (base && base->tp_base && base->tp_getattro == PrivateAttrType_getattr) {
         base = base->tp_base;
     }
     if (!base) {
         PyObject* result = PyType_Type.tp_getattro(cls, name);
+        ensure_tp((PyTypeObject*)cls);
+        ensure_subclass_tp((PyTypeObject*)cls);
         return result;
     }
     PyObject* result = base->tp_getattro(cls, name);
+    ensure_tp((PyTypeObject*)cls);
+    ensure_subclass_tp((PyTypeObject*)cls);
     return result;
 }
 
@@ -2403,7 +2630,7 @@ get_need_tp_getattro(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_getattro != PrivateAttr_tp_getattro) {
+        if (base->tp_getattro != PrivateAttrObject_tp_getattro) {
             return base->tp_getattro;
         } else if (::AllData::all_type_getattro.find((uintptr_t)base) != ::AllData::all_type_getattro.end()) {
             if (::AllData::all_type_getattro[(uintptr_t)base]) {
@@ -2422,7 +2649,7 @@ get_need_tp_setattro(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_setattro != PrivateAttr_tp_setattro) {
+        if (base->tp_setattro != PrivateAttrObject_tp_setattro) {
             return base->tp_setattro;
         } else if (::AllData::all_type_setattro.find((uintptr_t)base) != ::AllData::all_type_setattro.end()) {
             if (::AllData::all_type_setattro[(uintptr_t)base]) {
@@ -2441,11 +2668,144 @@ get_need_tp_finalize(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_finalize != PrivateAttr_tp_finalize) {
+        if (base->tp_finalize != PrivateAttrObject_tp_finalize) {
             return base->tp_finalize;
         } else if (::AllData::all_type_finalize.find((uintptr_t)base) != ::AllData::all_type_finalize.end()) {
             if (::AllData::all_type_finalize[(uintptr_t)base]) {
                 return ::AllData::all_type_finalize[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static traverseproc
+get_need_tp_traverse(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_traverse != PrivateAttrObject_tp_traverse) {
+            return base->tp_traverse;
+        } else if (::AllData::all_type_traverse.find((uintptr_t)base) != ::AllData::all_type_traverse.end()) {
+            if (::AllData::all_type_traverse[(uintptr_t)base]) {
+                return ::AllData::all_type_traverse[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static inquiry
+get_need_tp_clear(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_clear != PrivateAttrObject_tp_clear) {
+            return base->tp_clear;
+        } else if (::AllData::all_type_clear.find((uintptr_t)base) != ::AllData::all_type_clear.end()) {
+            if (::AllData::all_type_clear[(uintptr_t)base]) {
+                return ::AllData::all_type_clear[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static getattrofunc
+get_need_metaclass_tp_getattro(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_getattro != PrivateAttrType_getattr) {
+            return base->tp_getattro;
+        } else if (::AllData::all_type_getattro.find((uintptr_t)base) != ::AllData::all_type_getattro.end()) {
+            if (::AllData::all_type_getattro[(uintptr_t)base]) {
+                return ::AllData::all_type_getattro[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static setattrofunc
+get_need_metaclass_tp_setattro(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_setattro != PrivateAttrType_setattr) {
+            return base->tp_setattro;
+        } else if (::AllData::all_type_setattro.find((uintptr_t)base) != ::AllData::all_type_setattro.end()) {
+            if (::AllData::all_type_setattro[(uintptr_t)base]) {
+                return ::AllData::all_type_setattro[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static destructor
+get_need_metaclass_tp_finalize(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_finalize != register_finalize) {
+            return base->tp_finalize;
+        } else if (::AllData::all_type_finalize.find((uintptr_t)base) != ::AllData::all_type_finalize.end()) {
+            if (::AllData::all_type_finalize[(uintptr_t)base]) {
+                return ::AllData::all_type_finalize[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static traverseproc
+get_need_metaclass_tp_traverse(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_traverse != PrivateAttrType_tp_traverse) {
+            return base->tp_traverse;
+        } else if (::AllData::all_type_traverse.find((uintptr_t)base) != ::AllData::all_type_traverse.end()) {
+            if (::AllData::all_type_traverse[(uintptr_t)base]) {
+                return ::AllData::all_type_traverse[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static inquiry
+get_need_metaclass_tp_clear(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_clear != PrivateAttrType_tp_clear) {
+            return base->tp_clear;
+        } else if (::AllData::all_type_clear.find((uintptr_t)base) != ::AllData::all_type_clear.end()) {
+            if (::AllData::all_type_clear[(uintptr_t)base]) {
+                return ::AllData::all_type_clear[(uintptr_t)base];
             }
             base = base->tp_base;
         } else {
@@ -2481,6 +2841,14 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
         return type_setattr(cls, name_str, value);
     }
     Py_XDECREF(now_code);
+    auto orig_it = ::AllData::all_type_setattro.find(typ_id);
+    if (orig_it != ::AllData::all_type_setattro.end() && orig_it->second && orig_it->second != PrivateAttrType_setattr) {
+        int result = orig_it->second(cls, name, value);
+        if (result == 0 || PyErr_Occurred()) {
+            return result;
+        }
+        PyErr_Clear();
+    }
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
     while (base && base->tp_base && base->tp_setattro == PrivateAttrType_setattr) {
         base = base->tp_base;
@@ -2498,6 +2866,10 @@ static void
 PrivateAttrType_finalize(PyObject* cls) noexcept
 {
     uintptr_t typ_id = (uintptr_t) cls;
+    auto orig_finalize = ::AllData::all_type_finalize.find(typ_id);
+    if (orig_finalize != ::AllData::all_type_finalize.end() && orig_finalize->second && orig_finalize->second != register_finalize) {
+        orig_finalize->second(cls);
+    }
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()) {
         ::AllData::all_type_attr_set.erase(typ_id);
     }
@@ -2554,6 +2926,12 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     }
     if (::AllData::all_type_finalize.find(typ_id) != ::AllData::all_type_finalize.end()) {
         ::AllData::all_type_finalize.erase(typ_id);
+    }
+    if (::AllData::all_type_traverse.find(typ_id) != ::AllData::all_type_traverse.end()) {
+        ::AllData::all_type_traverse.erase(typ_id);
+    }
+    if (::AllData::all_type_clear.find(typ_id) != ::AllData::all_type_clear.end()) {
+        ::AllData::all_type_clear.erase(typ_id);
     }
     ::AllData::all_type_mutex.erase(typ_id);
     clear_obj(typ_id);
@@ -2793,6 +3171,12 @@ metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
         ::AllData::all_register_type_weak_ref.erase(it);
     }
 
+    ::AllData::all_type_getattro.erase(id);
+    ::AllData::all_type_setattro.erase(id);
+    ::AllData::all_type_finalize.erase(id);
+    ::AllData::all_type_traverse.erase(id);
+    ::AllData::all_type_clear.erase(id);
+
     Py_RETURN_NONE;
 }
 
@@ -2882,9 +3266,88 @@ register_metaclass_head(PyObject* metaclass) noexcept
         return NULL;
     }
     ::AllData::all_register_type_weak_ref[id] = ref;
-    ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
-    ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
-    ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
+    PyTypeObject* metaclass_type = (PyTypeObject*)metaclass;
+    uintptr_t metaclass_id = (uintptr_t)metaclass_type;
+    if (metaclass_type->tp_getattro != PrivateAttrType_getattr) {
+        if (!metaclass_type->tp_getattro && ::AllData::all_type_getattro.find(metaclass_id) == ::AllData::all_type_getattro.end()) {
+            ::AllData::all_type_getattro[metaclass_id] = get_need_metaclass_tp_getattro(metaclass_type);
+        } else {
+            ::AllData::all_type_getattro[metaclass_id] = metaclass_type->tp_getattro;
+        }
+        metaclass_type->tp_getattro = PrivateAttrType_getattr;
+    } else if (::AllData::all_type_getattro.find(metaclass_id) == ::AllData::all_type_getattro.end()) {
+        PyTypeObject* base = metaclass_type->tp_base;
+        uintptr_t base_id = (uintptr_t)base;
+        if (::AllData::all_type_getattro.find(base_id) != ::AllData::all_type_getattro.end()) {
+            ::AllData::all_type_getattro[metaclass_id] = ::AllData::all_type_getattro[base_id];
+        } else if (base && base->tp_getattro && base->tp_getattro != PrivateAttrType_getattr) {
+            ::AllData::all_type_getattro[metaclass_id] = base->tp_getattro;
+        }
+    }
+    if (metaclass_type->tp_setattro != PrivateAttrType_setattr) {
+        if (!metaclass_type->tp_setattro && ::AllData::all_type_setattro.find(metaclass_id) == ::AllData::all_type_setattro.end()) {
+            ::AllData::all_type_setattro[metaclass_id] = get_need_metaclass_tp_setattro(metaclass_type);
+        } else {
+            ::AllData::all_type_setattro[metaclass_id] = metaclass_type->tp_setattro;
+        }
+        metaclass_type->tp_setattro = PrivateAttrType_setattr;
+    } else if (::AllData::all_type_setattro.find(metaclass_id) == ::AllData::all_type_setattro.end()) {
+        PyTypeObject* base = metaclass_type->tp_base;
+        uintptr_t base_id = (uintptr_t)base;
+        if (::AllData::all_type_setattro.find(base_id) != ::AllData::all_type_setattro.end()) {
+            ::AllData::all_type_setattro[metaclass_id] = ::AllData::all_type_setattro[base_id];
+        } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttrType_setattr) {
+            ::AllData::all_type_setattro[metaclass_id] = base->tp_setattro;
+        }
+    }
+    if (metaclass_type->tp_finalize != register_finalize) {
+        if (!metaclass_type->tp_finalize && ::AllData::all_type_finalize.find(metaclass_id) == ::AllData::all_type_finalize.end()) {
+            ::AllData::all_type_finalize[metaclass_id] = get_need_metaclass_tp_finalize(metaclass_type);
+        } else {
+            ::AllData::all_type_finalize[metaclass_id] = metaclass_type->tp_finalize;
+        }
+        metaclass_type->tp_finalize = register_finalize;
+    } else if (::AllData::all_type_finalize.find(metaclass_id) == ::AllData::all_type_finalize.end()) {
+        PyTypeObject* base = metaclass_type->tp_base;
+        uintptr_t base_id = (uintptr_t)base;
+        if (::AllData::all_type_finalize.find(base_id) != ::AllData::all_type_finalize.end()) {
+            ::AllData::all_type_finalize[metaclass_id] = ::AllData::all_type_finalize[base_id];
+        } else if (base && base->tp_finalize && base->tp_finalize != register_finalize) {
+            ::AllData::all_type_finalize[metaclass_id] = base->tp_finalize;
+        }
+    }
+    if (metaclass_type->tp_traverse != PrivateAttrType_tp_traverse) {
+        if (!metaclass_type->tp_traverse && ::AllData::all_type_traverse.find(metaclass_id) == ::AllData::all_type_traverse.end()) {
+            ::AllData::all_type_traverse[metaclass_id] = get_need_metaclass_tp_traverse(metaclass_type);
+        } else {
+            ::AllData::all_type_traverse[metaclass_id] = metaclass_type->tp_traverse;
+        }
+        metaclass_type->tp_traverse = PrivateAttrType_tp_traverse;
+    } else if (::AllData::all_type_traverse.find(metaclass_id) == ::AllData::all_type_traverse.end()) {
+        PyTypeObject* base = metaclass_type->tp_base;
+        uintptr_t base_id = (uintptr_t)base;
+        if (::AllData::all_type_traverse.find(base_id) != ::AllData::all_type_traverse.end()) {
+            ::AllData::all_type_traverse[metaclass_id] = ::AllData::all_type_traverse[base_id];
+        } else if (base && base->tp_traverse && base->tp_traverse != PrivateAttrType_tp_traverse) {
+            ::AllData::all_type_traverse[metaclass_id] = base->tp_traverse;
+        }
+    }
+    if (metaclass_type->tp_clear != PrivateAttrType_tp_clear) {
+        if (!metaclass_type->tp_clear && ::AllData::all_type_clear.find(metaclass_id) == ::AllData::all_type_clear.end()) {
+            ::AllData::all_type_clear[metaclass_id] = get_need_metaclass_tp_clear(metaclass_type);
+        } else {
+            ::AllData::all_type_clear[metaclass_id] = metaclass_type->tp_clear;
+        }
+        metaclass_type->tp_clear = PrivateAttrType_tp_clear;
+    } else if (::AllData::all_type_clear.find(metaclass_id) == ::AllData::all_type_clear.end()) {
+        PyTypeObject* base = metaclass_type->tp_base;
+        uintptr_t base_id = (uintptr_t)base;
+        if (::AllData::all_type_clear.find(base_id) != ::AllData::all_type_clear.end()) {
+            ::AllData::all_type_clear[metaclass_id] = ::AllData::all_type_clear[base_id];
+        } else if (base && base->tp_clear && base->tp_clear != PrivateAttrType_tp_clear) {
+            ::AllData::all_type_clear[metaclass_id] = base->tp_clear;
+        }
+    }
     Py_RETURN_NONE;
 }
 
@@ -2929,9 +3392,47 @@ ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass) noexcept
 {
     uintptr_t id = (uintptr_t)metaclass;
     if (::AllData::all_register_type_weak_ref.find(id) != ::AllData::all_register_type_weak_ref.end()) {
-        ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
-        ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
-        ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
+        PyTypeObject* metaclass_type = (PyTypeObject*)metaclass;
+        if (metaclass_type->tp_getattro != PrivateAttrType_getattr) {
+            if (!metaclass_type->tp_getattro && ::AllData::all_type_getattro.find(id) == ::AllData::all_type_getattro.end()) {
+                ::AllData::all_type_getattro[id] = get_need_metaclass_tp_getattro(metaclass_type);
+            } else {
+                ::AllData::all_type_getattro[id] = metaclass_type->tp_getattro;
+            }
+            metaclass_type->tp_getattro = PrivateAttrType_getattr;
+        }
+        if (metaclass_type->tp_setattro != PrivateAttrType_setattr) {
+            if (!metaclass_type->tp_setattro && ::AllData::all_type_setattro.find(id) == ::AllData::all_type_setattro.end()) {
+                ::AllData::all_type_setattro[id] = get_need_metaclass_tp_setattro(metaclass_type);
+            } else {
+                ::AllData::all_type_setattro[id] = metaclass_type->tp_setattro;
+            }
+            metaclass_type->tp_setattro = PrivateAttrType_setattr;
+        }
+        if (metaclass_type->tp_finalize != register_finalize) {
+            if (!metaclass_type->tp_finalize && ::AllData::all_type_finalize.find(id) == ::AllData::all_type_finalize.end()) {
+                ::AllData::all_type_finalize[id] = get_need_metaclass_tp_finalize(metaclass_type);
+            } else {
+                ::AllData::all_type_finalize[id] = metaclass_type->tp_finalize;
+            }
+            metaclass_type->tp_finalize = register_finalize;
+        }
+        if (metaclass_type->tp_traverse != PrivateAttrType_tp_traverse) {
+            if (!metaclass_type->tp_traverse && ::AllData::all_type_traverse.find(id) == ::AllData::all_type_traverse.end()) {
+                ::AllData::all_type_traverse[id] = get_need_metaclass_tp_traverse(metaclass_type);
+            } else {
+                ::AllData::all_type_traverse[id] = metaclass_type->tp_traverse;
+            }
+            metaclass_type->tp_traverse = PrivateAttrType_tp_traverse;
+        }
+        if (metaclass_type->tp_clear != PrivateAttrType_tp_clear) {
+            if (!metaclass_type->tp_clear && ::AllData::all_type_clear.find(id) == ::AllData::all_type_clear.end()) {
+                ::AllData::all_type_clear[id] = get_need_metaclass_tp_clear(metaclass_type);
+            } else {
+                ::AllData::all_type_clear[id] = metaclass_type->tp_clear;
+            }
+            metaclass_type->tp_clear = PrivateAttrType_tp_clear;
+        }
     }
     Py_RETURN_NONE;
 }
