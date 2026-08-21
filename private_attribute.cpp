@@ -311,9 +311,6 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
                 if (!PyUnicode_Check(python_result)) {
                     Py_DECREF(python_result);
                     PyErr_SetString(PyExc_TypeError, "private_func function must return a string");
-                    PyObject *type, *value, *traceback;
-                    PyErr_Fetch(&type, &value, &traceback);
-                    PyErr_Restore(type, value, traceback);
                     result.ok = false;
                     result.value = "private_func function must return a string";
                     return result;
@@ -339,9 +336,6 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
                 ::AllData::cache[key] = result.value;
                 ::AllData::all_exist_name.insert(result.value);
             } else {
-                PyObject *type, *value, *traceback;
-                PyErr_Fetch(&type, &value, &traceback);
-                PyErr_Restore(type, value, traceback);
                 result.ok = false;
                 result.value = "python exception while calling private function";
             }
