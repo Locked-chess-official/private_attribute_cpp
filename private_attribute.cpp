@@ -476,9 +476,7 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
     if (type_name == NULL) {
         return NULL;
     }
-    std::string string_type_name = type_name;
-    std::string exception_information = "'" + string_type_name + "' objects has no attribute '" + attr_name + "'";
-    PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
+    PyErr_Format(PyExc_AttributeError, "'%s' object has no attribute '%s'", type_name, attr_name.c_str());
     return NULL;
 }
 
@@ -510,9 +508,7 @@ type_getattr(PyObject* typ, const std::string& attr_name) noexcept
     if (type_name == NULL) {
         return NULL;
     }
-    std::string string_type_name = type_name;
-    std::string message = "type object '" + string_type_name + "' has no attribute '" + attr_name + "'";
-    PyErr_SetString(PyExc_AttributeError, message.c_str());
+    PyErr_Format(PyExc_AttributeError, "'%s' object has no attribute '%s'", type_name, attr_name.c_str());
     return NULL;
 }
 
@@ -723,10 +719,7 @@ id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
             if (type_name == NULL) {
                 return -1;
             }
-            std::string string_type_name = type_name;
-            std::string exception_information = "'" + string_type_name + "' objects has no attribute '" + attr_name + "'";
-            PyErr_SetString(PyExc_AttributeError, exception_information.c_str());
-            return -1;
+            PyErr_Format(PyExc_AttributeError, "'%s' object has no attribute '%s'", type_name, attr_name.c_str());
         }
         PyObject* delete_obj = ::AllData::all_object_attr[final_id][obj_id][obj_private_name];
         ::AllData::all_object_attr[final_id][obj_id].erase(obj_private_name);
@@ -774,9 +767,7 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
             if (type_name == NULL) {
                 return -1;
             }
-            std::string string_type_name = type_name;
-            std::string message = "type object '" + string_type_name + "' has no attribute '" + attr_name + "'";
-            PyErr_SetString(PyExc_AttributeError, message.c_str());
+            PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
             return -1;
         }
         PyObject* delete_obj = ::AllData::type_attr_dict[typ_id][final_key];
@@ -802,9 +793,7 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
             if (type_name == NULL) {
                 return -1;
             }
-            std::string string_type_name = type_name;
-            std::string message = "type object '" + string_type_name + "' has no attribute '" + attr_name + "'";
-            PyErr_SetString(PyExc_AttributeError, message.c_str());
+            PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
             return -1;
         }
         PyObject* delete_obj = ::AllData::all_type_subclass_attr[final_id][typ_id][final_key];
@@ -1937,26 +1926,46 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 
     if (has_slots) {
         PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
-        PyObject* slot_seq = PySequence_Fast(all_slots, "__slots__ must be a sequence");
-        if (!slot_seq) {
-            return false;
-        }
-
-        Py_ssize_t slot_len = PySequence_Fast_GET_SIZE(slot_seq);
-
-        for (Py_ssize_t j = 0; j < slot_len; j++) {
-            PyObject* slot = PySequence_Fast_GET_ITEM(slot_seq, j);
-            if (PyUnicode_Check(slot)) {
-                const char* slot_cstr = PyUnicode_AsUTF8(slot);
-                if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
-                    std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + std::string(slot_cstr) + "'";
-                    PyErr_SetString(PyExc_TypeError, error_msg.c_str());
-                    Py_DECREF(slot_seq);
+        if (!all_slots) {return false;}
+        if (PyUnicode_Check(all_slots)) {
+            const char* slot_cstr = PyUnicode_AsUTF8(all_slots);
+            if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
+                std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + std::string(slot_cstr) + "'";
+                PyErr_SetString(PyExc_TypeError, error_msg.c_str());
+                return false;
+            }
+        } else {
+            PyObject* slot_seq;
+            if (PyAnyDict_Check(all_slots)) {
+                // use the key of the dict as the slot name
+                PyObject* keys = PyDict_Keys(all_slots);
+                if (!keys) {
                     return false;
                 }
+                slot_seq = keys;
+            } else {
+                slot_seq = PySequence_Fast(all_slots, "__slots__ must be a sequence");
             }
+            if (!slot_seq) {
+                return false;
+            }
+
+            Py_ssize_t slot_len = PySequence_Fast_GET_SIZE(slot_seq);
+
+            for (Py_ssize_t j = 0; j < slot_len; j++) {
+                PyObject* slot = PySequence_Fast_GET_ITEM(slot_seq, j);
+                if (PyUnicode_Check(slot)) {
+                    const char* slot_cstr = PyUnicode_AsUTF8(slot);
+                    if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
+                        std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + std::string(slot_cstr) + "'";
+                        PyErr_SetString(PyExc_TypeError, error_msg.c_str());
+                        Py_DECREF(slot_seq);
+                        return false;
+                    }
+                }
+            }
+            Py_DECREF(slot_seq);
         }
-        Py_DECREF(slot_seq);
     }
 
     Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases);
