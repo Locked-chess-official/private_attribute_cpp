@@ -1340,10 +1340,6 @@ PrivateAttr_tp_finalize(PyObject* self) noexcept
         if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()){
             auto& all_object_attr = ::AllData::all_object_attr[typ_id];
             if (all_object_attr.find(id_self) != all_object_attr.end()){
-                auto& all_object_attr_self = all_object_attr[id_self];
-                for (auto& attr : all_object_attr_self){
-                    Py_XDECREF(attr.second);
-                }
                 all_object_attr.erase(id_self);
             }
         }
@@ -1358,10 +1354,6 @@ PrivateAttr_tp_finalize(PyObject* self) noexcept
             if (::AllData::all_object_attr.find(parent_id) != ::AllData::all_object_attr.end()){
                 auto& all_object_attr = ::AllData::all_object_attr[parent_id];
                 if (all_object_attr.find(id_self) != all_object_attr.end()){
-                    auto& all_object_attr_self = all_object_attr[id_self];
-                    for (auto& attr : all_object_attr_self){
-                        Py_XDECREF(attr.second);
-                    }
                     all_object_attr.erase(id_self);
                 }
             }
