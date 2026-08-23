@@ -107,7 +107,7 @@ jobs:
 
     environment:
       name: pypi
-      url: https://https://pypi.org/project/private-attribute-cpp/
+      url: https://pypi.org/project/private-attribute-cpp/
 
     permissions:
       id-token: write
