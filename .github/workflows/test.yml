@@ -26,11 +26,59 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install .
-          pip install pytest
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install pytest
 
-      - name: Run tests
+      - name: Build extension in-place for native debugging (Linux/Windows only)
+        shell: bash
         run: |
-          pytest tests/ -vvs -W error
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "Skipping in-place build on macOS to avoid CI failures; using pip install for macOS jobs"
+          else
+            if [ "${{ runner.os }}" = "Linux" ]; then
+              export CFLAGS="-O0 -g -fno-omit-frame-pointer"
+              export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
+            else
+              export CFLAGS="-g -O0"
+              export CXXFLAGS="-g -O0"
+            fi
+            python setup.py build_ext --inplace
+          fi
+
+      - name: Install native debugging tools
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y gdb
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            echo "lldb is available on macOS runners"
+          else
+            echo "Native crash backtraces on Windows are best-effort via faulthandler and WinDbg when available"
+          fi
+
+      - name: Run tests with native crash backtrace
+        shell: bash
+        env:
+          PYTHONFAULTHANDLER: "1"
+          PYTHONPATH: "."
+        run: |
+          set -o pipefail
+
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            gdb -q --batch \
+              -ex "set pagination off" \
+              -ex "handle SIGSEGV stop print pass" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args python -m pytest tests/ -vvs -W error
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            # Use regular pytest on macOS CI to avoid lldb-related early stops; install via pip
+            python -m pip install --upgrade pip
+            python -m pip install .
+            python -X faulthandler -m pytest tests/ -vvs -W error
+          else
+            python -X faulthandler -m pytest tests/ -vvs -W error
+          fi
