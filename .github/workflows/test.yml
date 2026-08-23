@@ -33,10 +33,14 @@ jobs:
 
       - name: Build extension in-place for native debugging
         shell: bash
-        env:
-          CFLAGS: "-O0 -g -fno-omit-frame-pointer"
-          CXXFLAGS: "-O0 -g -fno-omit-frame-pointer"
         run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            export CFLAGS="-g -O0"
+            export CXXFLAGS="-g -O0"
+          else
+            export CFLAGS="-O0 -g -fno-omit-frame-pointer"
+            export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
+          fi
           python setup.py build_ext --inplace
 
       - name: Install native debugging tools
