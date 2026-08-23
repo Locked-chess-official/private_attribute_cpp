@@ -115,6 +115,56 @@ namespace std {
     };
 }
 
+struct PyObjectStorage
+{
+    PyObject* obj = NULL;
+
+    PyObjectStorage() noexcept = default;
+    PyObjectStorage(PyObject* obj) noexcept : obj(obj) {
+        Py_XINCREF(obj);
+    }
+    PyObjectStorage(const PyObjectStorage& other) noexcept : obj(other.obj) {
+        Py_XINCREF(obj);
+    }
+    PyObjectStorage(PyObjectStorage&& other) noexcept : obj(other.obj) {
+        other.obj = NULL;
+    }
+    PyObjectStorage& operator=(const PyObjectStorage& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        PyObject* new_obj = other.obj;
+        Py_XINCREF(new_obj);
+        Py_XDECREF(obj);
+        obj = new_obj;
+        return *this;
+    }
+    PyObjectStorage& operator=(PyObjectStorage&& other) noexcept {
+        if (this != &other) {
+            Py_XDECREF(obj);
+            obj = other.obj;
+            other.obj = NULL;
+        }
+        return *this;
+    }
+    PyObjectStorage& operator=(PyObject* new_obj) noexcept {
+        Py_XINCREF(new_obj);
+        Py_XDECREF(obj);
+        obj = new_obj;
+        return *this;
+    }
+    ~PyObjectStorage() noexcept {
+        Py_XDECREF(obj);
+    }
+
+    operator PyObject*() const noexcept {
+        return obj;
+    }
+    PyObject* get() const noexcept {
+        return obj;
+    }
+};
+
 namespace {
     namespace AllData {
         static std::unordered_map<AllPyobjectAttrCacheKey, std::string> cache;
@@ -122,7 +172,7 @@ namespace {
         static std::unordered_map<uintptr_t, std::vector<AllPyobjectAttrCacheKey>> obj_attr_keys;
         static std::shared_mutex cache_mutex;
         namespace {
-            static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObject*>> type_attr_dict;
+            static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> type_attr_dict;
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
         static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
@@ -130,7 +180,7 @@ namespace {
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
-            std::unordered_map<std::string, PyObject*>>> all_object_attr, all_type_subclass_attr;
+            std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
         all_object_mutex, all_type_subclass_mutex;
@@ -149,16 +199,12 @@ namespace {
 
 struct FinalObject
 {
-    PyObject* result = NULL;
+    PyObjectStorage result;
     int status = 0;
-    FinalObject(PyObject* result) noexcept
-        : result(result) {
-            Py_XINCREF(result);
-        }
-    FinalObject(int status) noexcept: status(status) {}
-    ~FinalObject() noexcept {
-        Py_XDECREF(result);
-    }
+    FinalObject() noexcept = default;
+    FinalObject(PyObject* result) noexcept : result(result) {}
+    FinalObject(PyObjectStorage result) noexcept : result(std::move(result)) {}
+    FinalObject(int status) noexcept : status(status) {}
 };
 
 static TwoStringTuple get_string_hash_tuple2(const std::string& name) noexcept;
@@ -570,12 +616,8 @@ id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject*
     }
 
     // second: set attribute on obj
-    Py_INCREF(value);
     {
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[final_id][obj_id]);
-        if (::AllData::all_object_attr[final_id][obj_id].find(obj_private_name) != ::AllData::all_object_attr[final_id][obj_id].end()) {
-            Py_XDECREF(::AllData::all_object_attr[final_id][obj_id][obj_private_name]);
-        }
         ::AllData::all_object_attr[final_id][obj_id][obj_private_name] = value;
     }
     return 0;
@@ -621,11 +663,7 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
         }
         {
             std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
-            if (::AllData::type_attr_dict[typ_id].find(final_key) != ::AllData::type_attr_dict[typ_id].end()) {
-                Py_XDECREF(::AllData::type_attr_dict[typ_id][final_key]);
-            }
             ::AllData::type_attr_dict[typ_id][final_key] = value;
-            Py_INCREF(value);
         }
         return 0;
     } else {
@@ -644,11 +682,7 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
         }
         {
             std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
-            if (::AllData::all_type_subclass_attr[final_id][typ_id].find(final_key) != ::AllData::all_type_subclass_attr[final_id][typ_id].end()) {
-                Py_XDECREF(::AllData::all_type_subclass_attr[final_id][typ_id][final_key]);
-            }
             ::AllData::all_type_subclass_attr[final_id][typ_id][final_key] = value;
-            Py_INCREF(value);
             return 0;
         }
     }
@@ -721,9 +755,7 @@ id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
             }
             PyErr_Format(PyExc_AttributeError, "'%s' object has no attribute '%s'", type_name, attr_name.c_str());
         }
-        PyObject* delete_obj = ::AllData::all_object_attr[final_id][obj_id][obj_private_name];
         ::AllData::all_object_attr[final_id][obj_id].erase(obj_private_name);
-        Py_XDECREF(delete_obj);
     }
     return 0;
 }
@@ -770,9 +802,7 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
             PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
             return -1;
         }
-        PyObject* delete_obj = ::AllData::type_attr_dict[typ_id][final_key];
         ::AllData::type_attr_dict[typ_id].erase(final_key);
-        Py_XDECREF(delete_obj);
     } else {
         if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[final_id] = {};
@@ -796,9 +826,7 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
             PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
             return -1;
         }
-        PyObject* delete_obj = ::AllData::all_type_subclass_attr[final_id][typ_id][final_key];
         ::AllData::all_type_subclass_attr[final_id][typ_id].erase(final_key);
-        Py_XDECREF(delete_obj);
     }
     return 0;
 }
@@ -1312,10 +1340,6 @@ PrivateAttr_tp_finalize(PyObject* self) noexcept
         if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()){
             auto& all_object_attr = ::AllData::all_object_attr[typ_id];
             if (all_object_attr.find(id_self) != all_object_attr.end()){
-                auto& all_object_attr_self = all_object_attr[id_self];
-                for (auto& attr : all_object_attr_self){
-                    Py_XDECREF(attr.second);
-                }
                 all_object_attr.erase(id_self);
             }
         }
@@ -1330,10 +1354,6 @@ PrivateAttr_tp_finalize(PyObject* self) noexcept
             if (::AllData::all_object_attr.find(parent_id) != ::AllData::all_object_attr.end()){
                 auto& all_object_attr = ::AllData::all_object_attr[parent_id];
                 if (all_object_attr.find(id_self) != all_object_attr.end()){
-                    auto& all_object_attr_self = all_object_attr[id_self];
-                    for (auto& attr : all_object_attr_self){
-                        Py_XDECREF(attr.second);
-                    }
                     all_object_attr.erase(id_self);
                 }
             }
@@ -1724,8 +1744,8 @@ struct PrivateAttrCreationData
     std::unordered_set<TwoStringTuple> private_attrs_set;
     std::unordered_set<std::string> private_attrs_vector_string;
     std::vector<uintptr_t> all_need_analyse_base;
-    std::unordered_map<std::string, PyObject*> need_remove_itself;
-    std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObject*>> need_remove_subclass;
+    std::unordered_map<std::string, PyObjectStorage> need_remove_itself;
+    std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> need_remove_subclass;
     PyObject* private_func = nullptr;
     PyObject* base_kwds = nullptr;
     PyObject* name = nullptr;
@@ -1766,16 +1786,7 @@ struct PrivateAttrCreationData
             base_kwds = nullptr;
         }
 
-        for (auto& pair : need_remove_itself) {
-            Py_XDECREF(pair.second);
-        }
         need_remove_itself.clear();
-
-        for (auto& outer_pair : need_remove_subclass) {
-            for (auto& inner_pair : outer_pair.second) {
-                Py_XDECREF(inner_pair.second);
-            }
-        }
         need_remove_subclass.clear();
         cleared = true;
     }
@@ -2216,7 +2227,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
         } else {
             final_key = default_random_string(type_id, key);
         }
-        Py_INCREF(value);
         ::AllData::type_attr_dict[type_id][final_key] = value;
     }
 
@@ -2244,7 +2254,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
             } else {
                 final_key = default_random_string(type_id, key);
             }
-            Py_INCREF(value);
             ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
         }
     }
@@ -2522,10 +2531,6 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
         ::AllData::type_need_call.erase(typ_id);
     }
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
-        auto& private_attrs = ::AllData::type_attr_dict[typ_id];
-        for (auto& attr : private_attrs) {
-            Py_XDECREF(attr.second);
-        }
         ::AllData::type_attr_dict.erase(typ_id);
     }
     if (::AllData::all_type_subclass_attr.find(typ_id) != ::AllData::all_type_subclass_attr.end()) {
@@ -2542,10 +2547,6 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     for (auto& parent_id : parent_ids) {
         if (::AllData::all_type_subclass_attr.find(parent_id) != ::AllData::all_type_subclass_attr.end()) {
             if (::AllData::all_type_subclass_attr[parent_id].find(typ_id) != ::AllData::all_type_subclass_attr[parent_id].end()) {
-                auto& private_attrs = ::AllData::all_type_subclass_attr[parent_id][typ_id];
-                for (auto& attr : private_attrs) {
-                    Py_XDECREF(attr.second);
-                }
                 ::AllData::all_type_subclass_attr[parent_id].erase(typ_id);
             }
         }
