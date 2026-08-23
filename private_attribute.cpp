@@ -117,8 +117,10 @@ namespace std {
 
 struct PyObjectStorage
 {
+private:
     PyObject* obj = NULL;
 
+public:
     PyObjectStorage() noexcept = default;
     PyObjectStorage(PyObject* obj) noexcept : obj(obj) {
         Py_XINCREF(obj);
