@@ -2227,7 +2227,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
         } else {
             final_key = default_random_string(type_id, key);
         }
-        Py_INCREF(value);
         ::AllData::type_attr_dict[type_id][final_key] = value;
     }
 
@@ -2255,7 +2254,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
             } else {
                 final_key = default_random_string(type_id, key);
             }
-            Py_INCREF(value);
             ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
         }
     }
@@ -2533,10 +2531,6 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
         ::AllData::type_need_call.erase(typ_id);
     }
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
-        auto& private_attrs = ::AllData::type_attr_dict[typ_id];
-        for (auto& attr : private_attrs) {
-            Py_XDECREF(attr.second);
-        }
         ::AllData::type_attr_dict.erase(typ_id);
     }
     if (::AllData::all_type_subclass_attr.find(typ_id) != ::AllData::all_type_subclass_attr.end()) {
@@ -2553,10 +2547,6 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     for (auto& parent_id : parent_ids) {
         if (::AllData::all_type_subclass_attr.find(parent_id) != ::AllData::all_type_subclass_attr.end()) {
             if (::AllData::all_type_subclass_attr[parent_id].find(typ_id) != ::AllData::all_type_subclass_attr[parent_id].end()) {
-                auto& private_attrs = ::AllData::all_type_subclass_attr[parent_id][typ_id];
-                for (auto& attr : private_attrs) {
-                    Py_XDECREF(attr.second);
-                }
                 ::AllData::all_type_subclass_attr[parent_id].erase(typ_id);
             }
         }
