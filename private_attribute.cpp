@@ -1630,6 +1630,21 @@ get_now_code() noexcept
     return code;
 }
 
+static PyObject*
+try_get_attr_string(PyObject* obj, const char* name) noexcept
+{
+    if (obj == NULL || name == NULL) {
+        return NULL;
+    }
+    if (PyObject_HasAttrString(obj, name) <= 0) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return NULL;
+    }
+    return PyObject_GetAttrString(obj, name);
+}
+
 static void
 analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& map, std::unordered_set<uintptr_t>& _seen) noexcept
 {
@@ -1641,88 +1656,83 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& ma
     if (PyObject_TypeCheck(obj, &PyCode_Type)) {
         Py_INCREF(obj);
         map[(uintptr_t)obj] = (PyCodeObject*)obj;
-        PyObject* co_contain = PyObject_GetAttrString(obj, "co_consts");
+        PyObject* co_contain = try_get_attr_string(obj, "co_consts");
         if (co_contain && PySequence_Check(co_contain)) {
             Py_ssize_t len = PySequence_Length(co_contain);
-            for (Py_ssize_t i = 0; i < len; i++) {
-                PyObject* item = PySequence_GetItem(co_contain, i);
-                if (item) {
-                    analyse_all_code(item, map, _seen);
-                } else {
-                    PyErr_Clear();
+            if (len >= 0) {
+                for (Py_ssize_t i = 0; i < len; i++) {
+                    PyObject* item = PySequence_GetItem(co_contain, i);
+                    if (item) {
+                        analyse_all_code(item, map, _seen);
+                        Py_DECREF(item);
+                    }
                 }
             }
         }
+        Py_XDECREF(co_contain);
         return;
     }
     if (PyObject_TypeCheck(obj, &PrivateWrapType)) {
         PyObject* func_list = ((PrivateWrapObject*)obj)->func_list;
         if (func_list && PySequence_Check(func_list)) {
             Py_ssize_t len = PySequence_Length(func_list);
-            for (Py_ssize_t i = 0; i < len; i++) {
-                PyObject* func = PySequence_GetItem(func_list, i);
-                if (func) {
-                    analyse_all_code(func, map, _seen);
-                } else {
-                    PyErr_Clear();
+            if (len >= 0) {
+                for (Py_ssize_t i = 0; i < len; i++) {
+                    PyObject* func = PySequence_GetItem(func_list, i);
+                    if (func) {
+                        analyse_all_code(func, map, _seen);
+                        Py_DECREF(func);
+                    }
                 }
             }
         }
         return;
     }
     if (PyObject_TypeCheck(obj, &PyProperty_Type)) {
-        PyObject* fget = PyObject_GetAttrString(obj, "fget");
+        PyObject* fget = try_get_attr_string(obj, "fget");
         if (fget) {
             analyse_all_code(fget, map, _seen);
-        } else {
-            PyErr_Clear();
+            Py_DECREF(fget);
         }
-        PyObject* fset = PyObject_GetAttrString(obj, "fset");
+        PyObject* fset = try_get_attr_string(obj, "fset");
         if (fset) {
             analyse_all_code(fset, map, _seen);
+            Py_DECREF(fset);
         }
-        else {
-            PyErr_Clear();
-        }
-        PyObject* fdel = PyObject_GetAttrString(obj, "fdel");
+        PyObject* fdel = try_get_attr_string(obj, "fdel");
         if (fdel) {
             analyse_all_code(fdel, map, _seen);
-        } else {
-            PyErr_Clear();
+            Py_DECREF(fdel);
         }
         return;
     }
     if (PyObject_TypeCheck(obj, &PyClassMethod_Type) || PyObject_TypeCheck(obj, &PyStaticMethod_Type)) {
-        PyObject* func = PyObject_GetAttrString(obj, "__func__");
+        PyObject* func = try_get_attr_string(obj, "__func__");
         if (func) {
             analyse_all_code(func, map, _seen);
-        } else {
-            PyErr_Clear();
+            Py_DECREF(func);
         }
         return;
     }
-    PyObject* wrap = PyObject_GetAttrString(obj, "__wrapped__");
+    PyObject* wrap = try_get_attr_string(obj, "__wrapped__");
     if (wrap) {
         if (wrap == obj) {
-            PyObject* code = PyObject_GetAttrString(obj, "__code__");
+            PyObject* code = try_get_attr_string(obj, "__code__");
             if (code) {
                 analyse_all_code(code, map, _seen);
-            } else {
-                PyErr_Clear();
+                Py_DECREF(code);
             }
+            Py_DECREF(wrap);
             return;
         }
         analyse_all_code(wrap, map, _seen);
+        Py_DECREF(wrap);
         return;
     }
-    else {
-        PyErr_Clear();
-    }
-    PyObject* code = PyObject_GetAttrString(obj, "__code__");
+    PyObject* code = try_get_attr_string(obj, "__code__");
     if (code) {
         analyse_all_code(code, map, _seen);
-    } else {
-        PyErr_Clear();
+        Py_DECREF(code);
     }
 }
 
