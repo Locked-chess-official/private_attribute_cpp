@@ -31,17 +31,21 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install pytest
 
-      - name: Build extension in-place for native debugging
+      - name: Build extension in-place for native debugging (Linux/Windows only)
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "macOS" ]; then
-            export CFLAGS="-g -O0"
-            export CXXFLAGS="-g -O0"
+            echo "Skipping in-place build on macOS to avoid CI failures; using pip install for macOS jobs"
           else
-            export CFLAGS="-O0 -g -fno-omit-frame-pointer"
-            export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
+            if [ "${{ runner.os }}" = "Linux" ]; then
+              export CFLAGS="-O0 -g -fno-omit-frame-pointer"
+              export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
+            else
+              export CFLAGS="-g -O0"
+              export CXXFLAGS="-g -O0"
+            fi
+            python setup.py build_ext --inplace
           fi
-          python setup.py build_ext --inplace
 
       - name: Install native debugging tools
         shell: bash
@@ -71,13 +75,10 @@ jobs:
               -ex "thread apply all bt full" \
               --args python -m pytest tests/ -vvs -W error
           elif [ "${{ runner.os }}" = "macOS" ]; then
-            lldb --batch \
-              -o "settings set target.process.stop-on-exec false" \
-              -o "settings set target.process.stop-on-shared-lib-events false" \
-              -o "run" \
-              -o "bt all" \
-              -o "quit" \
-              -- python -m pytest tests/ -vvs -W error
+            # Use regular pytest on macOS CI to avoid lldb-related early stops; install via pip
+            python -m pip install --upgrade pip
+            python -m pip install .
+            python -X faulthandler -m pytest tests/ -vvs -W error
           else
             python -X faulthandler -m pytest tests/ -vvs -W error
           fi
