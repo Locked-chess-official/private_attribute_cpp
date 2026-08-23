@@ -68,6 +68,8 @@ jobs:
               --args python -m pytest tests/ -vvs -W error
           elif [ "${{ runner.os }}" = "macOS" ]; then
             lldb --batch \
+              -o "settings set target.process.stop-on-exec false" \
+              -o "settings set target.process.stop-on-shared-lib-events false" \
               -o "run" \
               -o "bt all" \
               -o "quit" \
