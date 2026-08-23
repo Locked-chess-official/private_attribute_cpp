@@ -26,11 +26,52 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install .
-          pip install pytest
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install pytest
 
-      - name: Run tests
+      - name: Build extension in-place for native debugging
+        shell: bash
+        env:
+          CFLAGS: "-O0 -g -fno-omit-frame-pointer"
+          CXXFLAGS: "-O0 -g -fno-omit-frame-pointer"
         run: |
-          pytest tests/ -vvs -W error
+          python setup.py build_ext --inplace
+
+      - name: Install native debugging tools
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y gdb
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            echo "lldb is available on macOS runners"
+          else
+            echo "Native crash backtraces on Windows are best-effort via faulthandler and WinDbg when available"
+          fi
+
+      - name: Run tests with native crash backtrace
+        shell: bash
+        env:
+          PYTHONFAULTHANDLER: "1"
+          PYTHONPATH: "."
+        run: |
+          set -o pipefail
+
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            gdb -q --batch \
+              -ex "set pagination off" \
+              -ex "handle SIGSEGV stop print pass" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args python -m pytest tests/ -vvs -W error
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            lldb --batch \
+              -o "run" \
+              -o "bt all" \
+              -o "quit" \
+              -- python -m pytest tests/ -vvs -W error
+          else
+            python -X faulthandler -m pytest tests/ -vvs -W error
+          fi
