@@ -197,6 +197,13 @@ namespace {
         static auto& all_type_traverse = *new std::unordered_map<uintptr_t, traverseproc>();
         // all type tp_clear map
         static auto& all_type_clear = *new std::unordered_map<uintptr_t, inquiry>();
+        // CPython's default slot functions for heap types (subtype_traverse /
+        // subtype_clear). type_new assigns them to every heap type, so we capture
+        // the exact pointers from the first heap type created through tp_new
+        // (PrivateAttrBase). The get_*_need_* walkers must treat these delegating
+        // defaults as "not a real original" and keep walking upward.
+        static auto& captured_subtype_traverse = *new traverseproc();
+        static auto& captured_subtype_clear = *new inquiry();
         // all type tp_finalizer map
         static auto& all_type_finalize = *new std::unordered_map<uintptr_t, destructor>();
         static auto& all_register_new_metaclass_mutex = *new std::shared_mutex();
@@ -2665,6 +2672,34 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     return true;
 }
 
+// RAII flag: while active, PrivateAttrType_new captures the pristine
+// tp_traverse/tp_clear of the freshly created heap type. type_new assigns
+// subtype_traverse/subtype_clear to every heap type unconditionally, so the
+// first heap type created through tp_new (PrivateAttrBase) yields the exact
+// pointers of CPython's delegating defaults, which the get_*_need_* walkers
+// must skip while looking for the real original slot functions.
+class PrivateAttrCaptureGuard
+{
+private:
+    static bool& active() noexcept {
+        static bool flag = false;
+        return flag;
+    }
+
+public:
+    PrivateAttrCaptureGuard() noexcept {
+        active() = true;
+    }
+
+    ~PrivateAttrCaptureGuard() noexcept {
+        active() = false;
+    }
+
+    static bool is_active() noexcept {
+        return active();
+    }
+};
+
 static PyObject*
 PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
 {
@@ -2678,6 +2713,17 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
     new_type = PrivateAttrType_create(type, data);
     if (!new_type) {
         return nullptr;
+    }
+
+    // Capture CPython's subtype_traverse/subtype_clear pointers: type_new
+    // assigns them to every heap type, so right after creation (before
+    // ensure_tp wraps the slots) the fresh type's tp_traverse/tp_clear are the
+    // exact delegating defaults. The get_*_need_* walkers skip these and keep
+    // walking upward to find a real original.
+    if (PrivateAttrCaptureGuard::is_active()) {
+        PyTypeObject* created = (PyTypeObject*)new_type;
+        ::AllData::captured_subtype_traverse = created->tp_traverse;
+        ::AllData::captured_subtype_clear = created->tp_clear;
     }
 
     if (!PrivateAttrType_postprocess(new_type, data)) {
@@ -2868,11 +2914,13 @@ get_need_tp_traverse(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_traverse != PrivateAttr_tp_traverse) {
+        if (base->tp_traverse != PrivateAttr_tp_traverse
+            && base->tp_traverse != ::AllData::captured_subtype_traverse) {
             return base->tp_traverse;
         } else if (::AllData::all_type_traverse.find((uintptr_t)base) != ::AllData::all_type_traverse.end()) {
-            if (::AllData::all_type_traverse[(uintptr_t)base]) {
-                return ::AllData::all_type_traverse[(uintptr_t)base];
+            traverseproc saved = ::AllData::all_type_traverse[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_traverse) {
+                return saved;
             }
             base = base->tp_base;
         } else {
@@ -2887,11 +2935,13 @@ get_need_tp_clear(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_clear != PrivateAttr_tp_clear) {
+        if (base->tp_clear != PrivateAttr_tp_clear
+            && base->tp_clear != ::AllData::captured_subtype_clear) {
             return base->tp_clear;
         } else if (::AllData::all_type_clear.find((uintptr_t)base) != ::AllData::all_type_clear.end()) {
-            if (::AllData::all_type_clear[(uintptr_t)base]) {
-                return ::AllData::all_type_clear[(uintptr_t)base];
+            inquiry saved = ::AllData::all_type_clear[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_clear) {
+                return saved;
             }
             base = base->tp_base;
         } else {
@@ -2988,11 +3038,13 @@ get_type_need_tp_traverse(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_traverse != PrivateAttrType_tp_traverse) {
+        if (base->tp_traverse != PrivateAttrType_tp_traverse
+            && base->tp_traverse != ::AllData::captured_subtype_traverse) {
             return base->tp_traverse;
         } else if (::AllData::all_type_traverse.find((uintptr_t)base) != ::AllData::all_type_traverse.end()) {
-            if (::AllData::all_type_traverse[(uintptr_t)base]) {
-                return ::AllData::all_type_traverse[(uintptr_t)base];
+            traverseproc saved = ::AllData::all_type_traverse[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_traverse) {
+                return saved;
             }
             base = base->tp_base;
         } else {
@@ -3007,11 +3059,13 @@ get_type_need_tp_clear(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_clear != PrivateAttrType_tp_clear) {
+        if (base->tp_clear != PrivateAttrType_tp_clear
+            && base->tp_clear != ::AllData::captured_subtype_clear) {
             return base->tp_clear;
         } else if (::AllData::all_type_clear.find((uintptr_t)base) != ::AllData::all_type_clear.end()) {
-            if (::AllData::all_type_clear[(uintptr_t)base]) {
-                return ::AllData::all_type_clear[(uintptr_t)base];
+            inquiry saved = ::AllData::all_type_clear[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_clear) {
+                return saved;
             }
             base = base->tp_base;
         } else {
@@ -3157,6 +3211,11 @@ create_private_attr_base_simple(void) noexcept
     PyObject *args = PyTuple_Pack(3, name, bases, dict);
     PyObject* base_type;
     if (args) {
+        // RAII: the first heap type created through tp_new (PrivateAttrBase)
+        // carries CPython's pristine subtype_traverse/subtype_clear in its
+        // tp_traverse/tp_clear; PrivateAttrType_new captures those pointers
+        // while this guard is active.
+        PrivateAttrCaptureGuard capture_guard;
         base_type = PrivateAttrType_new((PyTypeObject*)&PrivateAttrType, args, NULL);
         Py_DECREF(args);
     } else {
