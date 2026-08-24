@@ -427,6 +427,8 @@ get_name_from_tp_name(PyTypeObject* typ) noexcept
 
 static void ensure_tp(PyTypeObject* type_instance) noexcept;
 static void ensure_subclass_tp(PyTypeObject* type_instance) noexcept;
+static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
+static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 
 static PyObject*
 id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
@@ -1617,7 +1619,7 @@ PrivateAttrType_tp_clear(PyObject* self) noexcept
 }
 
 static void
-PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
+PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept
 {
     if (::AllData::all_object_mutex.find(type_id) == ::AllData::all_object_mutex.end()) {
         ::AllData::all_object_mutex[type_id] = {};
