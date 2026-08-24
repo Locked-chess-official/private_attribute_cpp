@@ -3952,5 +3952,17 @@ PyInit_private_attribute(void) noexcept
     PyList_Append(all, PyUnicode_InternFromString("ensure_type"));
     PyList_Append(all, PyUnicode_InternFromString("ensure_metaclass"));
     Py_SET_TYPE(m, &PrivateModuleType);
+
+    // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
+    // subtype_clear pointers are captured at import time (see
+    // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
+    // waiting for the first lazy attribute access to the module.
+    PyObject* private_attr_base = PrivateModule_get_PrivateAttrBase(NULL, NULL);
+    if (!private_attr_base) {
+        Py_DECREF(m);
+        return NULL;
+    }
+    Py_DECREF(private_attr_base);
+
     return m;
 }
