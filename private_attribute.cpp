@@ -182,15 +182,26 @@ namespace {
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
-            std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
+                std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
-        all_object_mutex, all_type_subclass_mutex;
+            all_object_mutex, all_type_subclass_mutex;
         static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
         // all type tp_getattro map
         static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
         // all type tp_setattro map
         static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
+        // all type tp_traverse map
+        static std::unordered_map<uintptr_t, traverseproc> all_type_traverse;
+        // all type tp_clear map
+        static std::unordered_map<uintptr_t, inquiry> all_type_clear;
+        // CPython's default slot functions for heap types (subtype_traverse /
+        // subtype_clear). type_new assigns them to every heap type, so we capture
+        // the exact pointers from the first heap type created through tp_new
+        // (PrivateAttrBase). The get_*_need_* walkers must treat these delegating
+        // defaults as "not a real original" and keep walking upward.
+        static traverseproc captured_subtype_traverse = NULL;
+        static inquiry captured_subtype_clear = NULL;
         // all type tp_finalizer map
         static std::unordered_map<uintptr_t, destructor> all_type_finalize;
 
@@ -198,7 +209,6 @@ namespace {
         static std::unordered_map<uintptr_t, PyObject*> all_register_type_weak_ref;
     };
 };
-
 struct FinalObject
 {
     PyObjectStorage result;
@@ -423,6 +433,8 @@ get_name_from_tp_name(PyTypeObject* typ) noexcept
 
 static void ensure_tp(PyTypeObject* type_instance) noexcept;
 static void ensure_subclass_tp(PyTypeObject* type_instance) noexcept;
+static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
+static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 
 static PyObject*
 id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
@@ -1370,6 +1382,315 @@ PrivateAttr_tp_finalize(PyObject* self) noexcept
     }
 }
 
+// shared helper for clearing object-related data (used by tp_clear and tp_finalize)
+static void
+clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept
+{
+    std::vector<uintptr_t> parent_ids;
+    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()){
+        parent_ids = ::AllData::all_type_parent_id[typ_id];
+    }
+
+    // first: clear ::AllData::all_object_attr and ::AllData::all_object_mutex on this typ_id
+    if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()){
+        auto& all_object_attr = ::AllData::all_object_attr[typ_id];
+        if (all_object_attr.find(id_self) != all_object_attr.end()){
+            all_object_attr.erase(id_self);
+        }
+    }
+    if (::AllData::all_object_mutex.find(typ_id) != ::AllData::all_object_mutex.end()){
+        auto& all_object_mutex = ::AllData::all_object_mutex[typ_id];
+        if (all_object_mutex.find(id_self) != all_object_mutex.end()){
+            all_object_mutex.erase(id_self);
+        }
+    }
+    // second: clear the above in parent types
+    for (auto& parent_id : parent_ids){
+        if (::AllData::all_object_attr.find(parent_id) != ::AllData::all_object_attr.end()){
+            auto& all_object_attr = ::AllData::all_object_attr[parent_id];
+            if (all_object_attr.find(id_self) != all_object_attr.end()){
+                all_object_attr.erase(id_self);
+            }
+        }
+        if (::AllData::all_object_mutex.find(parent_id) != ::AllData::all_object_mutex.end()){
+            auto& all_object_mutex = ::AllData::all_object_mutex[parent_id];
+            if (all_object_mutex.find(id_self) != all_object_mutex.end()){
+                all_object_mutex.erase(id_self);
+            }
+        }
+    }
+    clear_obj(id_self);
+}
+
+// ========================================================================
+// Re-entrancy guard for the traverse/clear wrappers.
+//
+// The wrappers MUST keep calling the saved "original" slot functions: a
+// wrapped metaclass may have been created by another C-level metaclass, so we
+// cannot tell whether the saved function is a real custom implementation or a
+// delegating default such as CPython's subtype_traverse/subtype_clear. Those
+// defaults read the LIVE tp_traverse/tp_clear slot and delegate back into our
+// wrapper, which would otherwise recurse infinitely.
+//
+// The guard makes a re-entrant call for the same object a no-op (returns 0),
+// so the outermost invocation finishes the whole traversal/clear exactly once.
+// It is thread-local so it is safe for free-threaded builds (Py_GIL_DISABLED).
+// ========================================================================
+class PrivateAttrRecursionGuard
+{
+private:
+    static std::unordered_set<uintptr_t>& in_flight() noexcept {
+        static thread_local std::unordered_set<uintptr_t> set;
+        return set;
+    }
+
+    uintptr_t key;
+
+public:
+    // Returns false when `key` is already being traversed/cleared by an outer
+    // invocation of the same wrapper (i.e. this call is a re-entrant one).
+    static bool try_enter(uintptr_t key) noexcept {
+        auto& set = in_flight();
+        if (set.find(key) != set.end()) {
+            return false;
+        }
+        set.insert(key);
+        return true;
+    }
+
+    explicit PrivateAttrRecursionGuard(uintptr_t key) noexcept : key(key) {}
+
+    ~PrivateAttrRecursionGuard() noexcept {
+        in_flight().erase(key);
+    }
+};
+
+static int
+PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
+{
+    PyTypeObject* typ = Py_TYPE(self);
+    uintptr_t typ_id = (uintptr_t)typ;
+    uintptr_t id_self = (uintptr_t)self;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter(id_self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard(id_self);
+
+    // call original traverse if exists
+    if (::AllData::all_type_traverse.find(typ_id) != ::AllData::all_type_traverse.end()) {
+        traverseproc orig = ::AllData::all_type_traverse[typ_id];
+        if (orig) {
+            int res = orig(self, visit, arg);
+            if (res) return res;
+        }
+    } else {
+        traverseproc orig = get_need_tp_traverse(typ);
+        if (orig) {
+            int res = orig(self, visit, arg);
+            if (res) return res;
+        }
+    }
+
+    // traverse per-object private attributes for this type and its parents
+    std::vector<uintptr_t> parent_ids;
+    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()){
+        parent_ids = ::AllData::all_type_parent_id[typ_id];
+    }
+    // include typ_id itself
+    parent_ids.insert(parent_ids.begin(), typ_id);
+
+    for (auto pid : parent_ids) {
+        auto it = ::AllData::all_object_attr.find(pid);
+        if (it == ::AllData::all_object_attr.end()) continue;
+        auto it2 = it->second.find(id_self);
+        if (it2 == it->second.end()) continue;
+        auto &attrmap = it2->second;
+        for (auto &p : attrmap) {
+            PyObject* obj = p.second.get();
+            if (obj) {
+                int res = visit(obj, arg);
+                if (res) return res;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int
+PrivateAttr_tp_clear(PyObject* self) noexcept
+{
+    PyTypeObject* typ = Py_TYPE(self);
+    uintptr_t typ_id = (uintptr_t)typ;
+    uintptr_t id_self = (uintptr_t)self;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter(id_self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard(id_self);
+
+    // call original clear if exists
+    if (::AllData::all_type_clear.find(typ_id) != ::AllData::all_type_clear.end()) {
+        inquiry orig = ::AllData::all_type_clear[typ_id];
+        if (orig) {
+            orig(self);
+        }
+    } else {
+        inquiry orig = get_need_tp_clear(typ);
+        if (orig) orig(self);
+    }
+
+    // clear our per-object data
+    clear_object_related(id_self, typ_id);
+    return 0;
+}
+
+// metaclass-level (type object) traverse/clear: call original if any, and handle AllData-stored type attributes
+static int
+PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
+{
+    PyTypeObject* typ = (PyTypeObject*)self;
+    uintptr_t typ_id = (uintptr_t)typ;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter((uintptr_t)self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard((uintptr_t)self);
+
+    // Call saved/original traverse if exists
+    if (::AllData::all_type_traverse.find(typ_id) != ::AllData::all_type_traverse.end()) {
+        traverseproc orig = ::AllData::all_type_traverse[typ_id];
+        if (orig) {
+            int res = orig(self, visit, arg);
+            if (res) return res;
+        }
+    } else {
+        traverseproc orig = get_need_tp_traverse(typ);
+        if (orig) {
+            int res = orig(self, visit, arg);
+            if (res) return res;
+        }
+    }
+
+    // Traverse PyObjects stored in AllData for this type:
+    // - direct type attributes ::AllData::type_attr_dict[typ_id]
+    // - attributes stored under parents for this type ::AllData::all_type_subclass_attr[parent_id][typ_id]
+    std::vector<uintptr_t> parent_ids;
+    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
+        parent_ids = ::AllData::all_type_parent_id[typ_id];
+    }
+    // include typ_id itself first
+    parent_ids.insert(parent_ids.begin(), typ_id);
+
+    for (auto pid : parent_ids) {
+        if (pid == typ_id) {
+            if (::AllData::type_attr_dict.find(pid) != ::AllData::type_attr_dict.end()) {
+                auto &item_set = ::AllData::type_attr_dict[pid];
+                if (::AllData::all_type_mutex.find(pid) != ::AllData::all_type_mutex.end()) {
+                    std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[pid]);
+                    for (auto &p : item_set) {
+                        PyObject* obj = p.second.get();
+                        if (obj) {
+                            int res = visit(obj, arg);
+                            if (res) return res;
+                        }
+                    }
+                } else {
+                    for (auto &p : item_set) {
+                        PyObject* obj = p.second.get();
+                        if (obj) {
+                            int res = visit(obj, arg);
+                            if (res) return res;
+                        }
+                    }
+                }
+            }
+        } else {
+            if (::AllData::all_type_subclass_attr.find(pid) == ::AllData::all_type_subclass_attr.end()) continue;
+            auto &child_map = ::AllData::all_type_subclass_attr[pid];
+            auto it = child_map.find(typ_id);
+            if (it == child_map.end()) continue;
+            if (::AllData::all_type_subclass_mutex.find(pid) != ::AllData::all_type_subclass_mutex.end()
+                && ::AllData::all_type_subclass_mutex[pid].find(typ_id) != ::AllData::all_type_subclass_mutex[pid].end()) {
+                std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[pid][typ_id]);
+                for (auto &p : it->second) {
+                    PyObject* obj = p.second.get();
+                    if (obj) {
+                        int res = visit(obj, arg);
+                        if (res) return res;
+                    }
+                }
+            } else {
+                for (auto &p : it->second) {
+                    PyObject* obj = p.second.get();
+                    if (obj) {
+                        int res = visit(obj, arg);
+                        if (res) return res;
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int
+PrivateAttrType_tp_clear(PyObject* self) noexcept
+{
+    PyTypeObject* typ = (PyTypeObject*)self;
+    uintptr_t typ_id = (uintptr_t)typ;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter((uintptr_t)self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard((uintptr_t)self);
+
+    // Call saved/original clear if exists
+    if (::AllData::all_type_clear.find(typ_id) != ::AllData::all_type_clear.end()) {
+        inquiry orig = ::AllData::all_type_clear[typ_id];
+        if (orig) orig(self);
+    } else {
+        inquiry orig = get_need_tp_clear(typ);
+        if (orig) orig(self);
+    }
+
+    // Clear AllData entries associated with this type. PyObjectStorage destructor
+    // takes care of DECREF for stored objects.
+    std::vector<uintptr_t> parent_ids;
+    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
+        parent_ids = ::AllData::all_type_parent_id[typ_id];
+    }
+
+    // Clear direct type attributes
+    if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
+        ::AllData::type_attr_dict.erase(typ_id);
+    }
+
+    // Clear subclass attribute entries stored under parent types for this type
+    for (auto parent_id : parent_ids) {
+        if (::AllData::all_type_subclass_attr.find(parent_id) != ::AllData::all_type_subclass_attr.end()) {
+            auto &child_map = ::AllData::all_type_subclass_attr[parent_id];
+            if (child_map.find(typ_id) != child_map.end()) {
+                child_map.erase(typ_id);
+            }
+        }
+        if (::AllData::all_type_subclass_mutex.find(parent_id) != ::AllData::all_type_subclass_mutex.end()) {
+            auto &mmap = ::AllData::all_type_subclass_mutex[parent_id];
+            if (mmap.find(typ_id) != mmap.end()) {
+                mmap.erase(typ_id);
+            }
+        }
+    }
+
+    return 0;
+}
+
 static void
 PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept
 {
@@ -2096,7 +2417,34 @@ PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexce
 
 static getattrofunc get_need_tp_getattro(PyTypeObject* cls) noexcept;
 static setattrofunc get_need_tp_setattro(PyTypeObject* cls) noexcept;
+static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
+static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 static destructor get_need_tp_finalize(PyTypeObject* cls) noexcept;
+
+// get_type_need_tp_* : the metaclass counterparts of get_need_tp_*.
+// get_need_tp_*          -> find the original slots of *types created by* the
+//                            metaclasses (wrapped with the instance-level
+//                            PrivateAttr_tp_* / PrivateAttr_tp_getattro set).
+// get_type_need_tp_*     -> find the original slots of the *metaclasses*
+//                            themselves (wrapped with the metaclass-level
+//                            PrivateAttrType_getattr / PrivateAttrType_setattr /
+//                            register_finalize / PrivateAttrType_tp_traverse /
+//                            PrivateAttrType_tp_clear).
+static getattrofunc get_type_need_tp_getattro(PyTypeObject* cls) noexcept;
+static setattrofunc get_type_need_tp_setattro(PyTypeObject* cls) noexcept;
+static traverseproc get_type_need_tp_traverse(PyTypeObject* cls) noexcept;
+static inquiry get_type_need_tp_clear(PyTypeObject* cls) noexcept;
+static destructor get_type_need_tp_finalize(PyTypeObject* cls) noexcept;
+
+// instance-level traverse/clear for types that use private attributes
+static int PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept;
+static int PrivateAttr_tp_clear(PyObject* self) noexcept;
+// metaclass-level wrappers (if needed)
+static int PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept;
+static int PrivateAttrType_tp_clear(PyObject* self) noexcept;
+
+// shared helper to clear object related data (avoid double clear)
+static void clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept;
 
 static void
 ensure_tp(PyTypeObject* type_instance) noexcept
@@ -2135,6 +2483,42 @@ ensure_tp(PyTypeObject* type_instance) noexcept
                 ::AllData::all_type_setattro[type_id] = ::AllData::all_type_setattro[base_id];
             } else if (base && base->tp_setattro && base->tp_setattro != PrivateAttr_tp_setattro) {
                 ::AllData::all_type_setattro[type_id] = base->tp_setattro;
+            }
+        }
+    }
+    {
+        if (type_instance->tp_traverse != PrivateAttr_tp_traverse) {
+            if (!type_instance->tp_traverse && ::AllData::all_type_traverse.find(type_id) == ::AllData::all_type_traverse.end()) {
+                ::AllData::all_type_traverse[type_id] = get_need_tp_traverse(type_instance);
+            } else {
+                ::AllData::all_type_traverse[type_id] = type_instance->tp_traverse;
+            }
+            type_instance->tp_traverse = PrivateAttr_tp_traverse;
+        } else if (::AllData::all_type_traverse.find(type_id) == ::AllData::all_type_traverse.end()) {
+            PyTypeObject* base = type_instance->tp_base;
+            uintptr_t base_id = (uintptr_t)(base);
+            if (::AllData::all_type_traverse.find(base_id) != ::AllData::all_type_traverse.end()) {
+                ::AllData::all_type_traverse[type_id] = ::AllData::all_type_traverse[base_id];
+            } else if (base && base->tp_traverse && base->tp_traverse != PrivateAttr_tp_traverse) {
+                ::AllData::all_type_traverse[type_id] = base->tp_traverse;
+            }
+        }
+    }
+    {
+        if (type_instance->tp_clear != PrivateAttr_tp_clear) {
+            if (!type_instance->tp_clear && ::AllData::all_type_clear.find(type_id) == ::AllData::all_type_clear.end()) {
+                ::AllData::all_type_clear[type_id] = get_need_tp_clear(type_instance);
+            } else {
+                ::AllData::all_type_clear[type_id] = type_instance->tp_clear;
+            }
+            type_instance->tp_clear = PrivateAttr_tp_clear;
+        } else if (::AllData::all_type_clear.find(type_id) == ::AllData::all_type_clear.end()) {
+            PyTypeObject* base = type_instance->tp_base;
+            uintptr_t base_id = (uintptr_t)(base);
+            if (::AllData::all_type_clear.find(base_id) != ::AllData::all_type_clear.end()) {
+                ::AllData::all_type_clear[type_id] = ::AllData::all_type_clear[base_id];
+            } else if (base && base->tp_clear && base->tp_clear != PrivateAttr_tp_clear) {
+                ::AllData::all_type_clear[type_id] = base->tp_clear;
             }
         }
     }
@@ -2287,6 +2671,34 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     return true;
 }
 
+// RAII flag: while active, PrivateAttrType_new captures the pristine
+// tp_traverse/tp_clear of the freshly created heap type. type_new assigns
+// subtype_traverse/subtype_clear to every heap type unconditionally, so the
+// first heap type created through tp_new (PrivateAttrBase) yields the exact
+// pointers of CPython's delegating defaults, which the get_*_need_* walkers
+// must skip while looking for the real original slot functions.
+class PrivateAttrCaptureGuard
+{
+private:
+    static bool& active() noexcept {
+        static bool flag = false;
+        return flag;
+    }
+
+public:
+    PrivateAttrCaptureGuard() noexcept {
+        active() = true;
+    }
+
+    ~PrivateAttrCaptureGuard() noexcept {
+        active() = false;
+    }
+
+    static bool is_active() noexcept {
+        return active();
+    }
+};
+
 static PyObject*
 PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
 {
@@ -2300,6 +2712,17 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
     new_type = PrivateAttrType_create(type, data);
     if (!new_type) {
         return nullptr;
+    }
+
+    // Capture CPython's subtype_traverse/subtype_clear pointers: type_new
+    // assigns them to every heap type, so right after creation (before
+    // ensure_tp wraps the slots) the fresh type's tp_traverse/tp_clear are the
+    // exact delegating defaults. The get_*_need_* walkers skip these and keep
+    // walking upward to find a real original.
+    if (PrivateAttrCaptureGuard::is_active()) {
+        PyTypeObject* created = (PyTypeObject*)new_type;
+        ::AllData::captured_subtype_traverse = created->tp_traverse;
+        ::AllData::captured_subtype_clear = created->tp_clear;
     }
 
     if (!PrivateAttrType_postprocess(new_type, data)) {
@@ -2485,6 +2908,172 @@ get_need_tp_finalize(PyTypeObject* cls) noexcept
     return NULL;
 }
 
+static traverseproc
+get_need_tp_traverse(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_traverse != PrivateAttr_tp_traverse
+            && base->tp_traverse != ::AllData::captured_subtype_traverse) {
+            return base->tp_traverse;
+        } else if (::AllData::all_type_traverse.find((uintptr_t)base) != ::AllData::all_type_traverse.end()) {
+            traverseproc saved = ::AllData::all_type_traverse[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_traverse) {
+                return saved;
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static inquiry
+get_need_tp_clear(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_clear != PrivateAttr_tp_clear
+            && base->tp_clear != ::AllData::captured_subtype_clear) {
+            return base->tp_clear;
+        } else if (::AllData::all_type_clear.find((uintptr_t)base) != ::AllData::all_type_clear.end()) {
+            inquiry saved = ::AllData::all_type_clear[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_clear) {
+                return saved;
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+// NOTE: register_finalize is defined later in this file; forward-declare it
+// here because get_type_need_tp_finalize() needs to compare against it.
+static void register_finalize(PyObject* cls) noexcept;
+
+// ========================================================================
+// get_type_need_tp_* : find the ORIGINAL slot implementation for METACLASS
+// slots.
+//
+// Metaclass objects (registered through register_metaclass / kept in shape by
+// ensure_metaclass) have their own slots replaced with the *metaclass-level*
+// wrappers:
+//   tp_getattro -> PrivateAttrType_getattr
+//   tp_setattro -> PrivateAttrType_setattr
+//   tp_finalize -> register_finalize
+//   tp_traverse -> PrivateAttrType_tp_traverse
+//   tp_clear    -> PrivateAttrType_tp_clear
+//
+// These helpers walk the metaclass hierarchy (cls->tp_base chain) and skip
+// those wrappers, returning the nearest real implementation (either read
+// directly from a base slot or from the saved ::AllData::all_type_* map).
+//
+// They are the metaclass counterparts of get_need_tp_*, which instead deal
+// with the slots of the *types created by* these metaclasses (wrapped with
+// the instance-level PrivateAttr_tp_* / PrivateAttr_tp_getattro set).
+// ========================================================================
+static getattrofunc
+get_type_need_tp_getattro(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_getattro != PrivateAttrType_getattr) {
+            return base->tp_getattro;
+        } else if (::AllData::all_type_getattro.find((uintptr_t)base) != ::AllData::all_type_getattro.end()) {
+            if (::AllData::all_type_getattro[(uintptr_t)base]) {
+                return ::AllData::all_type_getattro[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static setattrofunc
+get_type_need_tp_setattro(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_setattro != PrivateAttrType_setattr) {
+            return base->tp_setattro;
+        } else if (::AllData::all_type_setattro.find((uintptr_t)base) != ::AllData::all_type_setattro.end()) {
+            if (::AllData::all_type_setattro[(uintptr_t)base]) {
+                return ::AllData::all_type_setattro[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static destructor
+get_type_need_tp_finalize(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_finalize != register_finalize) {
+            return base->tp_finalize;
+        } else if (::AllData::all_type_finalize.find((uintptr_t)base) != ::AllData::all_type_finalize.end()) {
+            if (::AllData::all_type_finalize[(uintptr_t)base]) {
+                return ::AllData::all_type_finalize[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static traverseproc
+get_type_need_tp_traverse(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_traverse != PrivateAttrType_tp_traverse
+            && base->tp_traverse != ::AllData::captured_subtype_traverse) {
+            return base->tp_traverse;
+        } else if (::AllData::all_type_traverse.find((uintptr_t)base) != ::AllData::all_type_traverse.end()) {
+            traverseproc saved = ::AllData::all_type_traverse[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_traverse) {
+                return saved;
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
+static inquiry
+get_type_need_tp_clear(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_clear != PrivateAttrType_tp_clear
+            && base->tp_clear != ::AllData::captured_subtype_clear) {
+            return base->tp_clear;
+        } else if (::AllData::all_type_clear.find((uintptr_t)base) != ::AllData::all_type_clear.end()) {
+            inquiry saved = ::AllData::all_type_clear[(uintptr_t)base];
+            if (saved && saved != ::AllData::captured_subtype_clear) {
+                return saved;
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
 static int
 PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
 {
@@ -2621,6 +3210,11 @@ create_private_attr_base_simple(void) noexcept
     PyObject *args = PyTuple_Pack(3, name, bases, dict);
     PyObject* base_type;
     if (args) {
+        // RAII: the first heap type created through tp_new (PrivateAttrBase)
+        // carries CPython's pristine subtype_traverse/subtype_clear in its
+        // tp_traverse/tp_clear; PrivateAttrType_new captures those pointers
+        // while this guard is active.
+        PrivateAttrCaptureGuard capture_guard;
         base_type = PrivateAttrType_new((PyTypeObject*)&PrivateAttrType, args, NULL);
         Py_DECREF(args);
     } else {
@@ -2904,9 +3498,52 @@ register_metaclass_head(PyObject* metaclass) noexcept
         return NULL;
     }
     ::AllData::all_register_type_weak_ref[id] = ref;
-    ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
-    ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
-    ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
+    PyTypeObject* mt = (PyTypeObject*)metaclass;
+    // save and replace tp_getattro
+    if (mt->tp_getattro != PrivateAttrType_getattr) {
+        if (!mt->tp_getattro && ::AllData::all_type_getattro.find(id) == ::AllData::all_type_getattro.end()) {
+            ::AllData::all_type_getattro[id] = get_type_need_tp_getattro(mt);
+        } else {
+            ::AllData::all_type_getattro[id] = mt->tp_getattro;
+        }
+        mt->tp_getattro = PrivateAttrType_getattr;
+    }
+    // save and replace tp_setattro
+    if (mt->tp_setattro != PrivateAttrType_setattr) {
+        if (!mt->tp_setattro && ::AllData::all_type_setattro.find(id) == ::AllData::all_type_setattro.end()) {
+            ::AllData::all_type_setattro[id] = get_type_need_tp_setattro(mt);
+        } else {
+            ::AllData::all_type_setattro[id] = mt->tp_setattro;
+        }
+        mt->tp_setattro = PrivateAttrType_setattr;
+    }
+    // save and replace tp_finalize
+    if (mt->tp_finalize != register_finalize) {
+        if (!mt->tp_finalize && ::AllData::all_type_finalize.find(id) == ::AllData::all_type_finalize.end()) {
+            ::AllData::all_type_finalize[id] = get_type_need_tp_finalize(mt);
+        } else {
+            ::AllData::all_type_finalize[id] = mt->tp_finalize;
+        }
+        mt->tp_finalize = register_finalize;
+    }
+    // save and replace tp_traverse
+    if (mt->tp_traverse != PrivateAttrType_tp_traverse) {
+        if (!mt->tp_traverse && ::AllData::all_type_traverse.find(id) == ::AllData::all_type_traverse.end()) {
+            ::AllData::all_type_traverse[id] = get_type_need_tp_traverse(mt);
+        } else {
+            ::AllData::all_type_traverse[id] = mt->tp_traverse;
+        }
+        mt->tp_traverse = PrivateAttrType_tp_traverse;
+    }
+    // save and replace tp_clear
+    if (mt->tp_clear != PrivateAttrType_tp_clear) {
+        if (!mt->tp_clear && ::AllData::all_type_clear.find(id) == ::AllData::all_type_clear.end()) {
+            ::AllData::all_type_clear[id] = get_type_need_tp_clear(mt);
+        } else {
+            ::AllData::all_type_clear[id] = mt->tp_clear;
+        }
+        mt->tp_clear = PrivateAttrType_tp_clear;
+    }
     Py_RETURN_NONE;
 }
 
@@ -2951,9 +3588,47 @@ ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass) noexcept
 {
     uintptr_t id = (uintptr_t)metaclass;
     if (::AllData::all_register_type_weak_ref.find(id) != ::AllData::all_register_type_weak_ref.end()) {
-        ((PyTypeObject*)metaclass)->tp_getattro = PrivateAttrType_getattr;
-        ((PyTypeObject*)metaclass)->tp_setattro = PrivateAttrType_setattr;
-        ((PyTypeObject*)metaclass)->tp_finalize = register_finalize;
+        PyTypeObject* mt = (PyTypeObject*)metaclass;
+        if (mt->tp_getattro != PrivateAttrType_getattr) {
+            if (!mt->tp_getattro && ::AllData::all_type_getattro.find(id) == ::AllData::all_type_getattro.end()) {
+                ::AllData::all_type_getattro[id] = get_type_need_tp_getattro(mt);
+            } else {
+                ::AllData::all_type_getattro[id] = mt->tp_getattro;
+            }
+            mt->tp_getattro = PrivateAttrType_getattr;
+        }
+        if (mt->tp_setattro != PrivateAttrType_setattr) {
+            if (!mt->tp_setattro && ::AllData::all_type_setattro.find(id) == ::AllData::all_type_setattro.end()) {
+                ::AllData::all_type_setattro[id] = get_type_need_tp_setattro(mt);
+            } else {
+                ::AllData::all_type_setattro[id] = mt->tp_setattro;
+            }
+            mt->tp_setattro = PrivateAttrType_setattr;
+        }
+        if (mt->tp_finalize != register_finalize) {
+            if (!mt->tp_finalize && ::AllData::all_type_finalize.find(id) == ::AllData::all_type_finalize.end()) {
+                ::AllData::all_type_finalize[id] = get_type_need_tp_finalize(mt);
+            } else {
+                ::AllData::all_type_finalize[id] = mt->tp_finalize;
+            }
+            mt->tp_finalize = register_finalize;
+        }
+        if (mt->tp_traverse != PrivateAttrType_tp_traverse) {
+            if (!mt->tp_traverse && ::AllData::all_type_traverse.find(id) == ::AllData::all_type_traverse.end()) {
+                ::AllData::all_type_traverse[id] = get_type_need_tp_traverse(mt);
+            } else {
+                ::AllData::all_type_traverse[id] = mt->tp_traverse;
+            }
+            mt->tp_traverse = PrivateAttrType_tp_traverse;
+        }
+        if (mt->tp_clear != PrivateAttrType_tp_clear) {
+            if (!mt->tp_clear && ::AllData::all_type_clear.find(id) == ::AllData::all_type_clear.end()) {
+                ::AllData::all_type_clear[id] = get_type_need_tp_clear(mt);
+            } else {
+                ::AllData::all_type_clear[id] = mt->tp_clear;
+            }
+            mt->tp_clear = PrivateAttrType_tp_clear;
+        }
     }
     Py_RETURN_NONE;
 }
@@ -3276,5 +3951,17 @@ PyInit_private_attribute(void) noexcept
     PyList_Append(all, PyUnicode_InternFromString("ensure_type"));
     PyList_Append(all, PyUnicode_InternFromString("ensure_metaclass"));
     Py_SET_TYPE(m, &PrivateModuleType);
+
+    // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
+    // subtype_clear pointers are captured at import time (see
+    // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
+    // waiting for the first lazy attribute access to the module.
+    PyObject* private_attr_base = PrivateModule_get_PrivateAttrBase(NULL, NULL);
+    if (!private_attr_base) {
+        Py_DECREF(m);
+        return NULL;
+    }
+    Py_DECREF(private_attr_base);
+
     return m;
 }
