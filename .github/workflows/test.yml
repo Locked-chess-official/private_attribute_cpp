@@ -69,10 +69,12 @@ jobs:
 
           if [ "${{ runner.os }}" = "Linux" ]; then
             gdb -q --batch \
+              -ex "set confirm off" \
               -ex "set pagination off" \
               -ex "handle SIGSEGV stop print pass" \
               -ex "run" \
               -ex "thread apply all bt full" \
+              -ex "quit \$_exitcode" \
               --args python -m pytest tests/ -vvs -W error
           elif [ "${{ runner.os }}" = "macOS" ]; then
             # Use regular pytest on macOS CI to avoid lldb-related early stops; install via pip
