@@ -169,45 +169,44 @@ public:
 
 namespace {
     namespace AllData {
-        static auto& cache = *new std::unordered_map<AllPyobjectAttrCacheKey, std::string>();
-        static auto& all_exist_name = *new std::unordered_set<std::string>();
-        static auto& obj_attr_keys = *new std::unordered_map<uintptr_t, std::vector<AllPyobjectAttrCacheKey>>();
-        static auto& cache_mutex = *new std::shared_mutex();
+        static std::unordered_map<AllPyobjectAttrCacheKey, std::string> cache;
+        static std::unordered_set<std::string> all_exist_name;
+        static std::unordered_map<uintptr_t, std::vector<AllPyobjectAttrCacheKey>> obj_attr_keys;
+        static std::shared_mutex cache_mutex;
         namespace {
-            static auto& type_attr_dict = *new std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>>();
+            static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> type_attr_dict;
         };
-        static auto& type_allowed_code_map = *new std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>>();
-        static auto& all_type_mutex = *new std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>();
-        static auto& type_need_call = *new std::unordered_map<uintptr_t, PyObject*>();
-        static auto& all_type_attr_set = *new std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>>();
+        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
+        static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
+        static std::unordered_map<uintptr_t, PyObject*> type_need_call;
+        static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
-            static auto& all_object_attr = *new std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
-                std::unordered_map<std::string, PyObjectStorage>>>();
-            static auto& all_type_subclass_attr = *new std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
-                std::unordered_map<std::string, PyObjectStorage>>>();
+            static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
+                std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
         };
-        static auto& all_object_mutex = *new std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>();
-        static auto& all_type_subclass_mutex = *new std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>();
-        static auto& all_type_parent_id = *new std::unordered_map<uintptr_t, std::vector<uintptr_t>>();
+        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
+            all_object_mutex, all_type_subclass_mutex;
+        static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
         // all type tp_getattro map
-        static auto& all_type_getattro = *new std::unordered_map<uintptr_t, getattrofunc>();
+        static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
         // all type tp_setattro map
-        static auto& all_type_setattro = *new std::unordered_map<uintptr_t, setattrofunc>();
+        static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
         // all type tp_traverse map
-        static auto& all_type_traverse = *new std::unordered_map<uintptr_t, traverseproc>();
+        static std::unordered_map<uintptr_t, traverseproc> all_type_traverse;
         // all type tp_clear map
-        static auto& all_type_clear = *new std::unordered_map<uintptr_t, inquiry>();
+        static std::unordered_map<uintptr_t, inquiry> all_type_clear;
         // CPython's default slot functions for heap types (subtype_traverse /
         // subtype_clear). type_new assigns them to every heap type, so we capture
         // the exact pointers from the first heap type created through tp_new
         // (PrivateAttrBase). The get_*_need_* walkers must treat these delegating
         // defaults as "not a real original" and keep walking upward.
-        static auto& captured_subtype_traverse = *new traverseproc();
-        static auto& captured_subtype_clear = *new inquiry();
+        static traverseproc captured_subtype_traverse = NULL;
+        static inquiry captured_subtype_clear = NULL;
         // all type tp_finalizer map
-        static auto& all_type_finalize = *new std::unordered_map<uintptr_t, destructor>();
-        static auto& all_register_new_metaclass_mutex = *new std::shared_mutex();
-        static auto& all_register_type_weak_ref = *new std::unordered_map<uintptr_t, PyObject*>();
+        static std::unordered_map<uintptr_t, destructor> all_type_finalize;
+
+        static std::shared_mutex all_register_new_metaclass_mutex;
+        static std::unordered_map<uintptr_t, PyObject*> all_register_type_weak_ref;
     };
 };
 struct FinalObject
