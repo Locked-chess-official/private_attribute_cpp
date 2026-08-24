@@ -1416,12 +1416,61 @@ clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept
     clear_obj(id_self);
 }
 
+// ========================================================================
+// Re-entrancy guard for the traverse/clear wrappers.
+//
+// The wrappers MUST keep calling the saved "original" slot functions: a
+// wrapped metaclass may have been created by another C-level metaclass, so we
+// cannot tell whether the saved function is a real custom implementation or a
+// delegating default such as CPython's subtype_traverse/subtype_clear. Those
+// defaults read the LIVE tp_traverse/tp_clear slot and delegate back into our
+// wrapper, which would otherwise recurse infinitely.
+//
+// The guard makes a re-entrant call for the same object a no-op (returns 0),
+// so the outermost invocation finishes the whole traversal/clear exactly once.
+// It is thread-local so it is safe for free-threaded builds (Py_GIL_DISABLED).
+// ========================================================================
+class PrivateAttrRecursionGuard
+{
+private:
+    static std::unordered_set<uintptr_t>& in_flight() noexcept {
+        static thread_local std::unordered_set<uintptr_t> set;
+        return set;
+    }
+
+    uintptr_t key;
+
+public:
+    // Returns false when `key` is already being traversed/cleared by an outer
+    // invocation of the same wrapper (i.e. this call is a re-entrant one).
+    static bool try_enter(uintptr_t key) noexcept {
+        auto& set = in_flight();
+        if (set.find(key) != set.end()) {
+            return false;
+        }
+        set.insert(key);
+        return true;
+    }
+
+    explicit PrivateAttrRecursionGuard(uintptr_t key) noexcept : key(key) {}
+
+    ~PrivateAttrRecursionGuard() noexcept {
+        in_flight().erase(key);
+    }
+};
+
 static int
 PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
 {
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
     uintptr_t id_self = (uintptr_t)self;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter(id_self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard(id_self);
 
     // call original traverse if exists
     if (::AllData::all_type_traverse.find(typ_id) != ::AllData::all_type_traverse.end()) {
@@ -1471,6 +1520,12 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
     uintptr_t typ_id = (uintptr_t)typ;
     uintptr_t id_self = (uintptr_t)self;
 
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter(id_self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard(id_self);
+
     // call original clear if exists
     if (::AllData::all_type_clear.find(typ_id) != ::AllData::all_type_clear.end()) {
         inquiry orig = ::AllData::all_type_clear[typ_id];
@@ -1493,6 +1548,12 @@ PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
 {
     PyTypeObject* typ = (PyTypeObject*)self;
     uintptr_t typ_id = (uintptr_t)typ;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter((uintptr_t)self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard((uintptr_t)self);
 
     // Call saved/original traverse if exists
     if (::AllData::all_type_traverse.find(typ_id) != ::AllData::all_type_traverse.end()) {
@@ -1577,6 +1638,12 @@ PrivateAttrType_tp_clear(PyObject* self) noexcept
 {
     PyTypeObject* typ = (PyTypeObject*)self;
     uintptr_t typ_id = (uintptr_t)typ;
+
+    // Re-entrancy guard: see PrivateAttrRecursionGuard above.
+    if (!PrivateAttrRecursionGuard::try_enter((uintptr_t)self)) {
+        return 0;
+    }
+    PrivateAttrRecursionGuard guard((uintptr_t)self);
 
     // Call saved/original clear if exists
     if (::AllData::all_type_clear.find(typ_id) != ::AllData::all_type_clear.end()) {
