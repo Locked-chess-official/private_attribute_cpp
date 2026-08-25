@@ -89,13 +89,15 @@ class TestPrivateInheritance(unittest.TestCase):
             obj._value
 
     def test_same_name_class_attrs_stored_separately(self):
-        # 2.1.0: a class-body attribute shadowing a parent's private name
-        # becomes this class's own private attribute.
+        # 2.1.0: a class-body attribute shadowing a parent's private name is
+        # stored separately per class (all_type_subclass_attr[parent][child]).
+        # Reading through a Child subject resolves to Child's own value, while
+        # the parent's own class-level value stays untouched.
         class Parent(private_attribute.PrivateAttrBase):
             __private_attrs__ = ["_value"]
             _value = 10
 
-            def get_parent_value(self):
+            def get_value(self):
                 return self._value
 
         class Child(Parent):
@@ -105,13 +107,51 @@ class TestPrivateInheritance(unittest.TestCase):
             def get_child_value(self):
                 return self._value
 
+        self.assertEqual(Parent().get_value(), 10)
         obj = Child()
-        self.assertEqual(obj.get_parent_value(), 10)
         self.assertEqual(obj.get_child_value(), 20)
+        self.assertEqual(obj.get_value(), 20)
         with self.assertRaises(AttributeError):
             obj._value
         with self.assertRaises(AttributeError):
             Child._value
+
+    def test_same_name_class_attrs_write_separately(self):
+        # Writes through either class's code go to that subject's own storage.
+        class Parent(private_attribute.PrivateAttrBase):
+            __private_attrs__ = ["_value"]
+            _value = 1
+
+            @classmethod
+            def set_value(cls, v):
+                cls._value = v
+
+            @classmethod
+            def get_value(cls):
+                return cls._value
+
+        class Child(Parent):
+            __private_attrs__ = []
+            _value = 2
+
+            @classmethod
+            def set_own(cls, v):
+                cls._value = v
+
+        self.assertEqual(Parent.get_value(), 1)
+        self.assertEqual(Child.get_value(), 2)
+        # parent's classmethod called on the child writes the child's own storage
+        Child.set_value(99)
+        self.assertEqual(Child.get_value(), 99)
+        self.assertEqual(Parent.get_value(), 1)
+        # child's own classmethod writes the child's own storage
+        Child.set_own(7)
+        self.assertEqual(Child.get_value(), 7)
+        self.assertEqual(Parent.get_value(), 1)
+        # parent's own storage still writable through the parent
+        Parent.set_value(5)
+        self.assertEqual(Parent.get_value(), 5)
+        self.assertEqual(Child.get_value(), 7)
 
     def test_parent_code_still_works_on_subclass_instance(self):
         # Parent's own methods keep working on subclass instances.
