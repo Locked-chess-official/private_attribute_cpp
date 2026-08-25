@@ -9,6 +9,11 @@ class BaseClass(private_attribute.PrivateAttrBase):
         super().__init__()
         self._value = value
 
+    @property
+    def value(self):
+        return self._value
+
+
 class SubClass(BaseClass):
     __private_attrs__ = ["_other_value"]
     __slots__ = []
@@ -16,10 +21,6 @@ class SubClass(BaseClass):
     def __init__(self, value, other_value):
         super().__init__(value)
         self._other_value = other_value
-
-    @property
-    def value(self):
-        return self._value
 
     @property
     def other_value(self):
