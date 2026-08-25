@@ -178,7 +178,11 @@ namespace {
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
         static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
-        static std::unordered_map<uintptr_t, PyObject*> type_need_call;
+        // private_func per type, stored with RAII ownership (PyObjectStorage
+        // INCREFs on assignment and DECREFs on destruction), so the map entry
+        // always owns exactly one reference - no dangling-pointer risk when the
+        // last external reference to the function disappears.
+        static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         // Names whose class-body definition shadows a parent's private attribute.
         // The value itself is stored in all_type_subclass_attr[parent][type_id].
@@ -2762,12 +2766,10 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     }
 
     if (data.private_func) {
-        // type_need_call owns its own reference to private_func: data's ref is
-        // released by PrivateAttrCreationData::clear() right after this, and
-        // PrivateAttrType_finalize releases the map's ref later. Without the
-        // INCREF the map would keep a dangling pointer once the function's last
-        // external reference disappears (e.g. a local private_func in a test).
-        Py_INCREF(data.private_func);
+        // PyObjectStorage::operator=(PyObject*) takes its own reference here;
+        // data's reference is released by PrivateAttrCreationData::clear()
+        // right after this, and the map entry's reference is released when the
+        // entry is erased in PrivateAttrType_finalize.
         ::AllData::type_need_call[type_id] = data.private_func;
     }
 
@@ -3259,8 +3261,7 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
         ::AllData::type_allowed_code_map.erase(typ_id);
     }
     if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
-        auto& need_call = ::AllData::type_need_call[typ_id];
-        Py_XDECREF(need_call);
+        // erase() destroys the PyObjectStorage, which DECREFs private_func.
         ::AllData::type_need_call.erase(typ_id);
     }
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
