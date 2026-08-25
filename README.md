@@ -231,6 +231,8 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 - Don't use a decorator which will return the `_PrivateWrap` in `PrivateWrapProxy` which will raise `TypeError`.
 - One class defined in another class cannot use another class's private attribute.
 - One parent class defined an attribute which not in `__private_attrs__` or not a `PrivateAttrType` instance, the child class shouldn't contain the attribute in its `__private_attrs__`.
+- Since 2.1.0: the code of a subclass can no longer access the private attributes of its parent classes - a parent's private attribute is only reachable from the parent's own code.
+- Since 2.1.0: if a subclass defines an attribute with the same name as a parent's private attribute, they are stored separately. The subclass's class-body definition becomes its own private attribute, and each class's code reads/writes only its own storage.
 - CPython may change "tp_getattro", "tp_setattro" and so on when you change the attribute "\_\_getattribute\_\_", "\_\_setattr\_\_" and so on. If you are fear about it, you can use `ensure_type` to reset those tp slots. For the other metaclasses, you can use `ensure_metaclass` to reset those tp slots. Also, don't set those methods on these classes in your code.
 - `private_attribute.register_metaclass` must be called with the metaclass which supports weakref.
 - Don't set `__static_attributes__` in private attribute class, or it will be removed.

@@ -182,10 +182,10 @@ namespace {
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
-                std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
+                std::unordered_map<std::string, PyObjectStorage>>> all_object_attr;
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
-            all_object_mutex, all_type_subclass_mutex;
+            all_object_mutex;
         static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
         // all type tp_getattro map
         static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
@@ -221,9 +221,21 @@ struct FinalObject
 
 static TwoStringTuple get_string_hash_tuple2(const std::string& name) noexcept;
 static PyCodeObject* get_now_code() noexcept;
-static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, const std::string& name) noexcept;
 static bool type_private_attr(uintptr_t type, const std::string& name) noexcept;
 static FinalObject type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept;
+
+// Result of classifying an attribute access.
+// - type_id: the node on the MRO chain (a class) whose code is currently running
+//   AND that declares the attribute as private. 0 means "no private owner".
+// - allowed: false means the access must be denied (a private attribute touched
+//   from outside its declaring class, or from a subclass of it).
+struct AttrClassifyResult
+{
+    uintptr_t type_id = 0;
+    bool allowed = true;
+};
+
+static AttrClassifyResult attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept;
 
 static bool
 is_class_code(uintptr_t typ_id, PyCodeObject* code) noexcept
@@ -251,27 +263,64 @@ is_type_private(uintptr_t typ_id, const std::string& name) noexcept
     return false;
 }
 
-static bool
+static AttrClassifyResult
 attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept
 {
-    if (is_class_code(typ_id, code)) {
-        return true;
-    }
-    if (is_type_private(typ_id, name)) {
-        return false;
-    }
+    // Build the MRO chain: the actual class first, then its parents.
+    std::vector<uintptr_t> chain;
+    chain.push_back(typ_id);
     if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
-        std::vector<uintptr_t> parent_ids = ::AllData::all_type_parent_id[typ_id];
-        for (auto& parent_id : parent_ids) {
-            if (is_class_code(parent_id, code)) {
-                return true;
-            }
-            if (is_type_private(parent_id, name)) {
-                return false;
-            }
+        auto& parent_ids = ::AllData::all_type_parent_id[typ_id];
+        chain.insert(chain.end(), parent_ids.begin(), parent_ids.end());
+    }
+
+    // Find the class whose code is currently running (the code owner).
+    uintptr_t code_class = 0;
+    for (auto& node : chain) {
+        if (is_class_code(node, code)) {
+            code_class = node;
+            break;
         }
     }
-    return true;
+
+    if (code_class == 0) {
+        // No class code was hit on the whole chain (e.g. the code belongs to a
+        // module-level function or an unrelated class): if the name is private
+        // to any class on the chain, deny the access.
+        for (auto& node : chain) {
+            if (is_type_private(node, name)) {
+                return {0, false};
+            }
+        }
+        return {0, true};
+    }
+
+    if (is_type_private(code_class, name)) {
+        // Both conditions hold: the code is under this class AND the attribute
+        // is private to this very class -> allowed, and this node of the chain
+        // is the owner of the private attribute.
+        return {code_class, true};
+    }
+
+    // The code belongs to code_class but the name is not private to it: look
+    // upward (toward the base classes). If an ancestor declares the name
+    // private, a subclass is trying to touch a parent's private attribute.
+    bool found_code_class = false;
+    for (auto& node : chain) {
+        if (!found_code_class) {
+            if (node == code_class) {
+                found_code_class = true;
+            }
+            continue;
+        }
+        if (is_type_private(node, name)) {
+            return {0, false};
+        }
+    }
+
+    // Not private to the running class nor to any of its ancestors: treat it
+    // as a normal (non-private) attribute access.
+    return {0, true};
 }
 
 static std::string
@@ -437,13 +486,10 @@ static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
 static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 
 static PyObject*
-id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
+id_getattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 {
-    uintptr_t obj_id, typ_id, final_id;
-    obj_id = (uintptr_t) obj;
-    typ_id = (uintptr_t) typ;
-    final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    uintptr_t obj_id = (uintptr_t) obj;
+    FinalObject final_object = type_get_final_attr(final_id, attr_name);
     if (final_object.status == -2) {
         return NULL;
     }
@@ -542,10 +588,9 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 }
 
 static PyObject*
-type_getattr(PyObject* typ, const std::string& attr_name) noexcept
+type_getattr(PyObject* typ, const std::string& attr_name, uintptr_t final_id) noexcept
 {
-    uintptr_t typ_id = (uintptr_t)typ;
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    FinalObject final_object = type_get_final_attr(final_id, attr_name);
     if (final_object.status == -2) {
         return NULL;
     }
@@ -575,13 +620,10 @@ type_getattr(PyObject* typ, const std::string& attr_name) noexcept
 }
 
 static int
-id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value) noexcept
+id_setattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value) noexcept
 {
-    uintptr_t obj_id, typ_id, final_id;
-    obj_id = (uintptr_t) obj;
-    typ_id = (uintptr_t) typ;
-    final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    uintptr_t obj_id = (uintptr_t) obj;
+    FinalObject final_object = type_get_final_attr(final_id, attr_name);
     if (final_object.status == -2) {
         return -1;
     }
@@ -640,79 +682,53 @@ id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject*
     return 0;
 }
 
-static int type_delattr(PyObject* typ, const std::string& attr_name) noexcept;
+static int type_delattr(PyObject* typ, const std::string& attr_name, uintptr_t final_id) noexcept;
 
 static int
-type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexcept
+type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value, uintptr_t final_id) noexcept
 {
     if (!value) {
-        return type_delattr(typ, attr_name);
+        return type_delattr(typ, attr_name, final_id);
     }
-    uintptr_t typ_id = (uintptr_t) typ;
-    uintptr_t final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
     std::string final_key;
     PyObject* type_need_call;
-    if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
-        type_need_call = ::AllData::type_need_call[typ_id];
+    if (::AllData::type_need_call.find(final_id) != ::AllData::type_need_call.end()) {
+        type_need_call = ::AllData::type_need_call[final_id];
     } else {
         type_need_call = NULL;
     }
     if (type_need_call) {
-        auto private_name_result = custom_random_string(typ_id, attr_name, type_need_call);
+        auto private_name_result = custom_random_string(final_id, attr_name, type_need_call);
         if (!private_name_result.ok) {
             return -1;
         }
         final_key = private_name_result.value;
     } else {
-        final_key = default_random_string(typ_id, attr_name);
+        final_key = default_random_string(final_id, attr_name);
     }
     if (final_id == 0) {
         PyErr_SetString(PyExc_TypeError, "type not found");
         return -1;
     }
-    if (final_id == typ_id) {
-        if (::AllData::type_attr_dict.find(typ_id) == ::AllData::type_attr_dict.end()) {
-            ::AllData::type_attr_dict[typ_id] = {};
-        }
-        if (::AllData::all_type_mutex.find(typ_id) == ::AllData::all_type_mutex.end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_mutex[typ_id] = lock;
-        }
-        {
-            std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
-            ::AllData::type_attr_dict[typ_id][final_key] = value;
-        }
-        return 0;
-    } else {
-        if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_attr[final_id].find(typ_id) == ::AllData::all_type_subclass_attr[final_id].end()) {
-            ::AllData::all_type_subclass_attr[final_id][typ_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(final_id) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex[final_id].find(typ_id) == ::AllData::all_type_subclass_mutex[final_id].end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_subclass_mutex[final_id][typ_id] = lock;
-        }
-        {
-            std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
-            ::AllData::all_type_subclass_attr[final_id][typ_id][final_key] = value;
-            return 0;
-        }
+    if (::AllData::type_attr_dict.find(final_id) == ::AllData::type_attr_dict.end()) {
+        ::AllData::type_attr_dict[final_id] = {};
     }
+    if (::AllData::all_type_mutex.find(final_id) == ::AllData::all_type_mutex.end()) {
+        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
+        ::AllData::all_type_mutex[final_id] = lock;
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[final_id]);
+        ::AllData::type_attr_dict[final_id][final_key] = value;
+    }
+    return 0;
 }
 
 static int
-id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
+id_delattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 {
-    uintptr_t obj_id, typ_id, final_id;
-    obj_id = (uintptr_t) obj;
-    typ_id = (uintptr_t) typ;
-    final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    uintptr_t obj_id = (uintptr_t) obj;
+    FinalObject final_object = type_get_final_attr(final_id, attr_name);
     if (final_object.status == -2) {
         return -1;
     }
@@ -779,73 +795,45 @@ id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 }
 
 static int
-type_delattr(PyObject* typ, const std::string& attr_name) noexcept
+type_delattr(PyObject* typ, const std::string& attr_name, uintptr_t final_id) noexcept
 {
-    uintptr_t typ_id = (uintptr_t) typ;
-    uintptr_t final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
     std::string final_key;
     PyObject* type_need_call;
-    if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
-        type_need_call = ::AllData::type_need_call[typ_id];
+    if (::AllData::type_need_call.find(final_id) != ::AllData::type_need_call.end()) {
+        type_need_call = ::AllData::type_need_call[final_id];
     } else {
         type_need_call = NULL;
     }
     if (type_need_call) {
-        auto private_name_result = custom_random_string(typ_id, attr_name, type_need_call);
+        auto private_name_result = custom_random_string(final_id, attr_name, type_need_call);
         if (!private_name_result.ok) {
             return -1;
         }
         final_key = private_name_result.value;
     } else {
-        final_key = default_random_string(typ_id, attr_name);
+        final_key = default_random_string(final_id, attr_name);
     }
     if (final_id == 0) {
         PyErr_SetString(PyExc_TypeError, "type not found");
         return -1;
     }
-    if (typ_id == final_id) {
-        if (::AllData::type_attr_dict.find(typ_id) == ::AllData::type_attr_dict.end()) {
-            ::AllData::type_attr_dict[typ_id] = {};
-        }
-        if (::AllData::all_type_mutex.find(typ_id) == ::AllData::all_type_mutex.end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_mutex[typ_id] = lock;
-        }
-        std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
-        if (::AllData::type_attr_dict[typ_id].find(final_key) == ::AllData::type_attr_dict[typ_id].end()) {
-            const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-            if (type_name == NULL) {
-                return -1;
-            }
-            PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
-            return -1;
-        }
-        ::AllData::type_attr_dict[typ_id].erase(final_key);
-    } else {
-        if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_attr[final_id].find(typ_id) == ::AllData::all_type_subclass_attr[final_id].end()) {
-            ::AllData::all_type_subclass_attr[final_id][typ_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(final_id) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex[final_id].find(typ_id) == ::AllData::all_type_subclass_mutex[final_id].end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_subclass_mutex[final_id][typ_id] = lock;
-        }
-        std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
-        if (::AllData::all_type_subclass_attr[final_id][typ_id].find(final_key) == ::AllData::all_type_subclass_attr[final_id][typ_id].end()) {
-            const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
-            if (type_name == NULL) {
-                return -1;
-            }
-            PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
-            return -1;
-        }
-        ::AllData::all_type_subclass_attr[final_id][typ_id].erase(final_key);
+    if (::AllData::type_attr_dict.find(final_id) == ::AllData::type_attr_dict.end()) {
+        ::AllData::type_attr_dict[final_id] = {};
     }
+    if (::AllData::all_type_mutex.find(final_id) == ::AllData::all_type_mutex.end()) {
+        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
+        ::AllData::all_type_mutex[final_id] = lock;
+    }
+    std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[final_id]);
+    if (::AllData::type_attr_dict[final_id].find(final_key) == ::AllData::type_attr_dict[final_id].end()) {
+        const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
+        if (type_name == NULL) {
+            return -1;
+        }
+        PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, attr_name.c_str());
+        return -1;
+    }
+    ::AllData::type_attr_dict[final_id].erase(final_key);
     return 0;
 }
 
@@ -1281,14 +1269,21 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
     std::string name_str = PyUnicode_AsUTF8(name);
     auto code = get_now_code();
     if (type_private_attr(type_id, name_str)) {
-        if (!code || !attr_classify(type_id, name_str, code)){
+        if (!code) {
             Py_XDECREF(code);
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             return NULL;
-        } else {
-            Py_XDECREF(code);
-            return id_getattr(name_str, self, (PyObject*)typ);
         }
+        AttrClassifyResult classify = attr_classify(type_id, name_str, code);
+        Py_XDECREF(code);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return NULL;
+        }
+        if (classify.type_id != 0) {
+            return id_getattr(classify.type_id, name_str, self, (PyObject*)typ);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(code);
     if (::AllData::all_type_getattro.find(type_id) != ::AllData::all_type_getattro.end()){
@@ -1313,17 +1308,24 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcep
     std::string name_str(c_name);
     auto code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!code || !attr_classify(typ_id, name_str, code)){
+        if (!code) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(code);
             return -1;
-        } else {
-            Py_XDECREF(code);
-            if (!value) {
-                return id_delattr(name_str, self, (PyObject*)typ);
-            }
-            return id_setattr(name_str, self, (PyObject*)typ, value);
         }
+        AttrClassifyResult classify = attr_classify(typ_id, name_str, code);
+        Py_XDECREF(code);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return -1;
+        }
+        if (classify.type_id != 0) {
+            if (!value) {
+                return id_delattr(classify.type_id, name_str, self, (PyObject*)typ);
+            }
+            return id_setattr(classify.type_id, name_str, self, (PyObject*)typ, value);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(code);
     if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()){
@@ -1582,61 +1584,27 @@ PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
         }
     }
 
-    // Traverse PyObjects stored in AllData for this type:
-    // - direct type attributes ::AllData::type_attr_dict[typ_id]
-    // - attributes stored under parents for this type ::AllData::all_type_subclass_attr[parent_id][typ_id]
-    std::vector<uintptr_t> parent_ids;
-    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
-        parent_ids = ::AllData::all_type_parent_id[typ_id];
-    }
-    // include typ_id itself first
-    parent_ids.insert(parent_ids.begin(), typ_id);
-
-    for (auto pid : parent_ids) {
-        if (pid == typ_id) {
-            if (::AllData::type_attr_dict.find(pid) != ::AllData::type_attr_dict.end()) {
-                auto &item_set = ::AllData::type_attr_dict[pid];
-                if (::AllData::all_type_mutex.find(pid) != ::AllData::all_type_mutex.end()) {
-                    std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[pid]);
-                    for (auto &p : item_set) {
-                        PyObject* obj = p.second.get();
-                        if (obj) {
-                            int res = visit(obj, arg);
-                            if (res) return res;
-                        }
-                    }
-                } else {
-                    for (auto &p : item_set) {
-                        PyObject* obj = p.second.get();
-                        if (obj) {
-                            int res = visit(obj, arg);
-                            if (res) return res;
-                        }
-                    }
+    // Traverse PyObjects stored in AllData for this type: with the owner-based
+    // model all class-level private attributes of this type (including ones
+    // shadowing a parent's private attribute) live in
+    // ::AllData::type_attr_dict[typ_id].
+    if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
+        auto &item_set = ::AllData::type_attr_dict[typ_id];
+        if (::AllData::all_type_mutex.find(typ_id) != ::AllData::all_type_mutex.end()) {
+            std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
+            for (auto &p : item_set) {
+                PyObject* obj = p.second.get();
+                if (obj) {
+                    int res = visit(obj, arg);
+                    if (res) return res;
                 }
             }
         } else {
-            if (::AllData::all_type_subclass_attr.find(pid) == ::AllData::all_type_subclass_attr.end()) continue;
-            auto &child_map = ::AllData::all_type_subclass_attr[pid];
-            auto it = child_map.find(typ_id);
-            if (it == child_map.end()) continue;
-            if (::AllData::all_type_subclass_mutex.find(pid) != ::AllData::all_type_subclass_mutex.end()
-                && ::AllData::all_type_subclass_mutex[pid].find(typ_id) != ::AllData::all_type_subclass_mutex[pid].end()) {
-                std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[pid][typ_id]);
-                for (auto &p : it->second) {
-                    PyObject* obj = p.second.get();
-                    if (obj) {
-                        int res = visit(obj, arg);
-                        if (res) return res;
-                    }
-                }
-            } else {
-                for (auto &p : it->second) {
-                    PyObject* obj = p.second.get();
-                    if (obj) {
-                        int res = visit(obj, arg);
-                        if (res) return res;
-                    }
+            for (auto &p : item_set) {
+                PyObject* obj = p.second.get();
+                if (obj) {
+                    int res = visit(obj, arg);
+                    if (res) return res;
                 }
             }
         }
@@ -1668,30 +1636,8 @@ PrivateAttrType_tp_clear(PyObject* self) noexcept
 
     // Clear AllData entries associated with this type. PyObjectStorage destructor
     // takes care of DECREF for stored objects.
-    std::vector<uintptr_t> parent_ids;
-    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
-        parent_ids = ::AllData::all_type_parent_id[typ_id];
-    }
-
-    // Clear direct type attributes
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
         ::AllData::type_attr_dict.erase(typ_id);
-    }
-
-    // Clear subclass attribute entries stored under parent types for this type
-    for (auto parent_id : parent_ids) {
-        if (::AllData::all_type_subclass_attr.find(parent_id) != ::AllData::all_type_subclass_attr.end()) {
-            auto &child_map = ::AllData::all_type_subclass_attr[parent_id];
-            if (child_map.find(typ_id) != child_map.end()) {
-                child_map.erase(typ_id);
-            }
-        }
-        if (::AllData::all_type_subclass_mutex.find(parent_id) != ::AllData::all_type_subclass_mutex.end()) {
-            auto &mmap = ::AllData::all_type_subclass_mutex[parent_id];
-            if (mmap.find(typ_id) != mmap.end()) {
-                mmap.erase(typ_id);
-            }
-        }
     }
 
     return 0;
@@ -1796,6 +1742,10 @@ get_string_hash_tuple2(const std::string& name) noexcept
 static FinalObject
 type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
 {
+    // type_id is the OWNER: the class that declares the attribute private.
+    // Lookup is direct - no MRO walk, no subclass-shadow maps. Attributes with
+    // the same name declared by different classes live in different buckets, so
+    // they are stored separately.
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
         if (::AllData::all_type_attr_set[type_id].find(hash_tuple) != ::AllData::all_type_attr_set[type_id].end()) {
@@ -1828,102 +1778,7 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
             }
         }
     }
-    std::vector<uintptr_t> now_visited = {type_id};
-    if (::AllData::all_type_parent_id.find(type_id) != ::AllData::all_type_parent_id.end()) {
-        auto& parent_ids = ::AllData::all_type_parent_id[type_id];
-        for (auto& parent_id: parent_ids) {
-            if (::AllData::all_type_attr_set.find(parent_id) != ::AllData::all_type_attr_set.end()) {
-                auto& item_set = ::AllData::all_type_attr_set[parent_id];
-                if (item_set.find(hash_tuple) != item_set.end()) {
-                    if (::AllData::all_type_subclass_attr.find(parent_id) != ::AllData::all_type_subclass_attr.end()) {
-                        auto& now_mro_dict = ::AllData::all_type_subclass_attr[parent_id];
-                        for (auto& now_visited_id: now_visited) {
-                            if (now_mro_dict.find(now_visited_id) != now_mro_dict.end()) {
-                                std::string key;
-                                if (::AllData::type_need_call.find(now_visited_id) != ::AllData::type_need_call.end()) {
-                                    PyObject* func = ::AllData::type_need_call[now_visited_id];
-                                    if (func != NULL) {
-                                        auto private_name_result = custom_random_string(now_visited_id, name, func);
-                                        if (!private_name_result.ok) {
-                                            return -2; // -2 means exception
-                                        }
-                                        key = private_name_result.value;
-                                    } else {
-                                        key = default_random_string(now_visited_id, name);
-                                    }
-                                } else {
-                                    key = default_random_string(now_visited_id, name);
-                                }
-                                if (::AllData::all_type_subclass_mutex.find(parent_id) == ::AllData::all_type_subclass_mutex.end()) {
-                                    ::AllData::all_type_subclass_mutex[parent_id] = {};
-                                }
-                                if (::AllData::all_type_subclass_mutex[parent_id].find(now_visited_id) == ::AllData::all_type_subclass_mutex[parent_id].end()) {
-                                    std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-                                    ::AllData::all_type_subclass_mutex[parent_id][now_visited_id] = lock;
-                                }
-                                std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[parent_id][now_visited_id]);
-                                if (now_mro_dict[now_visited_id].find(key) != now_mro_dict[now_visited_id].end()) {
-                                    PyObject* obj = now_mro_dict[now_visited_id][key];
-                                    return obj;
-                                }
-                            }
-                        }
-                    }
-                    std::string key;
-                    if (::AllData::type_need_call.find(parent_id) != ::AllData::type_need_call.end()) {
-                        PyObject* func = ::AllData::type_need_call[parent_id];
-                        if (func != NULL) {
-                            auto private_name_result = custom_random_string(parent_id, name, func);
-                            if (!private_name_result.ok) {
-                                return -2; // -2 means exception
-                            }
-                            key = private_name_result.value;
-                        } else {
-                            key = default_random_string(parent_id, name);
-                        }
-                    } else {
-                        key = default_random_string(parent_id, name);
-                    }
-                    if (::AllData::all_type_mutex.find(parent_id) == ::AllData::all_type_mutex.end()) {
-                        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-                        ::AllData::all_type_mutex[parent_id] = lock;
-                    }
-                    if (::AllData::type_attr_dict.find(parent_id) != ::AllData::type_attr_dict.end()) {
-                        auto& item_set = ::AllData::type_attr_dict[parent_id];
-                        std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[parent_id]);
-                        if (item_set.find(key) != item_set.end()) {
-                            PyObject* obj = item_set[key];
-                            return obj;
-                        }
-                    }
-                }
-            }
-            now_visited.push_back(parent_id);
-        }
-    }
     return -1; // -1 means not found
-}
-
-static uintptr_t
-type_set_attr_long_long_guidance(uintptr_t type_id, const std::string& name) noexcept
-{
-    TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
-    if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
-        auto& item_set = ::AllData::all_type_attr_set[type_id];
-        if (item_set.find(hash_tuple) != item_set.end()) {
-            return type_id;
-        }
-    }
-    if (::AllData::all_type_parent_id.find(type_id) != ::AllData::all_type_parent_id.end()) {
-        auto& parent_id_list = ::AllData::all_type_parent_id[type_id];
-        for (auto& parent_id: parent_id_list) {
-            auto& item_set = ::AllData::all_type_attr_set[parent_id];
-            if (item_set.find(hash_tuple) != item_set.end()) {
-                return parent_id;
-            }
-        }
-    }
-    return 0; // 0 means not found
 }
 
 static bool
@@ -2084,7 +1939,10 @@ struct PrivateAttrCreationData
     std::unordered_set<std::string> private_attrs_vector_string;
     std::vector<uintptr_t> all_need_analyse_base;
     std::unordered_map<std::string, PyObjectStorage> need_remove_itself;
-    std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> need_remove_subclass;
+    // Class-body attribute names that shadow a parent's private attribute: in
+    // 2.1.0 they become private attributes of THIS class (stored separately
+    // from the parent's attribute of the same name).
+    std::vector<std::string> promoted_private_attrs;
     PyObject* private_func = nullptr;
     PyObject* base_kwds = nullptr;
     PyObject* name = nullptr;
@@ -2126,7 +1984,7 @@ struct PrivateAttrCreationData
         }
 
         need_remove_itself.clear();
-        need_remove_subclass.clear();
+        promoted_private_attrs.clear();
         cleared = true;
     }
 
@@ -2327,13 +2185,13 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         data.all_need_analyse_base.push_back((uintptr_t)base);
     }
 
-    std::function<uintptr_t(std::string)> need_remove_to_subclass = [&data](std::string attr_name){
+    std::function<bool(std::string)> is_private_in_base = [&data](std::string attr_name){
         for (auto& base: data.all_need_analyse_base) {
             if (type_private_attr(base, attr_name)) {
-                return type_set_attr_long_long_guidance(base, attr_name);
+                return true;
             }
         }
-        return (uintptr_t)0;
+        return false;
     };
 
     // forbidden to have "__static_attributes__" in attrs, because it exposes the private attributes name.
@@ -2363,13 +2221,14 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 PyDict_DelItem(data.attrs_copy, key);
                 continue;
             }
-            uintptr_t need_remove_subclass_id = need_remove_to_subclass(attr_name);
-            if (need_remove_subclass_id) {
-                if (data.need_remove_subclass.find(need_remove_subclass_id) == data.need_remove_subclass.end()) {
-                    data.need_remove_subclass[need_remove_subclass_id] = {};
-                }
+            if (is_private_in_base(attr_name)) {
+                // The class body defines an attribute whose name is private to a
+                // parent class. In 2.1.0 this becomes THIS class's own private
+                // attribute, stored separately from the parent's attribute of the
+                // same name.
                 Py_INCREF(need_value);
-                data.need_remove_subclass[need_remove_subclass_id][attr_name] = need_value;
+                data.need_remove_itself[attr_name] = need_value;
+                data.promoted_private_attrs.push_back(attr_name);
                 PyDict_DelItem(data.attrs_copy, key);
                 continue;
             }
@@ -2586,6 +2445,11 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
 
     ::AllData::type_attr_dict[type_id] = {};
     ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
+    // Class-body attributes shadowing a parent's private attribute become this
+    // class's own private attributes, so they must be part of its attr set too.
+    for (auto& name : data.promoted_private_attrs) {
+        ::AllData::all_type_attr_set[type_id].insert(get_string_hash_tuple2(name));
+    }
 
     // iter mro and put in all_type_parent_id
     PyObject* mro = type_instance->tp_mro;
@@ -2604,19 +2468,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     ::AllData::all_object_mutex[type_id] = {};
     ::AllData::all_type_mutex[type_id] = std::make_shared<std::shared_mutex>();
     ::AllData::all_object_attr[type_id] = {};
-    ::AllData::all_type_subclass_attr[type_id] = {};
-    ::AllData::all_type_subclass_mutex[type_id] = {};
-
-    for (uintptr_t i: mro_vector) {
-        if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[i] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(i) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[i] = {};
-        }
-        ::AllData::all_type_subclass_attr[i][type_id] = {};
-        ::AllData::all_type_subclass_mutex[i][type_id] = std::make_shared<std::shared_mutex>();
-    }
 
     for (auto& [key, value]: data.need_remove_itself) {
         std::string final_key;
@@ -2630,34 +2481,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
             final_key = default_random_string(type_id, key);
         }
         ::AllData::type_attr_dict[type_id][final_key] = value;
-    }
-
-    for (auto& [i, map]: data.need_remove_subclass) {
-        if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[i] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(i) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[i] = {};
-        }
-        if (::AllData::all_type_subclass_attr[i].find(type_id) == ::AllData::all_type_subclass_attr[i].end()) {
-            ::AllData::all_type_subclass_attr[i][type_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex[i].find(type_id) == ::AllData::all_type_subclass_mutex[i].end()) {
-            ::AllData::all_type_subclass_mutex[i][type_id] = std::make_shared<std::shared_mutex>();
-        }
-        for (auto& [key, value]: map) {
-            std::string final_key;
-            if (data.private_func) {
-                auto private_name_result = custom_random_string(type_id, key, data.private_func);
-                if (!private_name_result.ok) {
-                    return false;
-                }
-                final_key = private_name_result.value;
-            } else {
-                final_key = default_random_string(type_id, key);
-            }
-            ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
-        }
     }
 
     if (data.private_func) {
@@ -2750,13 +2573,21 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
     std::string name_str = PyUnicode_AsUTF8(name);
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!now_code || !attr_classify(typ_id, name_str, now_code)) {
+        if (!now_code) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(now_code);
             return NULL;
         }
+        AttrClassifyResult classify = attr_classify(typ_id, name_str, now_code);
         Py_XDECREF(now_code);
-        return type_getattr(cls, name_str);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return NULL;
+        }
+        if (classify.type_id != 0) {
+            return type_getattr(cls, name_str, classify.type_id);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(now_code);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
@@ -3097,13 +2928,21 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
     }
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!now_code || !attr_classify(typ_id, name_str, now_code)) {
+        if (!now_code) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(now_code);
             return -1;
         }
+        AttrClassifyResult classify = attr_classify(typ_id, name_str, now_code);
         Py_XDECREF(now_code);
-        return type_setattr(cls, name_str, value);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return -1;
+        }
+        if (classify.type_id != 0) {
+            return type_setattr(cls, name_str, value, classify.type_id);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(now_code);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
@@ -3140,28 +2979,8 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
         ::AllData::type_attr_dict.erase(typ_id);
     }
-    if (::AllData::all_type_subclass_attr.find(typ_id) != ::AllData::all_type_subclass_attr.end()) {
-        ::AllData::all_type_subclass_attr.erase(typ_id);
-    }
-    if (::AllData::all_type_subclass_mutex.find(typ_id) != ::AllData::all_type_subclass_mutex.end()) {
-        ::AllData::all_type_subclass_mutex.erase(typ_id);
-    }
-    std::vector<uintptr_t> parent_ids;
     if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
-        parent_ids = ::AllData::all_type_parent_id[typ_id];
         ::AllData::all_type_parent_id.erase(typ_id);
-    }
-    for (auto& parent_id : parent_ids) {
-        if (::AllData::all_type_subclass_attr.find(parent_id) != ::AllData::all_type_subclass_attr.end()) {
-            if (::AllData::all_type_subclass_attr[parent_id].find(typ_id) != ::AllData::all_type_subclass_attr[parent_id].end()) {
-                ::AllData::all_type_subclass_attr[parent_id].erase(typ_id);
-            }
-        }
-        if (::AllData::all_type_subclass_mutex.find(parent_id) != ::AllData::all_type_subclass_mutex.end()) {
-            if (::AllData::all_type_subclass_mutex[parent_id].find(typ_id) != ::AllData::all_type_subclass_mutex[parent_id].end()) {
-                ::AllData::all_type_subclass_mutex[parent_id].erase(typ_id);
-            }
-        }
     }
     if (::AllData::all_type_getattro.find(typ_id) != ::AllData::all_type_getattro.end()) {
         ::AllData::all_type_getattro.erase(typ_id);
