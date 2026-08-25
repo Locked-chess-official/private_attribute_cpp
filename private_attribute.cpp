@@ -184,9 +184,6 @@ namespace {
         // last external reference to the function disappears.
         static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
-        // Names whose class-body definition shadows a parent's private attribute.
-        // The value itself is stored in all_type_subclass_attr[parent][type_id].
-        static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_shadow_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
                 std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
@@ -271,22 +268,6 @@ is_type_private(uintptr_t typ_id, const std::string& name) noexcept
     return false;
 }
 
-static bool
-is_type_shadow(uintptr_t typ_id, const std::string& name) noexcept
-{
-    // The class body of typ_id defines an attribute with the same name as a
-    // private attribute of one of its parents. Its value is stored separately
-    // in all_type_subclass_attr[parent][typ_id].
-    if (::AllData::all_type_shadow_set.find(typ_id) != ::AllData::all_type_shadow_set.end()){
-        auto& shadow_set = ::AllData::all_type_shadow_set[typ_id];
-        TwoStringTuple key = get_string_hash_tuple2(name);
-        if (shadow_set.find(key) != shadow_set.end()){
-            return true;
-        }
-    }
-    return false;
-}
-
 static AttrClassifyResult
 attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept
 {
@@ -326,16 +307,12 @@ attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noe
         return {code_class, true};
     }
 
-    if (is_type_shadow(code_class, name)) {
-        // The class body of code_class defines an attribute with the same name
-        // as a parent's private attribute. In 2.1.0 it is stored separately as
-        // this class's own attribute, so its own code may access it.
-        return {code_class, true};
-    }
-
     // The code belongs to code_class but the name is not private to it: look
     // upward (toward the base classes). If an ancestor declares the name
     // private, a subclass is trying to touch a parent's private attribute.
+    // Note: a class-body definition reusing a parent's private name (a
+    // "shadow", stored separately in all_type_subclass_attr[parent][child])
+    // does NOT grant this class's code any access to the name.
     bool found_code_class = false;
     for (auto& node : chain) {
         if (!found_code_class) {
@@ -2687,7 +2664,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
 
     ::AllData::type_attr_dict[type_id] = {};
     ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
-    ::AllData::all_type_shadow_set[type_id] = {};
 
     // iter mro and put in all_type_parent_id
     PyObject* mro = type_instance->tp_mro;
@@ -2759,9 +2735,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
                 final_key = default_random_string(type_id, key);
             }
             ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
-            // The name is this class's own shadow of a parent's private
-            // attribute: its own code may access it (attr_classify).
-            ::AllData::all_type_shadow_set[type_id].insert(get_string_hash_tuple2(key));
         }
     }
 
@@ -3250,9 +3223,6 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     uintptr_t typ_id = (uintptr_t) cls;
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()) {
         ::AllData::all_type_attr_set.erase(typ_id);
-    }
-    if (::AllData::all_type_shadow_set.find(typ_id) != ::AllData::all_type_shadow_set.end()) {
-        ::AllData::all_type_shadow_set.erase(typ_id);
     }
     if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()) {
         for (auto& [id, obj] : ::AllData::type_allowed_code_map[typ_id]) {
