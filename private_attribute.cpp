@@ -1623,6 +1623,21 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
     return 0;
 }
 
+// get_type_need_tp_* : the metaclass counterparts of get_need_tp_*.
+// get_need_tp_*          -> find the original slots of *types created by* the
+//                            metaclasses (wrapped with the instance-level
+//                            PrivateAttr_tp_* / PrivateAttr_tp_getattro set).
+// get_type_need_tp_*     -> find the original slots of the *metaclasses*
+//                            themselves (wrapped with the metaclass-level
+//                            PrivateAttrType_getattr / PrivateAttrType_setattr /
+//                            register_finalize / PrivateAttrType_tp_traverse /
+//                            PrivateAttrType_tp_clear).
+static getattrofunc get_type_need_tp_getattro(PyTypeObject* cls) noexcept;
+static setattrofunc get_type_need_tp_setattro(PyTypeObject* cls) noexcept;
+static traverseproc get_type_need_tp_traverse(PyTypeObject* cls) noexcept;
+static inquiry get_type_need_tp_clear(PyTypeObject* cls) noexcept;
+static destructor get_type_need_tp_finalize(PyTypeObject* cls) noexcept;
+
 // metaclass-level (type object) traverse/clear: call original if any, and handle AllData-stored type attributes
 static int
 PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
@@ -1644,7 +1659,7 @@ PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
             if (res) return res;
         }
     } else {
-        traverseproc orig = get_need_tp_traverse(typ);
+        traverseproc orig = get_type_need_tp_traverse(typ);
         if (orig) {
             int res = orig(self, visit, arg);
             if (res) return res;
@@ -1731,7 +1746,7 @@ PrivateAttrType_tp_clear(PyObject* self) noexcept
         inquiry orig = ::AllData::all_type_clear[typ_id];
         if (orig) orig(self);
     } else {
-        inquiry orig = get_need_tp_clear(typ);
+        inquiry orig = get_type_need_tp_clear(typ);
         if (orig) orig(self);
     }
 
@@ -1815,8 +1830,8 @@ static PyTypeObject PrivateAttrType = {
     0,                                          // tp_as_buffer
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,   // tp_flags
     "metaclass for private attributes",         // tp_doc
-    0,                                          // tp_travers
-    0,                                          // tp_clear
+    (traverseproc)PrivateAttrType_tp_traverse,  // tp_travers
+    (inquiry)PrivateAttrType_tp_clear,          // tp_clear
     0,                                          // tp_richcompare
     0,                                          // tp_weaklistoffset
     0,                                          // tp_iter
@@ -2504,21 +2519,6 @@ static setattrofunc get_need_tp_setattro(PyTypeObject* cls) noexcept;
 static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
 static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 static destructor get_need_tp_finalize(PyTypeObject* cls) noexcept;
-
-// get_type_need_tp_* : the metaclass counterparts of get_need_tp_*.
-// get_need_tp_*          -> find the original slots of *types created by* the
-//                            metaclasses (wrapped with the instance-level
-//                            PrivateAttr_tp_* / PrivateAttr_tp_getattro set).
-// get_type_need_tp_*     -> find the original slots of the *metaclasses*
-//                            themselves (wrapped with the metaclass-level
-//                            PrivateAttrType_getattr / PrivateAttrType_setattr /
-//                            register_finalize / PrivateAttrType_tp_traverse /
-//                            PrivateAttrType_tp_clear).
-static getattrofunc get_type_need_tp_getattro(PyTypeObject* cls) noexcept;
-static setattrofunc get_type_need_tp_setattro(PyTypeObject* cls) noexcept;
-static traverseproc get_type_need_tp_traverse(PyTypeObject* cls) noexcept;
-static inquiry get_type_need_tp_clear(PyTypeObject* cls) noexcept;
-static destructor get_type_need_tp_finalize(PyTypeObject* cls) noexcept;
 
 // instance-level traverse/clear for types that use private attributes
 static int PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept;
