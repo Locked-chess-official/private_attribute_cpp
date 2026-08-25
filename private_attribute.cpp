@@ -488,14 +488,14 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
         result_typ = Py_TYPE(result);
         if (!result_typ) return NULL;
     }
-    bool has_get = false;
     bool has_set = false;
+    descrgetfunc get = NULL;
     if (result_typ) {
-        has_get = result_typ->tp_descr_get != NULL;
+        get = result_typ->tp_descr_get;
         has_set = result_typ->tp_descr_set != NULL;
     }
-    if (has_get && has_set) {
-        PyObject* final_result = result_typ->tp_descr_get(result, obj, typ);
+    if (get && has_set) {
+        PyObject* final_result = get(result, obj, typ);
         ensure_tp((PyTypeObject*)typ);
         ensure_subclass_tp((PyTypeObject*)typ);
         return final_result;
@@ -512,9 +512,10 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
             // if obj is a type, call result.__get__(None, obj)
             if (PyType_Check(obj)) {
                 PyTypeObject* obj_type = Py_TYPE(python_obj);
-                if (obj_type->tp_descr_get != NULL) {
+                auto funcptr = obj_type->tp_descr_get;
+                if (funcptr != NULL) {
                     lock.unlock();
-                    return obj_type->tp_descr_get(python_obj, Py_None, obj);
+                    return funcptr(python_obj, Py_None, obj);
                 }
             }
             Py_XINCREF(python_obj);
@@ -522,8 +523,8 @@ id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
         }
     }
 
-    if (has_get) {
-        PyObject* final_result = result_typ->tp_descr_get(result, obj, typ);
+    if (get) {
+        PyObject* final_result = get(result, obj, typ);
         ensure_tp((PyTypeObject*)typ);
         ensure_subclass_tp((PyTypeObject*)typ);
         return final_result;
@@ -554,8 +555,9 @@ type_getattr(PyObject* typ, const std::string& attr_name) noexcept
     }
     if (result) {
         PyTypeObject* type = Py_TYPE(result);
-        if (type->tp_descr_get != NULL) {
-            PyObject* final_result = type->tp_descr_get(result, Py_None, (PyObject*)type);
+        auto funcptr = type->tp_descr_get;
+        if (funcptr) {
+            PyObject* final_result = funcptr(result, Py_None, (PyObject*)type);
             ensure_tp((PyTypeObject*)type);
             ensure_subclass_tp((PyTypeObject*)type);
             return final_result;
@@ -621,8 +623,9 @@ id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject*
     }
     if (result) {
         PyTypeObject* type = Py_TYPE(result);
-        if (type->tp_descr_set != NULL) {
-            if (type->tp_descr_set(result, obj, value) < 0) {
+        auto funcptr = type->tp_descr_set;
+        if (funcptr) {
+            if (funcptr(result, obj, value) < 0) {
                 return -1;
             }
             return 0;
@@ -751,8 +754,9 @@ id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
     }
     if (result) {
         PyTypeObject* type = Py_TYPE(result);
-        if (type->tp_descr_set != NULL) {
-            if (type->tp_descr_set(result, result, NULL) < 0) {
+        auto funcptr = type->tp_descr_set;
+        if (funcptr) {
+            if (funcptr(result, result, NULL) < 0) {
                 return -1;
             }
             return 0;
@@ -920,12 +924,12 @@ static PyObject*
 PrivateWrap_qualname(PyObject* obj, void* /*closure*/) noexcept
 {
     if (!obj) {
-        return PyUnicode_InternFromString("_PrivateWrap");
+        return PyUnicode_InternFromString("private_attribute._PrivateWrap");
     }
     PyObject* qualname = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__qualname__");
     if (!qualname) {
         PyErr_Clear();
-        return PyUnicode_InternFromString("_PrivateWrap");
+        return PyUnicode_InternFromString("private_attribute._PrivateWrap");
     }
     return qualname;
 }
@@ -1012,8 +1016,9 @@ static PyObject*
 PrivateWrap_descrget(PyObject* obj, PyObject* name, PyObject* cls) noexcept
 {
     PyObject* result = ((PrivateWrapObject*)obj)->result;
-    if (Py_TYPE(result)->tp_descr_get) {
-        return Py_TYPE(result)->tp_descr_get(result, name, cls);
+    auto funcptr = Py_TYPE(result)->tp_descr_get;
+    if (funcptr) {
+        return funcptr(result, name, cls);
     } else {
         Py_INCREF(result);
         return result;
@@ -1024,8 +1029,9 @@ static int
 PrivateWrap_descrset(PyObject* obj, PyObject* name, PyObject* value) noexcept
 {
     PyObject* result = ((PrivateWrapObject*)obj)->result;
-    if (Py_TYPE(result)->tp_descr_set) {
-        return Py_TYPE(result)->tp_descr_set(result, name, value);
+    auto funcptr = Py_TYPE(result)->tp_descr_set;
+    if (funcptr) {
+        return funcptr(result, name, value);
     } else {
         PyErr_SetString(PyExc_AttributeError, "attribute is not settable");
         return -1;
@@ -3391,6 +3397,11 @@ register_finalize(PyObject* cls) noexcept
     PrivateAttrType_finalize(cls);
 }
 
+#define METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(name) do {\
+    if (::AllData::all_type_##name.find(id) != ::AllData::all_type_##name.end()) {\
+        ::AllData::all_type_##name.erase(id);\
+    }\
+} while (0)
 
 static PyObject*
 metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
@@ -3408,6 +3419,11 @@ metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
         Py_DECREF(it->second);
         ::AllData::all_register_type_weak_ref.erase(it);
     }
+    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(getattro);
+    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(setattro);
+    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(traverse);
+    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(clear);
+    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(finalize);
 
     Py_RETURN_NONE;
 }
@@ -3664,6 +3680,19 @@ PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/) noexcep
     return PrivateAttrBase;
 }
 
+static int
+PyList_AppendString(PyObject* list, const char* str)
+{
+    PyObject* obj = PyUnicode_InternFromString(str);
+    if (!obj) return -1;
+    if (PyList_Append(list, obj) < 0) {
+        Py_DECREF(obj);
+        return -1;
+    }
+    Py_DECREF(obj);
+    return 0;
+}
+
 static PyObject*
 PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
 {
@@ -3674,14 +3703,14 @@ PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
         Py_DECREF(parent_dir);
         return NULL;
     }
-    PyList_Append(attr_list, PyUnicode_InternFromString("PrivateWrapProxy"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("PrivateAttrType"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("PrivateAttrBase"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("prepare"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("postprocess"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("register_metaclass"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("ensure_type"));
-    PyList_Append(attr_list, PyUnicode_InternFromString("ensure_metaclass"));
+    PyList_AppendString(attr_list, "PrivateWrapProxy");
+    PyList_AppendString(attr_list, "PrivateAttrType");
+    PyList_AppendString(attr_list, "PrivateAttrBase");
+    PyList_AppendString(attr_list, "prepare");
+    PyList_AppendString(attr_list, "postprocess");
+    PyList_AppendString(attr_list, "register_metaclass");
+    PyList_AppendString(attr_list, "ensure_type");
+    PyList_AppendString(attr_list, "ensure_metaclass");
     PyObject* result = PySequence_Concat(parent_dir, attr_list);
     Py_DECREF(parent_dir);
     Py_DECREF(attr_list);
@@ -3942,14 +3971,14 @@ PyInit_private_attribute(void) noexcept
      * ensure_type
      * ensure_metaclass
      */
-    PyList_Append(all, PyUnicode_InternFromString("PrivateWrapProxy"));
-    PyList_Append(all, PyUnicode_InternFromString("PrivateAttrType"));
-    PyList_Append(all, PyUnicode_InternFromString("PrivateAttrBase"));
-    PyList_Append(all, PyUnicode_InternFromString("prepare"));
-    PyList_Append(all, PyUnicode_InternFromString("postprocess"));
-    PyList_Append(all, PyUnicode_InternFromString("register_metaclass"));
-    PyList_Append(all, PyUnicode_InternFromString("ensure_type"));
-    PyList_Append(all, PyUnicode_InternFromString("ensure_metaclass"));
+    PyList_AppendString(all, "PrivateWrapProxy");
+    PyList_AppendString(all, "PrivateAttrType");
+    PyList_AppendString(all, "PrivateAttrBase");
+    PyList_AppendString(all, "prepare");
+    PyList_AppendString(all, "postprocess");
+    PyList_AppendString(all, "register_metaclass");
+    PyList_AppendString(all, "ensure_type");
+    PyList_AppendString(all, "ensure_metaclass");
     Py_SET_TYPE(m, &PrivateModuleType);
 
     // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
