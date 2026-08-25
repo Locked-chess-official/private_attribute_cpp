@@ -178,11 +178,7 @@ namespace {
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
         static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
-        // private_func per type, stored with RAII ownership (PyObjectStorage
-        // INCREFs on assignment and DECREFs on destruction), so the map entry
-        // always owns exactly one reference - no dangling-pointer risk when the
-        // last external reference to the function disappears.
-        static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
+        static std::unordered_map<uintptr_t, PyObject*> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
@@ -2739,10 +2735,7 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     }
 
     if (data.private_func) {
-        // PyObjectStorage::operator=(PyObject*) takes its own reference here;
-        // data's reference is released by PrivateAttrCreationData::clear()
-        // right after this, and the map entry's reference is released when the
-        // entry is erased in PrivateAttrType_finalize.
+        Py_INCREF(data.private_func);
         ::AllData::type_need_call[type_id] = data.private_func;
     }
 
@@ -3231,7 +3224,7 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
         ::AllData::type_allowed_code_map.erase(typ_id);
     }
     if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
-        // erase() destroys the PyObjectStorage, which DECREFs private_func.
+        Py_DECREF(::AllData::type_need_call[typ_id]);
         ::AllData::type_need_call.erase(typ_id);
     }
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
