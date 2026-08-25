@@ -178,7 +178,11 @@ namespace {
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
         static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
-        static std::unordered_map<uintptr_t, PyObject*> type_need_call;
+        // private_func per type, stored with RAII ownership (PyObjectStorage
+        // INCREFs on assignment and DECREFs on destruction), so the map entry
+        // always owns exactly one reference - no dangling-pointer risk when the
+        // last external reference to the function disappears.
+        static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
@@ -225,6 +229,19 @@ static uintptr_t type_set_attr_long_long_guidance(uintptr_t type, const std::str
 static bool type_private_attr(uintptr_t type, const std::string& name) noexcept;
 static FinalObject type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept;
 
+// Result of classifying an attribute access.
+// - type_id: the node on the MRO chain (a class) whose code is currently running
+//   AND that declares the attribute as private. 0 means "no private owner".
+// - allowed: false means the access must be denied (a private attribute touched
+//   from outside its declaring class, or from a subclass of it).
+struct AttrClassifyResult
+{
+    uintptr_t type_id = 0;
+    bool allowed = true;
+};
+
+static AttrClassifyResult attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept;
+
 static bool
 is_class_code(uintptr_t typ_id, PyCodeObject* code) noexcept
 {
@@ -251,27 +268,67 @@ is_type_private(uintptr_t typ_id, const std::string& name) noexcept
     return false;
 }
 
-static bool
+static AttrClassifyResult
 attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept
 {
-    if (is_class_code(typ_id, code)) {
-        return true;
-    }
-    if (is_type_private(typ_id, name)) {
-        return false;
-    }
+    // Build the MRO chain: the actual class first, then its parents.
+    std::vector<uintptr_t> chain;
+    chain.push_back(typ_id);
     if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()) {
-        std::vector<uintptr_t> parent_ids = ::AllData::all_type_parent_id[typ_id];
-        for (auto& parent_id : parent_ids) {
-            if (is_class_code(parent_id, code)) {
-                return true;
-            }
-            if (is_type_private(parent_id, name)) {
-                return false;
-            }
+        auto& parent_ids = ::AllData::all_type_parent_id[typ_id];
+        chain.insert(chain.end(), parent_ids.begin(), parent_ids.end());
+    }
+
+    // Find the class whose code is currently running (the code owner).
+    uintptr_t code_class = 0;
+    for (auto& node : chain) {
+        if (is_class_code(node, code)) {
+            code_class = node;
+            break;
         }
     }
-    return true;
+
+    if (code_class == 0) {
+        // No class code was hit on the whole chain (e.g. the code belongs to a
+        // module-level function or an unrelated class): if the name is private
+        // to any class on the chain, deny the access.
+        for (auto& node : chain) {
+            if (is_type_private(node, name)) {
+                return {0, false};
+            }
+        }
+        return {0, true};
+    }
+
+    if (is_type_private(code_class, name)) {
+        // Both conditions hold: the code is under this class AND the attribute
+        // is private to this very class -> allowed, and this node of the chain
+        // is the owner of the private attribute.
+        return {code_class, true};
+    }
+
+    // The code belongs to code_class but the name is not private to it: look
+    // upward (toward the base classes). If an ancestor declares the name
+    // private, a subclass is trying to touch a parent's private attribute.
+    // Note: a class-body definition reusing a parent's private name (a
+    // "shadow", stored separately in all_type_subclass_attr[parent][child])
+    // does NOT grant this class's code any access to the name.
+    bool found_code_class = false;
+    for (auto& node : chain) {
+        if (!found_code_class) {
+            if (node == code_class) {
+                found_code_class = true;
+            }
+            continue;
+        }
+        if (is_type_private(node, name)) {
+            return {0, false};
+        }
+    }
+
+    // Not private to the running class nor to any of its ancestors: treat it
+    // as a normal (non-private) attribute access.
+    return {0, true};
 }
 
 static std::string
@@ -437,13 +494,13 @@ static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
 static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 
 static PyObject*
-id_getattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
+id_getattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 {
-    uintptr_t obj_id, typ_id, final_id;
-    obj_id = (uintptr_t) obj;
-    typ_id = (uintptr_t) typ;
-    final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    uintptr_t obj_id = (uintptr_t) obj;
+    // Class-level fallback resolves per-subject (the instance's type): a
+    // subclass's separately-stored shadow of a parent's private name is
+    // visible through the per-subject walk in type_get_final_attr.
+    FinalObject final_object = type_get_final_attr((uintptr_t)typ, attr_name);
     if (final_object.status == -2) {
         return NULL;
     }
@@ -575,13 +632,11 @@ type_getattr(PyObject* typ, const std::string& attr_name) noexcept
 }
 
 static int
-id_setattr(const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value) noexcept
+id_setattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyObject* typ, PyObject* value) noexcept
 {
-    uintptr_t obj_id, typ_id, final_id;
-    obj_id = (uintptr_t) obj;
-    typ_id = (uintptr_t) typ;
-    final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    uintptr_t obj_id = (uintptr_t) obj;
+    // Class-level fallback resolves per-subject (the instance's type).
+    FinalObject final_object = type_get_final_attr((uintptr_t)typ, attr_name);
     if (final_object.status == -2) {
         return -1;
     }
@@ -684,6 +739,8 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
         }
         return 0;
     } else {
+        // The accessed class is a subclass that stores its own value for a
+        // parent's private name separately: all_type_subclass_attr[final_id][typ_id].
         if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[final_id] = {};
         }
@@ -706,13 +763,11 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
 }
 
 static int
-id_delattr(const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
+id_delattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyObject* typ) noexcept
 {
-    uintptr_t obj_id, typ_id, final_id;
-    obj_id = (uintptr_t) obj;
-    typ_id = (uintptr_t) typ;
-    final_id = type_set_attr_long_long_guidance(typ_id, attr_name);
-    FinalObject final_object = type_get_final_attr(typ_id, attr_name);
+    uintptr_t obj_id = (uintptr_t) obj;
+    // Class-level fallback resolves per-subject (the instance's type).
+    FinalObject final_object = type_get_final_attr((uintptr_t)typ, attr_name);
     if (final_object.status == -2) {
         return -1;
     }
@@ -1281,14 +1336,21 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
     std::string name_str = PyUnicode_AsUTF8(name);
     auto code = get_now_code();
     if (type_private_attr(type_id, name_str)) {
-        if (!code || !attr_classify(type_id, name_str, code)){
+        if (!code) {
             Py_XDECREF(code);
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             return NULL;
-        } else {
-            Py_XDECREF(code);
-            return id_getattr(name_str, self, (PyObject*)typ);
         }
+        AttrClassifyResult classify = attr_classify(type_id, name_str, code);
+        Py_XDECREF(code);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return NULL;
+        }
+        if (classify.type_id != 0) {
+            return id_getattr(classify.type_id, name_str, self, (PyObject*)typ);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(code);
     if (::AllData::all_type_getattro.find(type_id) != ::AllData::all_type_getattro.end()){
@@ -1313,17 +1375,24 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcep
     std::string name_str(c_name);
     auto code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!code || !attr_classify(typ_id, name_str, code)){
+        if (!code) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(code);
             return -1;
-        } else {
-            Py_XDECREF(code);
-            if (!value) {
-                return id_delattr(name_str, self, (PyObject*)typ);
-            }
-            return id_setattr(name_str, self, (PyObject*)typ, value);
         }
+        AttrClassifyResult classify = attr_classify(typ_id, name_str, code);
+        Py_XDECREF(code);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return -1;
+        }
+        if (classify.type_id != 0) {
+            if (!value) {
+                return id_delattr(classify.type_id, name_str, self, (PyObject*)typ);
+            }
+            return id_setattr(classify.type_id, name_str, self, (PyObject*)typ, value);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(code);
     if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()){
@@ -1796,6 +1865,10 @@ get_string_hash_tuple2(const std::string& name) noexcept
 static FinalObject
 type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
 {
+    // type_id is the SUBJECT: the class whose attribute is being accessed.
+    // The walk resolves per-subject: a subclass's separately stored value
+    // (all_type_subclass_attr[parent][subclass]) shadows the parent's own
+    // class-level value, satisfying class-level separate storage.
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
         if (::AllData::all_type_attr_set[type_id].find(hash_tuple) != ::AllData::all_type_attr_set[type_id].end()) {
@@ -2084,6 +2157,8 @@ struct PrivateAttrCreationData
     std::unordered_set<std::string> private_attrs_vector_string;
     std::vector<uintptr_t> all_need_analyse_base;
     std::unordered_map<std::string, PyObjectStorage> need_remove_itself;
+    // Class-body attributes whose name is private to a parent class: stored
+    // separately in all_type_subclass_attr[parent][this class].
     std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> need_remove_subclass;
     PyObject* private_func = nullptr;
     PyObject* base_kwds = nullptr;
@@ -2365,6 +2440,9 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
             }
             uintptr_t need_remove_subclass_id = need_remove_to_subclass(attr_name);
             if (need_remove_subclass_id) {
+                // The class body defines an attribute whose name is private to a
+                // parent class. It is stored separately (class-level separate
+                // storage) in all_type_subclass_attr[need_remove_subclass_id][this].
                 if (data.need_remove_subclass.find(need_remove_subclass_id) == data.need_remove_subclass.end()) {
                     data.need_remove_subclass[need_remove_subclass_id] = {};
                 }
@@ -2661,6 +2739,10 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     }
 
     if (data.private_func) {
+        // PyObjectStorage::operator=(PyObject*) takes its own reference here;
+        // data's reference is released by PrivateAttrCreationData::clear()
+        // right after this, and the map entry's reference is released when the
+        // entry is erased in PrivateAttrType_finalize.
         ::AllData::type_need_call[type_id] = data.private_func;
     }
 
@@ -2750,13 +2832,21 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
     std::string name_str = PyUnicode_AsUTF8(name);
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!now_code || !attr_classify(typ_id, name_str, now_code)) {
+        if (!now_code) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(now_code);
             return NULL;
         }
+        AttrClassifyResult classify = attr_classify(typ_id, name_str, now_code);
         Py_XDECREF(now_code);
-        return type_getattr(cls, name_str);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return NULL;
+        }
+        if (classify.type_id != 0) {
+            return type_getattr(cls, name_str);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(now_code);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
@@ -3097,13 +3187,21 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
     }
     PyCodeObject* now_code = get_now_code();
     if (type_private_attr(typ_id, name_str)) {
-        if (!now_code || !attr_classify(typ_id, name_str, now_code)) {
+        if (!now_code) {
             PyErr_SetString(PyExc_AttributeError, "private attribute");
             Py_XDECREF(now_code);
             return -1;
         }
+        AttrClassifyResult classify = attr_classify(typ_id, name_str, now_code);
         Py_XDECREF(now_code);
-        return type_setattr(cls, name_str, value);
+        if (!classify.allowed) {
+            PyErr_SetString(PyExc_AttributeError, "private attribute");
+            return -1;
+        }
+        if (classify.type_id != 0) {
+            return type_setattr(cls, name_str, value);
+        }
+        // owner is 0: not private for this access context -> normal attribute
     }
     Py_XDECREF(now_code);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
@@ -3133,8 +3231,7 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
         ::AllData::type_allowed_code_map.erase(typ_id);
     }
     if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
-        auto& need_call = ::AllData::type_need_call[typ_id];
-        Py_XDECREF(need_call);
+        // erase() destroys the PyObjectStorage, which DECREFs private_func.
         ::AllData::type_need_call.erase(typ_id);
     }
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
