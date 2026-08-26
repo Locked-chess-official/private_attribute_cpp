@@ -317,11 +317,11 @@ attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noe
         chain.insert(chain.end(), parent_ids.begin(), parent_ids.end());
     }
 
-    // Find the class whose code is currently running (the code owner).
+    // Find the class whose code is currently running (the code owner, parent first).
     uintptr_t code_class = 0;
-    for (auto& node : chain) {
-        if (is_class_code(node, code)) {
-            code_class = node;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        if (is_class_code(*it, code)) {
+            code_class = *it;  // first hit from the base-most end
             break;
         }
     }
