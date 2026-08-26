@@ -2270,11 +2270,11 @@ need_analyse_type(PyObject* type) noexcept
     }
     std::shared_lock lock(::AllData::all_register_new_metaclass_mutex);
     for (auto& [id, metaclassref]: ::AllData::all_register_type_weak_ref){
-        if (!PyWeakref_CheckRef(metaclassref)) {
+        if (!PyWeakref_CheckRef((PyObject*)metaclassref)) {
             continue;
         }
 #if PY_VERSION_HEX < 0x030D0000
-        PyObject* metaclass = PyWeakref_GET_OBJECT(metaclassref);
+        PyObject* metaclass = PyWeakref_GET_OBJECT((PyObject*)metaclassref);
         if (type == metaclass) continue;
         if (PyObject_IsInstance(type, metaclass)) {
             return true;
@@ -3571,7 +3571,7 @@ is_class_of_registed_type(PyObject* metaclass) noexcept
             continue;
         }
 #if PY_VERSION_HEX < 0x030D0000
-        PyObject* instance = PyWeakref_GET_OBJECT(instanceref);
+        PyObject* instance = PyWeakref_GET_OBJECT((PyObject*)instanceref);
         if (instance == metaclass) continue;
         if (PyObject_IsInstance(instance, metaclass)) {
             return true;
