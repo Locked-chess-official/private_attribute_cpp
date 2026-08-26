@@ -125,6 +125,10 @@ public:
     PyObjectStorage(PyObject* obj) noexcept : obj(obj) {
         Py_XINCREF(obj);
     }
+    // support for PyCodeObject*
+    PyObjectStorage(PyCodeObject* obj) noexcept : obj(reinterpret_cast<PyObject*>(obj)) {
+        Py_XINCREF(obj);
+    }
     PyObjectStorage(const PyObjectStorage& other) noexcept : obj(other.obj) {
         Py_XINCREF(obj);
     }
@@ -155,12 +159,25 @@ public:
         obj = new_obj;
         return *this;
     }
-    ~PyObjectStorage() noexcept {
+    PyObjectStorage& operator=(PyCodeObject* new_obj) noexcept {
+        Py_XINCREF(reinterpret_cast<PyObject*>(new_obj));
         Py_XDECREF(obj);
+        obj = reinterpret_cast<PyObject*>(new_obj);
+        return *this;
+    }
+    ~PyObjectStorage() noexcept {
+        // if python has exit we don't do anything
+        if (Py_IsInitialized()) {
+            Py_XDECREF(obj);
+        }
     }
 
     operator PyObject*() const noexcept {
         return obj;
+    }
+
+    operator PyCodeObject*() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(obj);
     }
     PyObject* get() const noexcept {
         return obj;
@@ -176,9 +193,9 @@ namespace {
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> type_attr_dict;
         };
-        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyCodeObject*>> type_allowed_code_map;
+        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyObjectStorage>> type_allowed_code_map;
         static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
-        static std::unordered_map<uintptr_t, PyObject*> type_need_call;
+        static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
@@ -206,9 +223,34 @@ namespace {
         static std::unordered_map<uintptr_t, destructor> all_type_finalize;
 
         static std::shared_mutex all_register_new_metaclass_mutex;
-        static std::unordered_map<uintptr_t, PyObject*> all_register_type_weak_ref;
+        static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
     };
 };
+
+static void
+clean_all_storages() noexcept
+{
+    AllData::cache.clear();
+    AllData::all_exist_name.clear();
+    AllData::obj_attr_keys.clear();
+    AllData::type_attr_dict.clear();
+    AllData::type_allowed_code_map.clear();
+    AllData::all_type_mutex.clear();
+    AllData::type_need_call.clear();
+    AllData::all_type_attr_set.clear();
+    AllData::all_object_attr.clear();
+    AllData::all_type_subclass_attr.clear();
+    AllData::all_object_mutex.clear();
+    AllData::all_type_subclass_mutex.clear();
+    AllData::all_type_parent_id.clear();
+    AllData::all_type_getattro.clear();
+    AllData::all_type_setattro.clear();
+    AllData::all_type_traverse.clear();
+    AllData::all_type_clear.clear();
+    AllData::all_type_finalize.clear();
+    AllData::all_register_type_weak_ref.clear();
+}
+
 struct FinalObject
 {
     PyObjectStorage result;
@@ -2059,7 +2101,7 @@ try_get_attr_string(PyObject* obj, const char* name) noexcept
 }
 
 static void
-analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& map, std::unordered_set<uintptr_t>& _seen) noexcept
+analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& map, std::unordered_set<uintptr_t>& _seen) noexcept
 {
     uintptr_t obj_id = (uintptr_t)obj;
     if (_seen.find(obj_id) != _seen.end()) {
@@ -2067,8 +2109,7 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyCodeObject*>& ma
     }
     _seen.insert(obj_id);
     if (PyObject_TypeCheck(obj, &PyCode_Type)) {
-        Py_INCREF(obj);
-        map[(uintptr_t)obj] = (PyCodeObject*)obj;
+        map[(uintptr_t)obj] = obj;
         PyObject* co_contain = try_get_attr_string(obj, "co_consts");
         if (co_contain && PySequence_Check(co_contain)) {
             Py_ssize_t len = PySequence_Length(co_contain);
@@ -3218,13 +3259,9 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
         ::AllData::all_type_attr_set.erase(typ_id);
     }
     if (::AllData::type_allowed_code_map.find(typ_id) != ::AllData::type_allowed_code_map.end()) {
-        for (auto& [id, obj] : ::AllData::type_allowed_code_map[typ_id]) {
-            Py_XDECREF(obj);
-        }
         ::AllData::type_allowed_code_map.erase(typ_id);
     }
     if (::AllData::type_need_call.find(typ_id) != ::AllData::type_need_call.end()) {
-        Py_DECREF(::AllData::type_need_call[typ_id]);
         ::AllData::type_need_call.erase(typ_id);
     }
     if (::AllData::type_attr_dict.find(typ_id) != ::AllData::type_attr_dict.end()) {
@@ -4026,10 +4063,66 @@ static PyModuleDef def = {
     NULL
 };
 
+static PyObject*
+AtExit_clean_storage(PyObject* /*self*/, PyObject* /*obj*/) noexcept
+{
+    clean_all_storages();
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef clean_storage = {
+    "clean_storage",
+    (PyCFunction)AtExit_clean_storage,
+    METH_NOARGS,
+    "Clean all storages"
+};
+
+static int
+atexit_register_clean_func(void) noexcept
+{
+    PyObject* atexit = PyImport_ImportModule("atexit");
+    if (!atexit) {
+        return -1;
+    }
+    PyObject* register_func = PyObject_GetAttrString(atexit, "register");
+    if (!register_func) {
+        Py_DECREF(atexit);
+        return -1;
+    }
+
+    PyObject* func = PyCFunction_New(&clean_storage, NULL);
+    if (!func) {
+        Py_DECREF(register_func);
+        Py_DECREF(atexit);
+        return -1;
+    }
+    PyObject* args = PyTuple_New(1);
+    if (!args) {
+        Py_DECREF(func);
+        Py_DECREF(register_func);
+        Py_DECREF(atexit);
+        return -1;
+    }
+    PyTuple_SET_ITEM(args, 0, func);
+    PyObject* result = PyObject_CallObject(register_func, args);
+    if (result == NULL) {
+        Py_DECREF(args);
+        Py_DECREF(register_func);
+        Py_DECREF(atexit);
+        return -1;
+    }
+    Py_DECREF(args);
+    Py_DECREF(register_func);
+    Py_DECREF(atexit);
+    Py_DECREF(result);
+    return 0;
+}
+
 PyMODINIT_FUNC
 PyInit_private_attribute(void) noexcept
 {
     if (init_all_slots() <0 ||
+        atexit_register_clean_func() < 0 ||
         PyType_Ready(&PrivateWrapType) < 0 ||
         PyType_Ready(&PrivateWrapProxyType) < 0 ||
         PyType_Ready(&PrivateAttrType) < 0 ||
