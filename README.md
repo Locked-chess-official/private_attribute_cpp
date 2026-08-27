@@ -56,7 +56,7 @@ print(obj.expensive_api_call(10))   # works with all decorators applied
 | 1 | PrivateWrapProxy | Decorator wrapper for arbitrary decorators | When needed |
 | 2 | private_func=callable | Custom hidden-name generator | Optional |
 | 3 | Pass private_func in class definition | Same as above | Optional |
-| 4 | \_\_private_attrs\_\_ list | Declare which attributes are private | Yes |
+| 4 | \_\_private_attrs\_\_ list | Declare which attributes are private | Optional (changed in 2.1.4) |
 | 5 | @PrivateWrapProxy(...) | Make any decorator compatible with private attributes | When needed |
 | 6 | method.result.xxx chain + dummy wrap | Fix decorator order and name conflicts | When needed |
 
@@ -221,8 +221,8 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 
 ## Notes
 
-- All of the private attributes class must contain the `__private_attrs__` attribute.
-- The `__private_attrs__` attribute must be a sequence of strings.
+- ~~All of the private attributes class must contain the `__private_attrs__` attribute.~~(changed in 2.1.4)
+- The `__private_attrs__` attribute must be a sequence of strings or just one string.
 - You cannot define the name which in `__slots__` to `__private_attrs__`.
 - When you define `__slots__` and `__private_attrs__` in one class, the attributes in `__private_attrs__` can also be defined in the methods, even though they are not in `__slots__`.
 - All of the object that is the instance of the class "PrivateAttrBase" or its subclass are default to be unable to be pickled.
@@ -247,4 +247,4 @@ This package require the c++ module "[picosha2](https://github.com/okdshin/PicoS
 
 ## Support
 
-Now it doesn't support "PyPy".
+Now it only support Cpython.
