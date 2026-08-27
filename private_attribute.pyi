@@ -15,12 +15,12 @@ class MyClass(PrivateAttrBase):
         return self._private_attr1
 ```
 """
-from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic
+from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional
 from types import FunctionType
 
 # define the dict that must have a key "__private_attrs__" and value must be the sequence of strings
 class _PrivateAttrDict(TypedDict):
-    __private_attrs__: Sequence[str]
+    __private_attrs__: Optional[Sequence[str]]
 
 _T = TypeVar('T')
 
