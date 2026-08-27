@@ -2333,10 +2333,23 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    PyObject* __private_attrs__ = PyDict_GetItemString(data.attrs, "__private_attrs__");
-    if (!__private_attrs__) {
-        PyErr_SetString(PyExc_TypeError, "'__private_attrs__' is needed for type 'PrivateAttrType'");
-        return false;
+    PyObjectStorage __private_attrs__;
+    if (PyDict_ContainsString(data.attrs, "__private_attrs__")) {
+        __private_attrs__ = PyDict_GetItemString(data.attrs, "__private_attrs__");
+    }
+    else {
+        __private_attrs__ = PyTuple_New(0);
+        Py_DECREF(__private_attrs__);
+    }
+
+    if (PyUnicode_Check(__private_attrs__)) {
+        PyObject* new___private_attrs__ = PyTuple_New(1);
+        if (!new___private_attrs__) {
+            return false;
+        }
+        PyTuple_SET_ITEM(new___private_attrs__, 0, __private_attrs__);
+        __private_attrs__ = new___private_attrs__;
+        Py_DECREF(__private_attrs__);
     }
 
     if (!PySequence_Check(__private_attrs__)) {
@@ -2379,8 +2392,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 
         for (const char** p = invalid_name; *p != NULL; p++) {
             if (strcmp(attr_str.c_str(), *p) == 0) {
-                std::string error_msg = "invalid attribute name: '" + std::string(*p) + "'";
-                PyErr_SetString(PyExc_TypeError, error_msg.c_str());
+                PyErr_Format(PyExc_TypeError, "Invalid name '%s' in '__private_attrs__'", attr_str.c_str());
                 return false;
             }
         }
@@ -2421,7 +2433,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 }
                 slot_seq = keys;
             } else {
-                slot_seq = PySequence_Fast(all_slots, "__slots__ must be a sequence");
+                slot_seq = PySequence_Fast(all_slots, "__slots__ must be a string, dict or sequence");
             }
             if (!slot_seq) {
                 return false;
@@ -2433,9 +2445,9 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 PyObject* slot = PySequence_Fast_GET_ITEM(slot_seq, j);
                 if (PyUnicode_Check(slot)) {
                     const char* slot_cstr = PyUnicode_AsUTF8(slot);
-                    if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
-                        std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + std::string(slot_cstr) + "'";
-                        PyErr_SetString(PyExc_TypeError, error_msg.c_str());
+                    std::string final_name = real_class_name(slot_cstr, data.class_name);
+                    if (data.private_attrs_vector_string.find(final_name) != data.private_attrs_vector_string.end()){
+                        PyErr_Format(PyExc_TypeError, "'__slots__' and '__private_attrs__' cannot have the same attribute name: '%s'", final_name.c_str());
                         Py_DECREF(slot_seq);
                         return false;
                     }
