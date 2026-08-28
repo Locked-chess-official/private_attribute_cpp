@@ -203,6 +203,7 @@ namespace {
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
             all_object_mutex, all_type_subclass_mutex;
+        static std::mutex object_creatmutex_mutex, type_createmutex_mutex, type_parenttype_createmutex_mutex;
         static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
         // all type tp_getattro map
         static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
@@ -221,13 +222,64 @@ namespace {
         static inquiry captured_subtype_clear = NULL;
         // all type tp_finalizer map
         static std::unordered_map<uintptr_t, destructor> all_type_finalize;
+        // all type tp_del map (old-style destructor; see PrivateAttr_tp_del)
+        static std::unordered_map<uintptr_t, destructor> all_type_del;
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
+        static std::vector<PyObjectStorage> store_module_self;
     };
 };
 
-static void
+static inline void
+object_create_mutex(uintptr_t final_id, uintptr_t obj_id) noexcept
+{
+    // get object_creatmutex_mutex
+    std::lock_guard<std::mutex> lock(AllData::object_creatmutex_mutex);
+    if (::AllData::all_object_attr[final_id].find(obj_id) == ::AllData::all_object_attr[final_id].end()) {
+        ::AllData::all_object_attr[final_id][obj_id] = {};
+    }
+    if (::AllData::all_object_mutex.find(final_id) == ::AllData::all_object_mutex.end()) {
+        ::AllData::all_object_mutex[final_id] = {};
+    }
+    if (::AllData::all_object_mutex[final_id].find(obj_id) == ::AllData::all_object_mutex[final_id].end()) {
+        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
+        ::AllData::all_object_mutex[final_id][obj_id] = lock;
+    }
+}
+
+static inline void
+type_create_mutex(uintptr_t typ_id) noexcept {
+    std::lock_guard<std::mutex> lock(AllData::type_createmutex_mutex);
+    if (::AllData::type_attr_dict.find(typ_id) == ::AllData::type_attr_dict.end()) {
+        ::AllData::type_attr_dict[typ_id] = {};
+    }
+    if (::AllData::all_type_mutex.find(typ_id) == ::AllData::all_type_mutex.end()) {
+        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
+        ::AllData::all_type_mutex[typ_id] = lock;
+    }
+}
+
+static inline void
+type_parenttype_create_mutex(uintptr_t final_id, uintptr_t typ_id) noexcept
+{
+    std::lock_guard<std::mutex> lock(AllData::type_parenttype_createmutex_mutex);
+    if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
+        ::AllData::all_type_subclass_attr[final_id] = {};
+    }
+    if (::AllData::all_type_subclass_attr[final_id].find(typ_id) == ::AllData::all_type_subclass_attr[final_id].end()) {
+        ::AllData::all_type_subclass_attr[final_id][typ_id] = {};
+    }
+    if (::AllData::all_type_subclass_mutex.find(final_id) == ::AllData::all_type_subclass_mutex.end()) {
+        ::AllData::all_type_subclass_mutex[final_id] = {};
+    }
+    if (::AllData::all_type_subclass_mutex[final_id].find(typ_id) == ::AllData::all_type_subclass_mutex[final_id].end()) {
+        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
+        ::AllData::all_type_subclass_mutex[final_id][typ_id] = lock;
+    }
+}
+
+static inline void
 clean_all_storages() noexcept
 {
     AllData::cache.clear();
@@ -248,7 +300,9 @@ clean_all_storages() noexcept
     AllData::all_type_traverse.clear();
     AllData::all_type_clear.clear();
     AllData::all_type_finalize.clear();
+    AllData::all_type_del.clear();
     AllData::all_register_type_weak_ref.clear();
+    AllData::store_module_self.clear();
 }
 
 struct FinalObject
@@ -563,16 +617,7 @@ id_getattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyOb
         PyErr_SetString(PyExc_TypeError, "type not found");
         return NULL;
     }
-    if (::AllData::all_object_attr[final_id].find(obj_id) == ::AllData::all_object_attr[final_id].end()) {
-        ::AllData::all_object_attr[final_id][obj_id] = {};
-    }
-    if (::AllData::all_object_mutex.find(final_id) == ::AllData::all_object_mutex.end()) {
-        ::AllData::all_object_mutex[final_id] = {};
-    }
-    if (::AllData::all_object_mutex[final_id].find(obj_id) == ::AllData::all_object_mutex[final_id].end()) {
-        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-        ::AllData::all_object_mutex[final_id][obj_id] = lock;
-    }
+    object_create_mutex(final_id, obj_id);
     PyObject* result = NULL;
     if (final_object.status != -1) {
         result = final_object.result;
@@ -699,16 +744,7 @@ id_setattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyOb
         PyErr_SetString(PyExc_TypeError, "type not found");
         return -1;
     }
-    if (::AllData::all_object_attr[final_id].find(obj_id) == ::AllData::all_object_attr[final_id].end()) {
-        ::AllData::all_object_attr[final_id][obj_id] = {};
-    }
-    if (::AllData::all_object_mutex.find(final_id) == ::AllData::all_object_mutex.end()) {
-        ::AllData::all_object_mutex[final_id] = {};
-    }
-    if (::AllData::all_object_mutex[final_id].find(obj_id) == ::AllData::all_object_mutex[final_id].end()) {
-        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-        ::AllData::all_object_mutex[final_id][obj_id] = lock;
-    }
+    object_create_mutex(final_id, obj_id);
     // first: call __set__ method
     PyObject* result = NULL;
     if (final_object.status != -1) {
@@ -764,13 +800,7 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
         return -1;
     }
     if (final_id == typ_id) {
-        if (::AllData::type_attr_dict.find(typ_id) == ::AllData::type_attr_dict.end()) {
-            ::AllData::type_attr_dict[typ_id] = {};
-        }
-        if (::AllData::all_type_mutex.find(typ_id) == ::AllData::all_type_mutex.end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_mutex[typ_id] = lock;
-        }
+        type_create_mutex(typ_id);
         {
             std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
             ::AllData::type_attr_dict[typ_id][final_key] = value;
@@ -779,19 +809,7 @@ type_setattr(PyObject* typ, const std::string& attr_name, PyObject* value) noexc
     } else {
         // The accessed class is a subclass that stores its own value for a
         // parent's private name separately: all_type_subclass_attr[final_id][typ_id].
-        if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_attr[final_id].find(typ_id) == ::AllData::all_type_subclass_attr[final_id].end()) {
-            ::AllData::all_type_subclass_attr[final_id][typ_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(final_id) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex[final_id].find(typ_id) == ::AllData::all_type_subclass_mutex[final_id].end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_subclass_mutex[final_id][typ_id] = lock;
-        }
+        type_parenttype_create_mutex(final_id, typ_id);
         {
             std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
             ::AllData::all_type_subclass_attr[final_id][typ_id][final_key] = value;
@@ -830,16 +848,7 @@ id_delattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyOb
         PyErr_SetString(PyExc_TypeError, "type not found");
         return -1;
     }
-    if (::AllData::all_object_attr[final_id].find(obj_id) == ::AllData::all_object_attr[final_id].end()) {
-        ::AllData::all_object_attr[final_id][obj_id] = {};
-    }
-    if (::AllData::all_object_mutex.find(final_id) == ::AllData::all_object_mutex.end()) {
-        ::AllData::all_object_mutex[final_id] = {};
-    }
-    if (::AllData::all_object_mutex[final_id].find(obj_id) == ::AllData::all_object_mutex[final_id].end()) {
-        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-        ::AllData::all_object_mutex[final_id][obj_id] = lock;
-    }
+    object_create_mutex(final_id, obj_id);
     // first: find attribute on type to find "__delete__"
     PyObject* result = NULL;
     if (final_object.status == 0) {
@@ -897,13 +906,7 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
         return -1;
     }
     if (typ_id == final_id) {
-        if (::AllData::type_attr_dict.find(typ_id) == ::AllData::type_attr_dict.end()) {
-            ::AllData::type_attr_dict[typ_id] = {};
-        }
-        if (::AllData::all_type_mutex.find(typ_id) == ::AllData::all_type_mutex.end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_mutex[typ_id] = lock;
-        }
+        type_create_mutex(typ_id);
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[typ_id]);
         if (::AllData::type_attr_dict[typ_id].find(final_key) == ::AllData::type_attr_dict[typ_id].end()) {
             const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
@@ -915,19 +918,7 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
         }
         ::AllData::type_attr_dict[typ_id].erase(final_key);
     } else {
-        if (::AllData::all_type_subclass_attr.find(final_id) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_attr[final_id].find(typ_id) == ::AllData::all_type_subclass_attr[final_id].end()) {
-            ::AllData::all_type_subclass_attr[final_id][typ_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(final_id) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[final_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex[final_id].find(typ_id) == ::AllData::all_type_subclass_mutex[final_id].end()) {
-            std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-            ::AllData::all_type_subclass_mutex[final_id][typ_id] = lock;
-        }
+        type_parenttype_create_mutex(final_id, typ_id);
         std::unique_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[final_id][typ_id]);
         if (::AllData::all_type_subclass_attr[final_id][typ_id].find(final_key) == ::AllData::all_type_subclass_attr[final_id][typ_id].end()) {
             const char* type_name = get_name_from_tp_name((PyTypeObject*)typ);
@@ -1364,6 +1355,8 @@ typedef struct {
 static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
 static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept;
 static void PrivateAttr_tp_finalize(PyObject* self) noexcept;
+static void PrivateAttr_tp_del(PyObject* self) noexcept;
+static void clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept;
 
 static PyObject*
 PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
@@ -1444,55 +1437,53 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcep
 static void
 PrivateAttr_tp_finalize(PyObject* self) noexcept
 {
-    uintptr_t id_self = (uintptr_t)self;
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
-    Py_ssize_t original_ref = Py_REFCNT(self);
     if (::AllData::all_type_finalize.find(typ_id) != ::AllData::all_type_finalize.end()){
         if (::AllData::all_type_finalize[typ_id]) {
             ::AllData::all_type_finalize[typ_id](self);
             ensure_tp(typ);
         }
     }
-    if (original_ref != Py_REFCNT(self)) {
+    // Per-object cleanup moved to PrivateAttr_tp_del (see below).
+}
+
+// ========================================================================
+// tp_del : per-object cleanup for private attributes.
+//
+// subtype_dealloc calls tp_del in BOTH dealloc branches (non-GC typeobject.c
+// ~2737 and GC ~2814) before clear_slots / basedealloc, and explicitly checks
+// Py_REFCNT(self) > 0 to detect resurrection. This is the natural hook for
+// clearing ::AllData per-object entries:
+//   - it is reached on every object death path (refcount drop AND cyclic GC),
+//   - the resurrection check is explicit and readable here (Py_REFCNT > 0),
+//   - no dependency on tp_finalize / weakref / slots / __dict__.
+// We keep PrivateAttr_tp_finalize (so user __del__ / tp_finalize still runs
+// via PyObject_CallFinalizerFromDealloc) but it no longer clears storage.
+// ========================================================================
+static void
+PrivateAttr_tp_del(PyObject* self) noexcept
+{
+    uintptr_t id_self = (uintptr_t)self;
+    PyTypeObject* typ = Py_TYPE(self);
+    uintptr_t typ_id = (uintptr_t)typ;
+
+    // If a user tp_finalize / tp_del resurrected the object, subtype_dealloc
+    // returns without freeing, so we must NOT clear the private storage yet.
+    if (Py_REFCNT(self) > 0) {
         return;
     }
-    std::vector<uintptr_t> parent_ids;
-    if (::AllData::all_type_parent_id.find(typ_id) != ::AllData::all_type_parent_id.end()){
-        parent_ids = ::AllData::all_type_parent_id[typ_id];
+
+    // Chain to the original tp_del if there is one (we are called instead of
+    // the original, so we must invoke it to keep old-style destructors working).
+    if (::AllData::all_type_del.find(typ_id) != ::AllData::all_type_del.end()) {
+        destructor orig = ::AllData::all_type_del[typ_id];
+        if (orig && orig != PrivateAttr_tp_del) {
+            orig(self);
+        }
     }
 
-    {
-        // first: clear ::AllData::all_object_attr and ::AllData::all_object_mutex on this typ_id
-        if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()){
-            auto& all_object_attr = ::AllData::all_object_attr[typ_id];
-            if (all_object_attr.find(id_self) != all_object_attr.end()){
-                all_object_attr.erase(id_self);
-            }
-        }
-        if (::AllData::all_object_mutex.find(typ_id) != ::AllData::all_object_mutex.end()){
-            auto& all_object_mutex = ::AllData::all_object_mutex[typ_id];
-            if (all_object_mutex.find(id_self) != all_object_mutex.end()){
-                all_object_mutex.erase(id_self);
-            }
-        }
-        // second: clear the above in parent types
-        for (auto& parent_id : parent_ids){
-            if (::AllData::all_object_attr.find(parent_id) != ::AllData::all_object_attr.end()){
-                auto& all_object_attr = ::AllData::all_object_attr[parent_id];
-                if (all_object_attr.find(id_self) != all_object_attr.end()){
-                    all_object_attr.erase(id_self);
-                }
-            }
-            if (::AllData::all_object_mutex.find(parent_id) != ::AllData::all_object_mutex.end()){
-                auto& all_object_mutex = ::AllData::all_object_mutex[parent_id];
-                if (all_object_mutex.find(id_self) != all_object_mutex.end()){
-                    all_object_mutex.erase(id_self);
-                }
-            }
-        }
-        clear_obj(id_self);
-    }
+    clear_object_related(id_self, typ_id);
 }
 
 // shared helper for clearing object-related data (used by tp_clear and tp_finalize)
@@ -1689,15 +1680,14 @@ PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
     }
     PrivateAttrRecursionGuard guard((uintptr_t)self);
 
-    // Call saved/original traverse if exists
-    if (::AllData::all_type_traverse.find(typ_id) != ::AllData::all_type_traverse.end()) {
-        traverseproc orig = ::AllData::all_type_traverse[typ_id];
-        if (orig) {
-            int res = orig(self, visit, arg);
-            if (res) return res;
-        }
-    } else {
-        traverseproc orig = get_type_need_tp_traverse(typ);
+    // Call the real CPython type_traverse (PyType_Type.tp_traverse) so the
+    // class's own hard self-cycle (tp_dict <-> tp_mro <-> tp_bases) is visible
+    // to the cyclic GC. Walking the metaclass base chain here would land on the
+    // instance-level delegating defaults (subtype_traverse / PrivateAttr_tp_traverse)
+    // that re-enter our guard and return 0, leaving the class's internal cycle
+    // invisible to the collector and the class uncollectable.
+    {
+        traverseproc orig = PyType_Type.tp_traverse;  // == type_traverse
         if (orig) {
             int res = orig(self, visit, arg);
             if (res) return res;
@@ -1779,13 +1769,18 @@ PrivateAttrType_tp_clear(PyObject* self) noexcept
     }
     PrivateAttrRecursionGuard guard((uintptr_t)self);
 
-    // Call saved/original clear if exists
-    if (::AllData::all_type_clear.find(typ_id) != ::AllData::all_type_clear.end()) {
-        inquiry orig = ::AllData::all_type_clear[typ_id];
-        if (orig) orig(self);
-    } else {
-        inquiry orig = get_type_need_tp_clear(typ);
-        if (orig) orig(self);
+    // Call the real CPython type_clear (PyType_Type.tp_clear) so the class's
+    // hard self-cycle (tp_dict / tp_mro / ht_module) is actually broken when the
+    // cyclic GC decides this class is garbage. The walker path would resolve to
+    // the instance-level delegating defaults (subtype_clear / PrivateAttr_tp_clear)
+    // that re-enter our guard and return 0, leaving the cycle intact and the
+    // class permanently stuck in gc.garbage.
+    {
+        inquiry orig = PyType_Type.tp_clear;  // == type_clear
+        if (orig) {
+            int result = orig(self);
+            if (result) return result;
+        }
     }
 
     // Clear AllData entries associated with this type. PyObjectStorage destructor
@@ -1866,10 +1861,11 @@ static PyTypeObject PrivateAttrType = {
     (getattrofunc)PrivateAttrType_getattr,      // tp_getattro
     (setattrofunc)PrivateAttrType_setattr,      // tp_setattro
     0,                                          // tp_as_buffer
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,   // tp_flags
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE
+    | Py_TPFLAGS_HAVE_GC,                       // tp_flags
     "metaclass for private attributes",         // tp_doc
-    (traverseproc)PrivateAttrType_tp_traverse,  // tp_travers
-    (inquiry)PrivateAttrType_tp_clear,          // tp_clear
+    PrivateAttrType_tp_traverse,                // tp_travers
+    PrivateAttrType_tp_clear,                   // tp_clear
     0,                                          // tp_richcompare
     0,                                          // tp_weaklistoffset
     0,                                          // tp_iter
@@ -1939,13 +1935,7 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
             } else {
                 key = default_random_string(type_id, name);
             }
-            if (::AllData::all_type_mutex.find(type_id) == ::AllData::all_type_mutex.end()) {
-                std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-                ::AllData::all_type_mutex[type_id] = lock;
-            }
-            if (::AllData::type_attr_dict.find(type_id) == ::AllData::type_attr_dict.end()) {
-                ::AllData::type_attr_dict[type_id] = {};
-            }
+            type_create_mutex(type_id);
             std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[type_id]);
             auto& item_set = ::AllData::type_attr_dict[type_id];
             if (item_set.find(key) != item_set.end()) {
@@ -1980,13 +1970,7 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
                                 } else {
                                     key = default_random_string(now_visited_id, name);
                                 }
-                                if (::AllData::all_type_subclass_mutex.find(parent_id) == ::AllData::all_type_subclass_mutex.end()) {
-                                    ::AllData::all_type_subclass_mutex[parent_id] = {};
-                                }
-                                if (::AllData::all_type_subclass_mutex[parent_id].find(now_visited_id) == ::AllData::all_type_subclass_mutex[parent_id].end()) {
-                                    std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-                                    ::AllData::all_type_subclass_mutex[parent_id][now_visited_id] = lock;
-                                }
+                                type_parenttype_create_mutex(parent_id, now_visited_id);
                                 std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[parent_id][now_visited_id]);
                                 if (now_mro_dict[now_visited_id].find(key) != now_mro_dict[now_visited_id].end()) {
                                     PyObject* obj = now_mro_dict[now_visited_id][key];
@@ -2010,17 +1994,12 @@ type_get_final_attr(uintptr_t type_id, const std::string& name) noexcept
                     } else {
                         key = default_random_string(parent_id, name);
                     }
-                    if (::AllData::all_type_mutex.find(parent_id) == ::AllData::all_type_mutex.end()) {
-                        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-                        ::AllData::all_type_mutex[parent_id] = lock;
-                    }
-                    if (::AllData::type_attr_dict.find(parent_id) != ::AllData::type_attr_dict.end()) {
-                        auto& item_set = ::AllData::type_attr_dict[parent_id];
-                        std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[parent_id]);
-                        if (item_set.find(key) != item_set.end()) {
-                            PyObject* obj = item_set[key];
-                            return obj;
-                        }
+                    type_create_mutex(parent_id);
+                    auto& item_set = ::AllData::type_attr_dict[parent_id];
+                    std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[parent_id]);
+                    if (item_set.find(key) != item_set.end()) {
+                        PyObject* obj = item_set[key];
+                        return obj;
                     }
                 }
             }
@@ -2497,7 +2476,10 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 need_value = value;
             }
             if (data.private_attrs_vector_string.find(attr_name) != data.private_attrs_vector_string.end()) {
-                Py_INCREF(need_value);
+                // PyObjectStorage assignment INCREFs the value (RAII); the
+                // reference is released when need_remove_itself is cleared
+                // (PrivateAttrCreationData::clear). No manual INCREF here,
+                // otherwise the value leaks (+1) when the class is destroyed.
                 data.need_remove_itself[attr_name] = need_value;
                 PyDict_DelItem(data.attrs_copy, key);
                 continue;
@@ -2510,7 +2492,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 if (data.need_remove_subclass.find(need_remove_subclass_id) == data.need_remove_subclass.end()) {
                     data.need_remove_subclass[need_remove_subclass_id] = {};
                 }
-                Py_INCREF(need_value);
+                // PyObjectStorage assignment INCREFs (RAII); no manual INCREF.
                 data.need_remove_subclass[need_remove_subclass_id][attr_name] = need_value;
                 PyDict_DelItem(data.attrs_copy, key);
                 continue;
@@ -2568,16 +2550,17 @@ static setattrofunc get_need_tp_setattro(PyTypeObject* cls) noexcept;
 static traverseproc get_need_tp_traverse(PyTypeObject* cls) noexcept;
 static inquiry get_need_tp_clear(PyTypeObject* cls) noexcept;
 static destructor get_need_tp_finalize(PyTypeObject* cls) noexcept;
+static destructor get_need_tp_del(PyTypeObject* cls) noexcept;
 
 // instance-level traverse/clear for types that use private attributes
 static int PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept;
 static int PrivateAttr_tp_clear(PyObject* self) noexcept;
+static void PrivateAttr_tp_del(PyObject* self) noexcept;
+// shared helper to clear object related data (avoid double clear)
+static void clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept;
 // metaclass-level wrappers (if needed)
 static int PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept;
 static int PrivateAttrType_tp_clear(PyObject* self) noexcept;
-
-// shared helper to clear object related data (avoid double clear)
-static void clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept;
 
 static void
 ensure_tp(PyTypeObject* type_instance) noexcept
@@ -2670,6 +2653,24 @@ ensure_tp(PyTypeObject* type_instance) noexcept
                 ::AllData::all_type_finalize[type_id] = ::AllData::all_type_finalize[base_id];
             } else if (base && base->tp_finalize && base->tp_finalize != PrivateAttr_tp_finalize) {
                 ::AllData::all_type_finalize[type_id] = base->tp_finalize;
+            }
+        }
+    }
+    {
+        if (type_instance->tp_del != PrivateAttr_tp_del) {
+            if (!type_instance->tp_del && ::AllData::all_type_del.find(type_id) == ::AllData::all_type_del.end()) {
+                ::AllData::all_type_del[type_id] = get_need_tp_del(type_instance);
+            } else {
+                ::AllData::all_type_del[type_id] = type_instance->tp_del;
+            }
+            type_instance->tp_del = PrivateAttr_tp_del;
+        } else if (::AllData::all_type_del.find(type_id) == ::AllData::all_type_del.end()) {
+            PyTypeObject* base = type_instance->tp_base;
+            uintptr_t base_id = (uintptr_t)(base);
+            if (::AllData::all_type_del.find(base_id) != ::AllData::all_type_del.end()) {
+                ::AllData::all_type_del[type_id] = ::AllData::all_type_del[base_id];
+            } else if (base && base->tp_del && base->tp_del != PrivateAttr_tp_del) {
+                ::AllData::all_type_del[type_id] = base->tp_del;
             }
         }
     }
@@ -3092,6 +3093,25 @@ get_need_tp_clear(PyTypeObject* cls) noexcept
     return NULL;
 }
 
+static destructor
+get_need_tp_del(PyTypeObject* cls) noexcept
+{
+    PyTypeObject* base = cls->tp_base;
+    while (base) {
+        if (base->tp_del != PrivateAttr_tp_del) {
+            return base->tp_del;
+        } else if (::AllData::all_type_del.find((uintptr_t)base) != ::AllData::all_type_del.end()) {
+            if (::AllData::all_type_del[(uintptr_t)base]) {
+                return ::AllData::all_type_del[(uintptr_t)base];
+            }
+            base = base->tp_base;
+        } else {
+            base = base->tp_base;
+        }
+    }
+    return NULL;
+}
+
 // NOTE: register_finalize is defined later in this file; forward-declare it
 // here because get_type_need_tp_finalize() needs to compare against it.
 static void register_finalize(PyObject* cls) noexcept;
@@ -3311,7 +3331,20 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     if (::AllData::all_type_finalize.find(typ_id) != ::AllData::all_type_finalize.end()) {
         ::AllData::all_type_finalize.erase(typ_id);
     }
+    if (::AllData::all_type_del.find(typ_id) != ::AllData::all_type_del.end()) {
+        ::AllData::all_type_del.erase(typ_id);
+    }
     ::AllData::all_type_mutex.erase(typ_id);
+    // Clear the per-type buckets of the object-attr tables (created in
+    // PrivateAttrType_postprocess / PrivateAttr_object_init_private_dict);
+    // otherwise every class that ever got instances leaves an empty bucket
+    // behind and all_object_attr / all_object_mutex grow forever.
+    if (::AllData::all_object_attr.find(typ_id) != ::AllData::all_object_attr.end()) {
+        ::AllData::all_object_attr.erase(typ_id);
+    }
+    if (::AllData::all_object_mutex.find(typ_id) != ::AllData::all_object_mutex.end()) {
+        ::AllData::all_object_mutex.erase(typ_id);
+    }
     clear_obj(typ_id);
 }
 
@@ -3563,6 +3596,7 @@ metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
     METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(traverse);
     METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(clear);
     METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(finalize);
+    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(del);
 
     Py_RETURN_NONE;
 }
@@ -4133,6 +4167,12 @@ atexit_register_clean_func(void) noexcept
 PyMODINIT_FUNC
 PyInit_private_attribute(void) noexcept
 {
+    // check if AllData::store_module_self has first value
+    if (AllData::store_module_self.size() >= 1) {
+        PyObject* m = AllData::store_module_self[0];
+        Py_INCREF(m);
+        return m;
+    }
     if (init_all_slots() <0 ||
         atexit_register_clean_func() < 0 ||
         PyType_Ready(&PrivateWrapType) < 0 ||
@@ -4142,19 +4182,28 @@ PyInit_private_attribute(void) noexcept
         PyType_Ready(&PrivateTempType) < 0) {
         return NULL;
     }
+    // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
+    // subtype_clear pointers are captured at import time (see
+    // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
+    // waiting for the first lazy attribute access to the module.
+    PyObject* private_attr_base = PrivateModule_get_PrivateAttrBase(NULL, NULL);
+    if (!private_attr_base) {
+        return NULL;
+    }
     PyObject* all = PyList_New(0);
     if (!all) {
+        Py_DECREF(private_attr_base);
         return NULL;
     }
     PyObject* m = PyModule_Create(&def);
     if (!m) {
         Py_DECREF(all);
+        Py_DECREF(private_attr_base);
         return NULL;
     }
 #ifdef Py_GIL_DISABLED
     PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
 #endif
-
     PyModule_AddObject(m, "__all__", all);
     /* all contains:
      * PrivateWrapProxy
@@ -4176,16 +4225,8 @@ PyInit_private_attribute(void) noexcept
     PyList_AppendString(all, "ensure_metaclass");
     Py_SET_TYPE(m, &PrivateModuleType);
 
-    // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
-    // subtype_clear pointers are captured at import time (see
-    // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
-    // waiting for the first lazy attribute access to the module.
-    PyObject* private_attr_base = PrivateModule_get_PrivateAttrBase(NULL, NULL);
-    if (!private_attr_base) {
-        Py_DECREF(m);
-        return NULL;
-    }
     Py_DECREF(private_attr_base);
+    AllData::store_module_self.push_back(m);    // store module self
 
     return m;
 }
