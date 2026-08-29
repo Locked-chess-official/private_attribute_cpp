@@ -220,9 +220,7 @@ namespace {
         // defaults as "not a real original" and keep walking upward.
         static traverseproc captured_subtype_traverse = NULL;
         static inquiry captured_subtype_clear = NULL;
-        // all type tp_del map (old-style destructor)
         static std::unordered_map<uintptr_t, destructor> all_type_del;
-
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
@@ -1352,7 +1350,7 @@ typedef struct {
 
 static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
 static int PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept;
-static void PrivateAttr_tp_del(PyObject* self) noexcept;
+static void PrivateAttr_tp_finalize(PyObject* self) noexcept;
 static void clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept;
 
 static PyObject*
@@ -1674,40 +1672,34 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
     return 0;
 }
 
-// tp_del : per-object cleanup. subtype_dealloc calls tp_del in both dealloc
-// branches (refcount and cyclic GC) before freeing, and checks Py_REFCNT > 0
-// to detect resurrection. This clears the per-object AllData entries on every
-// object death path. (A weakref-based alternative was rejected: no weak
-// references on instances.)
 static void
-PrivateAttr_tp_del(PyObject* self) noexcept
+PrivateAttr_tp_finalize(PyObject* self) noexcept
 {
     uintptr_t id_self = (uintptr_t)self;
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
 
-    // If a user tp_finalize / tp_del resurrected the object, subtype_dealloc
-    // returns without freeing, so we must NOT clear the private storage yet.
-    if (Py_REFCNT(self) > 0) {
-        return;
-    }
-    // Chain to the original tp_del if there is one.
+    Py_ssize_t refcnt = Py_REFCNT(self);
+    // Chain to the original tp_finalize if there is one.
     if (::AllData::all_type_del.find(typ_id) != ::AllData::all_type_del.end()) {
         destructor orig = ::AllData::all_type_del[typ_id];
-        if (orig && orig != PrivateAttr_tp_del) {
+        if (orig && orig != PrivateAttr_tp_finalize) {
             orig(self);
         }
+    }
+    if (Py_REFCNT(self) > refcnt) {
+        return;
     }
     clear_object_related(id_self, typ_id);
 }
 
 static destructor
-get_need_tp_del(PyTypeObject* cls) noexcept
+get_need_tp_finalize(PyTypeObject* cls) noexcept
 {
     PyTypeObject* base = cls->tp_base;
     while (base) {
-        if (base->tp_del != PrivateAttr_tp_del) {
-            return base->tp_del;
+        if (base->tp_finalize != PrivateAttr_tp_finalize) {
+            return base->tp_finalize;
         } else if (::AllData::all_type_del.find((uintptr_t)base) != ::AllData::all_type_del.end()) {
             if (::AllData::all_type_del[(uintptr_t)base]) {
                 return ::AllData::all_type_del[(uintptr_t)base];
@@ -2726,13 +2718,13 @@ ensure_tp(PyTypeObject* type_instance) noexcept
         }
     }
     {
-        if (type_instance->tp_del != PrivateAttr_tp_del) {
-            if (!type_instance->tp_del && ::AllData::all_type_del.find(type_id) == ::AllData::all_type_del.end()) {
-                ::AllData::all_type_del[type_id] = get_need_tp_del(type_instance);
+        if (type_instance->tp_finalize != PrivateAttr_tp_finalize) {
+            if (!type_instance->tp_finalize && ::AllData::all_type_del.find(type_id) == ::AllData::all_type_del.end()) {
+                ::AllData::all_type_del[type_id] = get_need_tp_finalize(type_instance);
             } else {
-                ::AllData::all_type_del[type_id] = type_instance->tp_del;
+                ::AllData::all_type_del[type_id] = type_instance->tp_finalize;
             }
-            type_instance->tp_del = PrivateAttr_tp_del;
+            type_instance->tp_finalize = PrivateAttr_tp_finalize;
         }
     }
 }
