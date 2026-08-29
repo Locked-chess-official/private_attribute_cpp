@@ -1672,9 +1672,35 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
     return 0;
 }
 
+class KeepPythonException {
+private:
+    PyObject* typ;
+    PyObject* exc;
+    PyObject* tb;
+public:
+    KeepPythonException() noexcept {
+        // under 3.12 use PyErr_Fetch
+#if PY_VERSION_HEX < 0x030C0000
+        PyErr_Fetch(&typ, &exc, &tb);
+#else
+        exc = PyErr_GetRaisedException();
+#endif
+    }
+
+    ~KeepPythonException() noexcept {
+        // under 3.12 use PyErr_Restore
+#if PY_VERSION_HEX < 0x030C0000
+        PyErr_Restore(typ, exc, tb);
+#else
+        PyErr_SetRaisedException(exc);
+#endif
+    }
+};
+
 static void
 PrivateAttr_tp_finalize(PyObject* self) noexcept
 {
+    KeepPythonException _;
     uintptr_t id_self = (uintptr_t)self;
     PyTypeObject* typ = Py_TYPE(self);
     uintptr_t typ_id = (uintptr_t)typ;
