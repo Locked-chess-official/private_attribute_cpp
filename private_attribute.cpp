@@ -1542,19 +1542,20 @@ PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
         }
     }
 
-    // Managed-dict visit (mirror of subtype_traverse's dictoffset block).
-    // The saved "original" for a managed-dict class is subtype_traverse, but
-    // because the class's LIVE tp_traverse has been replaced with this wrapper,
-    // subtype_traverse skips its own slot-walking loop, keeps base == typ, and
-    // its `type->tp_dictoffset != base->tp_dictoffset` check sees equal offsets
-    // (-1 == -1) -> it never visits the managed dict. The instance __dict__
+    // Instance-dict visit (mirror of subtype_traverse's dictoffset block).
+    // The saved "original" for a private-attribute class is subtype_traverse,
+    // but because the class's LIVE tp_traverse has been replaced with this
+    // wrapper, subtype_traverse skips its own slot-walking loop, keeps base ==
+    // typ, and its `type->tp_dictoffset != base->tp_dictoffset` check sees equal
+    // offsets -> it never visits the instance __dict__. The instance __dict__
     // (e.g. `self.__dict__['x'] = self` self-cycles) would then be invisible to
     // the collector and leak. Do the visit explicitly here instead.
     //
-    // Only the managed-dict branch is needed: every private-attribute class is
-    // created through type_new and therefore uses Py_TPFLAGS_MANAGED_DICT with
-    // tp_dictoffset == -1. (The legacy _PyObject_ComputedDictPointer path is a
-    // CPython internal and is intentionally not used.)
+    // The managed-dict API is version-dependent: 3.13+ exposes the public
+    // PyObject_VisitManagedDict, 3.12 only the internal _PyObject_VisitManagedDict,
+    // and <=3.11 has no managed dict at all (classic positive tp_dictoffset,
+    // visited through _PyObject_GetDictPtr like subtype_traverse does).
+#if PY_VERSION_HEX >= 0x030D0000
     if ((typ->tp_flags & Py_TPFLAGS_MANAGED_DICT)
         && typ->tp_dictoffset == -1) {
         int err = PyObject_VisitManagedDict(self, visit, arg);
@@ -1562,6 +1563,23 @@ PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
             return err;
         }
     }
+#elif PY_VERSION_HEX >= 0x030C0000
+    if ((typ->tp_flags & Py_TPFLAGS_MANAGED_DICT)
+        && typ->tp_dictoffset == -1) {
+        int err = _PyObject_VisitManagedDict(self, visit, arg);
+        if (err) {
+            return err;
+        }
+    }
+#else
+    PyObject** dictptr = _PyObject_GetDictPtr(self);
+    if (dictptr && *dictptr) {
+        int err = visit(*dictptr, arg);
+        if (err) {
+            return err;
+        }
+    }
+#endif
 
     // Instance->type link (mirror of subtype_traverse's heap-type visit).
     // subtype_traverse(self) does Py_VISIT(Py_TYPE(self)) only when the
@@ -1629,14 +1647,27 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
         if (orig) orig(self);
     }
 
-    // Managed-dict clear (mirror of subtype_clear's dict handling). Same
+    // Instance-dict clear (mirror of subtype_clear's dict handling). Same
     // reasoning as the traverse side: subtype_clear can't run its dict block
-    // once the LIVE tp_clear has been replaced, so clear the managed dict
-    // explicitly to break __dict__ self-cycles.
+    // once the LIVE tp_clear has been replaced, so clear the instance dict
+    // explicitly to break __dict__ self-cycles. Version-dependent APIs, see
+    // the matching traverse block above.
+#if PY_VERSION_HEX >= 0x030D0000
     if ((typ->tp_flags & Py_TPFLAGS_MANAGED_DICT)
         && typ->tp_dictoffset == -1) {
         PyObject_ClearManagedDict(self);
     }
+#elif PY_VERSION_HEX >= 0x030C0000
+    if ((typ->tp_flags & Py_TPFLAGS_MANAGED_DICT)
+        && typ->tp_dictoffset == -1) {
+        _PyObject_ClearManagedDict(self);
+    }
+#else
+    PyObject** dictptr = _PyObject_GetDictPtr(self);
+    if (dictptr && *dictptr) {
+        Py_CLEAR(*dictptr);
+    }
+#endif
 
     // clear our per-object data
     clear_object_related(id_self, typ_id);
