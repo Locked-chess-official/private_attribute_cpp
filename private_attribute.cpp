@@ -1756,8 +1756,8 @@ static inquiry get_type_need_tp_clear(PyTypeObject* cls) noexcept;
 static int
 PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
 {
-    PyTypeObject* typ = (PyTypeObject*)self;
-    uintptr_t typ_id = (uintptr_t)typ;
+    PyTypeObject* typ = Py_TYPE(self);
+    uintptr_t typ_id = (uintptr_t)self;
 
     // Re-entrancy guard: see PrivateAttrRecursionGuard above.
     if (!PrivateAttrRecursionGuard::try_enter((uintptr_t)self)) {
@@ -1793,9 +1793,8 @@ PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
     // the visit when the metaclass is a heap type, matching subtype_traverse's
     // condition and avoiding the trivial/static type link.
     {
-        PyTypeObject* meta = Py_TYPE(self);
-        if (meta && (meta->tp_flags & Py_TPFLAGS_HEAPTYPE)) {
-            Py_VISIT((PyObject*)meta);
+        if (typ->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+            Py_VISIT((PyObject*)typ);
         }
     }
 
@@ -1865,8 +1864,8 @@ PrivateAttrType_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
 static int
 PrivateAttrType_tp_clear(PyObject* self) noexcept
 {
-    PyTypeObject* typ = (PyTypeObject*)self;
-    uintptr_t typ_id = (uintptr_t)typ;
+    PyTypeObject* typ = Py_TYPE(self);
+    uintptr_t typ_id = (uintptr_t)self;
 
     // Re-entrancy guard: see PrivateAttrRecursionGuard above.
     if (!PrivateAttrRecursionGuard::try_enter((uintptr_t)self)) {
