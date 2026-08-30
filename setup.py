@@ -1,10 +1,15 @@
 from setuptools import setup, Extension
+import os
 import sys
 
 if sys.platform == "win32":
-    extra_compile_args = ['/std:c++17']
+    extra_compile_args = ['/std:c++17', '/GR-']
+    extra_link_args = []
 else:
-    extra_compile_args = ['-std=c++17']
+    extra_compile_args = ['-std=c++17', '-fno-exceptions', '-fno-rtti']
+    extra_link_args = []
+    if os.environ.get('PRIVATE_ATTR_KEEP_DEBUG') != '1':
+        extra_compile_args.append('-g0')
 
 module = Extension(
     'private_attribute',
@@ -12,13 +17,14 @@ module = Extension(
     include_dirs=['.'],
     language='c++',
     extra_compile_args=extra_compile_args,
+    extra_link_args=extra_link_args,
 )
 
 readme = open('README.md').read()
 
 setup(
     name='private_attribute_cpp',
-    version='2.1.7',
+    version='2.1.8',
     author="HuangHaoHua",
     author_email="13140752715@example.com",
     description='A Python package that provides a way to define private attributes in C++ implementation.',
