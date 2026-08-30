@@ -3995,7 +3995,7 @@ PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/) noexcep
 }
 
 static int
-PyList_AppendString(PyObject* list, const char* str)
+PyList_AppendString(PyObject* list, const char* str) noexcept
 {
     PyObject* obj = PyUnicode_InternFromString(str);
     if (!obj) return -1;
