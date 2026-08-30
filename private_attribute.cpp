@@ -1561,7 +1561,7 @@ PrivateAttr_traverse_slots(PyTypeObject* type, PyObject* self,
     }
     Py_ssize_t n = Py_SIZE(type);
     for (Py_ssize_t i = 0; i < n; i++, mp++) {
-        if (mp->type == Py_T_OBJECT_EX) {
+        if (mp->type == T_OBJECT_EX) {
             char* addr = (char*)self + mp->offset;
             PyObject* obj = *(PyObject**)addr;
             if (obj != NULL) {
@@ -1587,7 +1587,7 @@ PrivateAttr_clear_slots(PyTypeObject* type, PyObject* self) noexcept
     }
     Py_ssize_t n = Py_SIZE(type);
     for (Py_ssize_t i = 0; i < n; i++, mp++) {
-        if (mp->type == Py_T_OBJECT_EX && !(mp->flags & Py_READONLY)) {
+        if (mp->type == T_OBJECT_EX && !(mp->flags & READONLY)) {
             char* addr = (char*)self + mp->offset;
             PyObject* obj = *(PyObject**)addr;
             if (obj != NULL) {
