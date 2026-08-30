@@ -1512,6 +1512,92 @@ public:
     }
 };
 
+// ========================================================================
+// __slots__ traversal/clear (mirror of CPython's subtype_traverse slot loop).
+//
+// A private-attribute class's LIVE tp_traverse/tp_clear are replaced with
+// PrivateAttr_tp_traverse / PrivateAttr_tp_clear. The saved "original" is
+// CPython's subtype_traverse/subtype_clear, but because subtype_traverse
+// resolves the nearest base through the LIVE slot, it treats our wrapper as
+// the nearest "different" traverse and skips its own traverse_slots loop. The
+// __slots__ members (Py_T_OBJECT_EX entries in the heap type's member table)
+// therefore become invisible to the collector, so a cycle formed purely
+// through __slots__ members leaks.
+//
+// These helpers walk the member table for each type level whose live
+// traverse/clear slot is still a delegating default (subtype_traverse /
+// subtype_clear or our own wrapper), exactly mirroring the
+// `while (base->tp_traverse == subtype_traverse)` walk in CPython.
+// ========================================================================
+
+// Locate the member table of a heap type in a version-independent way.
+// - 3.12+ : PyObject_GetItemData((PyObject*)type) is the public accessor
+//           (_PyHeapType_GET_MEMBERS is defined as that since 3.12).
+// - <=3.11 : members float right after the PyHeapTypeObject header:
+//           _PyHeapType_GET_MEMBERS(et) == (char*)et + Py_TYPE(et)->tp_basicsize.
+static PyMemberDef*
+PrivateAttr_get_tp_members(PyTypeObject* type) noexcept
+{
+    if (!(type->tp_flags & Py_TPFLAGS_HEAPTYPE)) {
+        return NULL;
+    }
+#if PY_VERSION_HEX >= 0x030C0000
+    return (PyMemberDef*)PyObject_GetItemData((PyObject*)type);
+#else
+    return (PyMemberDef*)((char*)type + Py_TYPE(type)->tp_basicsize);
+#endif
+}
+
+static int
+PrivateAttr_traverse_slots(PyTypeObject* type, PyObject* self,
+                           visitproc visit, void* arg) noexcept
+{
+    if (!(type->tp_flags & Py_TPFLAGS_HEAPTYPE)) {
+        return 0;
+    }
+    PyMemberDef* mp = PrivateAttr_get_tp_members(type);
+    if (mp == NULL) {
+        return 0;
+    }
+    Py_ssize_t n = Py_SIZE(type);
+    for (Py_ssize_t i = 0; i < n; i++, mp++) {
+        if (mp->type == Py_T_OBJECT_EX) {
+            char* addr = (char*)self + mp->offset;
+            PyObject* obj = *(PyObject**)addr;
+            if (obj != NULL) {
+                int err = visit(obj, arg);
+                if (err) {
+                    return err;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static void
+PrivateAttr_clear_slots(PyTypeObject* type, PyObject* self) noexcept
+{
+    if (!(type->tp_flags & Py_TPFLAGS_HEAPTYPE)) {
+        return;
+    }
+    PyMemberDef* mp = PrivateAttr_get_tp_members(type);
+    if (mp == NULL) {
+        return;
+    }
+    Py_ssize_t n = Py_SIZE(type);
+    for (Py_ssize_t i = 0; i < n; i++, mp++) {
+        if (mp->type == Py_T_OBJECT_EX && !(mp->flags & Py_READONLY)) {
+            char* addr = (char*)self + mp->offset;
+            PyObject* obj = *(PyObject**)addr;
+            if (obj != NULL) {
+                *(PyObject**)addr = NULL;
+                Py_DECREF(obj);
+            }
+        }
+    }
+}
+
 static int
 PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
 {
@@ -1537,6 +1623,29 @@ PrivateAttr_tp_traverse(PyObject* self, visitproc visit, void* arg) noexcept
         if (orig) {
             int res = orig(self, visit, arg);
             if (res) return res;
+        }
+    }
+
+    // __slots__ visit (mirror of subtype_traverse's slot-walking loop). See
+    // PrivateAttr_traverse_slots above: once the LIVE tp_traverse is this
+    // wrapper, subtype_traverse skips its own loop, so walk the member table
+    // of this type and every delegating base explicitly. Stop at the first
+    // base whose live traverse is a real implementation (it owns its slots).
+    {
+        PyTypeObject* base = typ;
+        while (base) {
+            if (base->tp_traverse == ::AllData::captured_subtype_traverse
+                || base->tp_traverse == PrivateAttr_tp_traverse) {
+                if (Py_SIZE(base)) {
+                    int err = PrivateAttr_traverse_slots(base, self, visit, arg);
+                    if (err) {
+                        return err;
+                    }
+                }
+                base = base->tp_base;
+            } else {
+                break;
+            }
         }
     }
 
@@ -1643,6 +1752,25 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
     } else {
         inquiry orig = get_need_tp_clear(typ);
         if (orig) orig(self);
+    }
+
+    // __slots__ clear (mirror of subtype_clear's clear_slots loop). Same
+    // reasoning as the traverse side: subtype_clear can't run its own loop
+    // once the LIVE tp_clear is this wrapper, so clear the __slots__ members
+    // of this type and every delegating base explicitly.
+    {
+        PyTypeObject* base = typ;
+        while (base) {
+            if (base->tp_clear == ::AllData::captured_subtype_clear
+                || base->tp_clear == PrivateAttr_tp_clear) {
+                if (Py_SIZE(base)) {
+                    PrivateAttr_clear_slots(base, self);
+                }
+                base = base->tp_base;
+            } else {
+                break;
+            }
+        }
     }
 
     // Instance-dict clear (mirror of subtype_clear's dict handling). Same
