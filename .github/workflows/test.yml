@@ -50,7 +50,6 @@ jobs:
             if [ "${{ runner.os }}" = "Linux" ]; then
               export CFLAGS="-O0 -g -fno-omit-frame-pointer"
               export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
-              # setup.py 默认 -g0 会覆盖 CFLAGS 里的 -g；保留调试信息供 gdb 行号级回溯
               export PRIVATE_ATTR_KEEP_DEBUG=1
             else
               export CFLAGS="-g -O0"
