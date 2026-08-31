@@ -15,14 +15,14 @@ class MyClass(PrivateAttrBase):
         return self._private_attr1
 ```
 """
-from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional
+from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast
 from types import FunctionType
 
 # define the dict that must have a key "__private_attrs__" and value must be the sequence of strings
 class _PrivateAttrDict(TypedDict):
     __private_attrs__: Optional[Sequence[str]]
 
-_T = TypeVar('T')
+_T = TypeVar('_T')
 
 class _PrivateWrap(Generic[_T]):
     @property
@@ -38,9 +38,20 @@ class _PrivateWrap(Generic[_T]):
     def __getattr__(self, name: str) -> Any:
         return getattr(self.result, name)
 
-_TVar = TypeVar('TVar')
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if callable(self.result):
+            return self.result(*args, **kwargs)
+        raise TypeError(f'{self.result!r} is not callable')
 
-class PrivateWrapProxy:
+    def __get__(self, instance: Any, owner: type) -> Any:
+        if hasattr(self.result, "__get__"):
+            descriptor = cast(Any, self.result)
+            return descriptor.__get__(instance, owner)
+        return self.result
+
+_TVar = TypeVar('_TVar')
+
+class PrivateWrapProxy(Generic[_TVar, _T]):
     """
     PrivateWrapProxy is a proxy for private attributes.
     Usage:
