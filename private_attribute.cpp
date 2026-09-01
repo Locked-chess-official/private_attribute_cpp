@@ -1802,11 +1802,14 @@ PrivateAttr_tp_clear(PyObject* self) noexcept
 
 class KeepPythonException {
 private:
-    PyObject* typ;
-    PyObject* exc;
-    PyObject* tb;
+#if PY_VERSION_HEX < 0x030C0000
+    PyObject* typ = NULL;
+    PyObject* tb = NULL;
+#endif
+    PyObject* exc = NULL;
 public:
     KeepPythonException() noexcept {
+        if (PyErr_Occurred())
         // under 3.12 use PyErr_Fetch
 #if PY_VERSION_HEX < 0x030C0000
         PyErr_Fetch(&typ, &exc, &tb);
@@ -1816,6 +1819,7 @@ public:
     }
 
     ~KeepPythonException() noexcept {
+        if (exc)
         // under 3.12 use PyErr_Restore
 #if PY_VERSION_HEX < 0x030C0000
         PyErr_Restore(typ, exc, tb);
@@ -2885,9 +2889,22 @@ ensure_tp(PyTypeObject* type_instance) noexcept
 static void
 ensure_subclass_tp(PyTypeObject* type_instance) noexcept
 {
+    KeepPythonException _;
     PyObject* subclasses = PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", (PyObject*)type_instance);
-    assert(subclasses);
-    assert(PyList_Check(subclasses));
+    if (!subclasses) {
+        PyObject* unraisable_missing = PyUnicode_FromString("type.__subclasses__()");
+        PyErr_WriteUnraisable(unraisable_missing);
+        Py_DECREF(unraisable_missing);
+        return;
+    }
+    if (!PyList_Check(subclasses)) {
+        PyErr_SetString(PyExc_TypeError, "type.__subclasses__() did not return a list");
+        PyObject* unraisable_missing = PyUnicode_FromString("type.__subclasses__()");
+        PyErr_WriteUnraisable(unraisable_missing);
+        Py_DECREF(unraisable_missing);
+        Py_DECREF(subclasses);
+        return;
+    }
     Py_ssize_t list_len = PyList_GET_SIZE(subclasses);
     for (Py_ssize_t i = 0; i < list_len; i++) {
         PyObject* subclass = PyList_GetItem(subclasses, i);
@@ -4271,36 +4288,20 @@ atexit_register_clean_func(void) noexcept
     if (!atexit) {
         return -1;
     }
-    PyObject* register_func = PyObject_GetAttrString(atexit, "register");
-    if (!register_func) {
+
+    PyObject* func = PyCFunction_New(&clean_storage, NULL);
+    if (!func) {
         Py_DECREF(atexit);
         return -1;
     }
 
-    PyObject* func = PyCFunction_New(&clean_storage, NULL);
-    if (!func) {
-        Py_DECREF(register_func);
-        Py_DECREF(atexit);
-        return -1;
-    }
-    PyObject* args = PyTuple_New(1);
-    if (!args) {
-        Py_DECREF(func);
-        Py_DECREF(register_func);
-        Py_DECREF(atexit);
-        return -1;
-    }
-    PyTuple_SET_ITEM(args, 0, func);
-    PyObject* result = PyObject_CallObject(register_func, args);
-    if (result == NULL) {
-        Py_DECREF(args);
-        Py_DECREF(register_func);
-        Py_DECREF(atexit);
-        return -1;
-    }
-    Py_DECREF(args);
-    Py_DECREF(register_func);
+    PyObject* result = PyObject_CallMethod(atexit, "register", "O", func);
+    Py_DECREF(func);
     Py_DECREF(atexit);
+
+    if (!result) {
+        return -1;
+    }
     Py_DECREF(result);
     return 0;
 }
