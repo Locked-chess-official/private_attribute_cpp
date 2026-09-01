@@ -2411,9 +2411,12 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
 static std::string
 real_class_name(const std::string& name, const std::string& class_name) noexcept
 {
+    size_t start_pos = class_name.find_first_not_of('_');
+    std::string cleaned_class_name = (start_pos == std::string::npos) ? "" : class_name.substr(start_pos);
+    
     // if the name starts with "__" but does not end with "__", change to _ClassName__name
     if (name.length() >= 2 && name.substr(0, 2) == "__" && name.substr(name.length() - 2) != "__") {
-        return "_" + class_name + name;
+        return "_" + cleaned_class_name + name;
     }
     return name;
 }
