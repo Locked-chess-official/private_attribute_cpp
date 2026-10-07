@@ -33,6 +33,7 @@ setup(
     long_description=readme,
     long_description_content_type='text/markdown',
     license="MIT",
+    python_requires=">=3.10",
     # add "private_attribute.pyi"
     package_data={'': ['private_attribute.pyi']},
 
