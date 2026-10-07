@@ -20,6 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up QEMU
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
         with:
@@ -51,6 +57,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
 
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
