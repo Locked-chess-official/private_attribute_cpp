@@ -31,8 +31,10 @@ jobs:
       - name: Build wheels (CPython 3.10~3.14)
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315-* cp315t-*"
           CIBW_PRERELEASE_PYTHONS: "1"
+          CIBW_ARCHS_LINUX: "x86_64 aarch64"
+          CIBW_ARCHS_WINDOWS: "ARM64"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -63,6 +65,8 @@ jobs:
         env:
           CIBW_BUILD: "cp313t-*"
           CIBW_ENABLE: "cpython-freethreading"
+          CIBW_ARCHS_LINUX: "x86_64 aarch64"
+          CIBW_ARCHS_WINDOWS: "ARM64"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -101,7 +105,7 @@ jobs:
       - build-wheels-cp313t
       - build-sdist
 
-    if: (github.event_name == 'release' && github.event.action == 'published') || (github.event_name == 'workflow_dispatch')
+    if: github.event_name == 'release' && github.event.action == 'published'
 
     runs-on: ubuntu-latest
 
