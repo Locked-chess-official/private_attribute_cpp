@@ -4279,6 +4279,9 @@ static PyObject* PrivateModule_create(PyObject* spec, PyModuleDef* def) noexcept
 static PyModuleDef_Slot PrivateModule_slots[] = {
     {Py_mod_create, (void*)PrivateModule_create},
     {Py_mod_exec, (void*)PrivateModule_exec},
+#if PY_VERSION_HEX >= 0x030D0000
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
     {0, NULL}
 };
 
@@ -4353,9 +4356,6 @@ PrivateModule_create(PyObject* spec, PyModuleDef* /*def*/) noexcept
 static int
 PrivateModule_exec(PyObject* m) noexcept
 {
-#ifdef Py_GIL_DISABLED
-    PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
-#endif
     // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
     // subtype_clear pointers are captured at import time (see
     // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
