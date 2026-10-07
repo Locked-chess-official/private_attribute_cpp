@@ -43,7 +43,9 @@ jobs:
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: |
             pwsh -NoProfile -Command "& {
-              $crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2026\*\VC\Redist\MSVC' -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
+            $vsRoot = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -latest -property installationPath
+            if (-not $vsRoot) { Write-Error 'Visual Studio not found'; exit 1 }
+            $crt = Get-ChildItem \"$vsRoot\VC\Redist\MSVC\" -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
               Where-Object { $_.FullName -like '*\arm64\*' } |
               Select-Object -First 1 -ExpandProperty FullName
             if (-not $crt) { Write-Error 'ARM64 CRT not found'; exit 1 }
@@ -91,7 +93,9 @@ jobs:
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: |
             pwsh -NoProfile -Command "& {
-              $crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2026\*\VC\Redist\MSVC' -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
+            $vsRoot = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -latest -property installationPath
+            if (-not $vsRoot) { Write-Error 'Visual Studio not found'; exit 1 }
+            $crt = Get-ChildItem \"$vsRoot\VC\Redist\MSVC\" -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
               Where-Object { $_.FullName -like '*\arm64\*' } |
               Select-Object -First 1 -ExpandProperty FullName
             if (-not $crt) { Write-Error 'ARM64 CRT not found'; exit 1 }
