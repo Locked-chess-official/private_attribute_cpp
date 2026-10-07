@@ -26,6 +26,20 @@ jobs:
         with:
           platforms: all
 
+      - name: Add arm path on windows
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          $crt = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ($crt) {
+            Write-Host "Adding ARM64 CRT to PATH: $crt"
+            Add-Content -Path $env:GITHUB_PATH -Value $crt
+          }
+          else {
+            Write-Host "ARM64 CRT not found; leaving PATH unchanged."
+          }
+
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
         with:
@@ -41,15 +55,6 @@ jobs:
           CIBW_PRERELEASE_PYTHONS: "1"
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
-            pip install delvewheel &&
-            $crt = (Get-ChildItem
-              -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT'
-              -Directory
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName);
-            if (-not $crt) { $crt = $env:RUNNER_TEMP };
-            delvewheel repair -w {dest_dir} {wheel} --add-path $crt
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -73,6 +78,20 @@ jobs:
         with:
           platforms: all
 
+      - name: Add arm path on windows
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          $crt = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ($crt) {
+            Write-Host "Adding ARM64 CRT to PATH: $crt"
+            Add-Content -Path $env:GITHUB_PATH -Value $crt
+          }
+          else {
+            Write-Host "ARM64 CRT not found; leaving PATH unchanged."
+          }
+
 
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
@@ -89,15 +108,6 @@ jobs:
           CIBW_ENABLE: "cpython-freethreading"
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
-            pip install delvewheel &&
-            $crt = (Get-ChildItem
-              -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT'
-              -Directory
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName);
-            if (-not $crt) { $crt = $env:RUNNER_TEMP };
-            delvewheel repair -w {dest_dir} {wheel} --add-path $crt
 
       - uses: actions/upload-artifact@v7.0.1
         with:
