@@ -224,7 +224,12 @@ namespace {
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
-        static std::vector<PyObjectStorage> store_module_self;
+        // Single dict-backed strong-ref cache shared by the module itself (keyed by
+        // kModuleSelfKey) and by PrivateAttrBase (keyed by kPrivateAttrBaseKey),
+        // so clean_all_storages can release everything at interpreter shutdown.
+        static std::unordered_map<uintptr_t, PyObjectStorage> store_module_self;
+        static constexpr uintptr_t kModuleSelfKey = 0;
+        static constexpr uintptr_t kPrivateAttrBaseKey = 1;
     };
 };
 
@@ -4004,13 +4009,22 @@ PrivateModule_get_PrivateAttrType(PyObject* /*self*/, void* /*closure*/) noexcep
 static PyObject*
 PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/) noexcept
 {
-    static PyObject* PrivateAttrBase = create_private_attr_base_simple();
-    if (!PrivateAttrBase) {
-        if (!PyErr_Occurred()) {
-            PyErr_SetString(PyExc_RuntimeError, "failed to create PrivateAttrBase");
+    static std::mutex base_mutex;
+    std::lock_guard<std::mutex> lock(base_mutex);
+    auto it = AllData::store_module_self.find(AllData::kPrivateAttrBaseKey);
+    if (it == AllData::store_module_self.end()) {
+        PyObject* base = create_private_attr_base_simple();
+        if (!base) {
+            if (!PyErr_Occurred()) {
+                PyErr_SetString(PyExc_RuntimeError, "failed to create PrivateAttrBase");
+            }
+            return NULL;
         }
-        return NULL;
+        AllData::store_module_self[AllData::kPrivateAttrBaseKey] = base;
+        Py_DECREF(base);
+        it = AllData::store_module_self.find(AllData::kPrivateAttrBaseKey);
     }
+    PyObject* PrivateAttrBase = it->second.get();
     Py_INCREF(PrivateAttrBase);
     return PrivateAttrBase;
 }
@@ -4380,7 +4394,7 @@ PrivateModule_exec(PyObject* m) noexcept
     PyList_AppendString(all, "ensure_metaclass");
 
     Py_DECREF(private_attr_base);
-    AllData::store_module_self.push_back(m);    // store module self
+    AllData::store_module_self[AllData::kModuleSelfKey] = m;    // store module self
 
     return 0;
 }
@@ -4388,9 +4402,10 @@ PrivateModule_exec(PyObject* m) noexcept
 PyMODINIT_FUNC
 PyInit_private_attribute(void) noexcept
 {
-    // check if AllData::store_module_self has first value
-    if (AllData::store_module_self.size() >= 1) {
-        PyObject* m = AllData::store_module_self[0];
+    // check if AllData::store_module_self already holds the module
+    auto it = AllData::store_module_self.find(AllData::kModuleSelfKey);
+    if (it != AllData::store_module_self.end()) {
+        PyObject* m = it->second.get();
         Py_INCREF(m);
         return m;
     }
