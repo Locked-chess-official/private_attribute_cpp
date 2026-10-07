@@ -91,11 +91,22 @@ jobs:
             Write-Host "ARM64 CRT not found; leaving PATH unchanged."
           }
 
-
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
+
+      - name: Install Linux repair tools
+        if: startsWith(matrix.os, 'ubuntu')
+        run: python -m pip install auditwheel
+
+      - name: Install macOS repair tools
+        if: startsWith(matrix.os, 'macos')
+        run: python -m pip install delocate
+
+      - name: Install Windows repair tool
+        if: startsWith(matrix.os, 'windows')
+        run: python -m pip install delvewheel
 
       - name: Install cibuildwheel
         run: python -m pip install "cibuildwheel==3.4.1"
@@ -108,6 +119,14 @@ jobs:
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_TEST_SKIP: "*-win_arm64"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
+            auditwheel repair -w {dest_dir} {wheel}
+
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >
+            delocate-wheel -w {dest_dir} {wheel}
+
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
+            delvewheel repair -w {dest_dir} {wheel}
 
       - uses: actions/upload-artifact@v7.0.1
         with:
