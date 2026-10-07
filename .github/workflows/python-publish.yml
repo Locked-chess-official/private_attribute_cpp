@@ -35,8 +35,7 @@ jobs:
           if ($crt) {
             Write-Host "Adding ARM64 CRT to PATH: $crt"
             Add-Content -Path $env:GITHUB_PATH -Value $crt
-          }
-          else {
+          } else {
             Write-Host "ARM64 CRT not found; leaving PATH unchanged."
           }
 
@@ -87,8 +86,7 @@ jobs:
           if ($crt) {
             Write-Host "Adding ARM64 CRT to PATH: $crt"
             Add-Content -Path $env:GITHUB_PATH -Value $crt
-          }
-          else {
+          } else {
             Write-Host "ARM64 CRT not found; leaving PATH unchanged."
           }
 
