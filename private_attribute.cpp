@@ -194,14 +194,14 @@ namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> type_attr_dict;
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyObjectStorage>> type_allowed_code_map;
-        static std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>> all_type_mutex;
+        static std::unordered_map<uintptr_t, std::unique_ptr<std::shared_mutex>> all_type_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
         namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t,
                 std::unordered_map<std::string, PyObjectStorage>>> all_object_attr, all_type_subclass_attr;
         };
-        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::shared_ptr<std::shared_mutex>>>
+        static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, std::unique_ptr<std::shared_mutex>>>
             all_object_mutex, all_type_subclass_mutex;
         static std::mutex object_creatmutex_mutex, type_createmutex_mutex, type_parenttype_createmutex_mutex;
         static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
@@ -242,11 +242,10 @@ object_create_mutex(uintptr_t final_id, uintptr_t obj_id) noexcept
         ::AllData::all_object_attr[final_id][obj_id] = {};
     }
     if (::AllData::all_object_mutex.find(final_id) == ::AllData::all_object_mutex.end()) {
-        ::AllData::all_object_mutex[final_id] = {};
+        ::AllData::all_object_mutex[final_id].clear();
     }
     if (::AllData::all_object_mutex[final_id].find(obj_id) == ::AllData::all_object_mutex[final_id].end()) {
-        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-        ::AllData::all_object_mutex[final_id][obj_id] = lock;
+        ::AllData::all_object_mutex[final_id][obj_id] = std::make_unique<std::shared_mutex>();
     }
 }
 
@@ -257,8 +256,7 @@ type_create_mutex(uintptr_t typ_id) noexcept {
         ::AllData::type_attr_dict[typ_id] = {};
     }
     if (::AllData::all_type_mutex.find(typ_id) == ::AllData::all_type_mutex.end()) {
-        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-        ::AllData::all_type_mutex[typ_id] = lock;
+        ::AllData::all_type_mutex[typ_id] = std::make_unique<std::shared_mutex>();
     }
 }
 
@@ -273,11 +271,10 @@ type_parenttype_create_mutex(uintptr_t final_id, uintptr_t typ_id) noexcept
         ::AllData::all_type_subclass_attr[final_id][typ_id] = {};
     }
     if (::AllData::all_type_subclass_mutex.find(final_id) == ::AllData::all_type_subclass_mutex.end()) {
-        ::AllData::all_type_subclass_mutex[final_id] = {};
+        ::AllData::all_type_subclass_mutex[final_id].clear();
     }
     if (::AllData::all_type_subclass_mutex[final_id].find(typ_id) == ::AllData::all_type_subclass_mutex[final_id].end()) {
-        std::shared_ptr<std::shared_mutex> lock(new std::shared_mutex());
-        ::AllData::all_type_subclass_mutex[final_id][typ_id] = lock;
+        ::AllData::all_type_subclass_mutex[final_id][typ_id] = std::make_unique<std::shared_mutex>();
     }
 }
 
@@ -2062,13 +2059,13 @@ static void
 PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept
 {
     if (::AllData::all_object_mutex.find(type_id) == ::AllData::all_object_mutex.end()) {
-        ::AllData::all_object_mutex[type_id] = {};
+        ::AllData::all_object_mutex[type_id].clear();
     }
     if (::AllData::all_object_attr.find(type_id) == ::AllData::all_object_attr.end()) {
         ::AllData::all_object_attr[type_id] = {};
     }
     if (::AllData::all_object_mutex[type_id].find(obj_id) == ::AllData::all_object_mutex[type_id].end()) {
-        ::AllData::all_object_mutex[type_id][obj_id] = std::shared_ptr<std::shared_mutex>(new std::shared_mutex());
+        ::AllData::all_object_mutex[type_id][obj_id] = std::make_unique<std::shared_mutex>();
     }
     if (::AllData::all_object_attr[type_id].find(obj_id) == ::AllData::all_object_attr[type_id].end()) {
         ::AllData::all_object_attr[type_id][obj_id] = {};
@@ -2961,21 +2958,21 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     ::AllData::all_type_parent_id[type_id] = mro_vector;
 
     ::AllData::type_allowed_code_map[type_id] = {};
-    ::AllData::all_object_mutex[type_id] = {};
-    ::AllData::all_type_mutex[type_id] = std::make_shared<std::shared_mutex>();
+    ::AllData::all_object_mutex[type_id].clear();
+    ::AllData::all_type_mutex[type_id] = std::make_unique<std::shared_mutex>();
     ::AllData::all_object_attr[type_id] = {};
     ::AllData::all_type_subclass_attr[type_id] = {};
-    ::AllData::all_type_subclass_mutex[type_id] = {};
+    ::AllData::all_type_subclass_mutex[type_id].clear();
 
     for (uintptr_t i: mro_vector) {
         if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
             ::AllData::all_type_subclass_attr[i] = {};
         }
         if (::AllData::all_type_subclass_mutex.find(i) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[i] = {};
+            ::AllData::all_type_subclass_mutex[i].clear();
         }
         ::AllData::all_type_subclass_attr[i][type_id] = {};
-        ::AllData::all_type_subclass_mutex[i][type_id] = std::make_shared<std::shared_mutex>();
+        ::AllData::all_type_subclass_mutex[i][type_id] = std::make_unique<std::shared_mutex>();
     }
 
     for (auto& [key, value]: data.need_remove_itself) {
@@ -2997,13 +2994,13 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
             ::AllData::all_type_subclass_attr[i] = {};
         }
         if (::AllData::all_type_subclass_mutex.find(i) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[i] = {};
+            ::AllData::all_type_subclass_mutex[i].clear();
         }
         if (::AllData::all_type_subclass_attr[i].find(type_id) == ::AllData::all_type_subclass_attr[i].end()) {
             ::AllData::all_type_subclass_attr[i][type_id] = {};
         }
         if (::AllData::all_type_subclass_mutex[i].find(type_id) == ::AllData::all_type_subclass_mutex[i].end()) {
-            ::AllData::all_type_subclass_mutex[i][type_id] = std::make_shared<std::shared_mutex>();
+            ::AllData::all_type_subclass_mutex[i][type_id] = std::make_unique<std::shared_mutex>();
         }
         for (auto& [key, value]: map) {
             std::string final_key;
