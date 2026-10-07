@@ -4259,13 +4259,22 @@ class MyClass(PrivateAttrBase):
 ```
 )";
 
+static int PrivateModule_exec(PyObject* m) noexcept;
+static PyObject* PrivateModule_create(PyObject* spec, PyModuleDef* def) noexcept;
+
+static PyModuleDef_Slot PrivateModule_slots[] = {
+    {Py_mod_create, (void*)PrivateModule_create},
+    {Py_mod_exec, (void*)PrivateModule_exec},
+    {0, NULL}
+};
+
 static PyModuleDef def = {
     PyModuleDef_HEAD_INIT,
     "private_attribute",
     module_doc,
     0,
     NULL,
-    NULL,
+    PrivateModule_slots,
     NULL,
     NULL,
     NULL
@@ -4310,47 +4319,47 @@ atexit_register_clean_func(void) noexcept
     return 0;
 }
 
-PyMODINIT_FUNC
-PyInit_private_attribute(void) noexcept
+static PyObject*
+PrivateModule_create(PyObject* spec, PyModuleDef* /*def*/) noexcept
 {
-    // check if AllData::store_module_self has first value
-    if (AllData::store_module_self.size() >= 1) {
-        PyObject* m = AllData::store_module_self[0];
-        Py_INCREF(m);
-        return m;
-    }
-    if (init_all_slots() <0 ||
-        atexit_register_clean_func() < 0 ||
-        PyType_Ready(&PrivateWrapType) < 0 ||
-        PyType_Ready(&PrivateWrapProxyType) < 0 ||
-        PyType_Ready(&PrivateAttrType) < 0 ||
-        PyType_Ready(&PrivateModuleType) < 0 ||
-        PyType_Ready(&PrivateTempType) < 0) {
+    PyObject* name = PyObject_GetAttrString(spec, "name");
+    if (!name) {
         return NULL;
     }
+    // Instantiate the module directly as an instance of PrivateModuleType
+    // (a subclass of `module`) so that the object returned from
+    // PyInit_private_attribute is genuinely a
+    // `private_attribute.private_attribute_module` instance from the start,
+    // rather than a plain module re-typed with Py_SET_TYPE afterwards.
+    PyObject* m = PyObject_CallFunction((PyObject*)&PrivateModuleType, "O", name);
+    Py_DECREF(name);
+    return m;
+}
+
+static int
+PrivateModule_exec(PyObject* m) noexcept
+{
+#ifdef Py_GIL_DISABLED
+    PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
+#endif
     // Eagerly create PrivateAttrBase so that CPython's subtype_traverse /
     // subtype_clear pointers are captured at import time (see
     // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
     // waiting for the first lazy attribute access to the module.
     PyObject* private_attr_base = PrivateModule_get_PrivateAttrBase(NULL, NULL);
     if (!private_attr_base) {
-        return NULL;
+        return -1;
     }
     PyObject* all = PyList_New(0);
     if (!all) {
         Py_DECREF(private_attr_base);
-        return NULL;
+        return -1;
     }
-    PyObject* m = PyModule_Create(&def);
-    if (!m) {
+    if (PyModule_AddObject(m, "__all__", all) < 0) {
         Py_DECREF(all);
         Py_DECREF(private_attr_base);
-        return NULL;
+        return -1;
     }
-#ifdef Py_GIL_DISABLED
-    PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
-#endif
-    PyModule_AddObject(m, "__all__", all);
     /* all contains:
      * PrivateWrapProxy
      * PrivateAttrType
@@ -4369,10 +4378,30 @@ PyInit_private_attribute(void) noexcept
     PyList_AppendString(all, "register_metaclass");
     PyList_AppendString(all, "ensure_type");
     PyList_AppendString(all, "ensure_metaclass");
-    Py_SET_TYPE(m, &PrivateModuleType);
 
     Py_DECREF(private_attr_base);
     AllData::store_module_self.push_back(m);    // store module self
 
-    return m;
+    return 0;
+}
+
+PyMODINIT_FUNC
+PyInit_private_attribute(void) noexcept
+{
+    // check if AllData::store_module_self has first value
+    if (AllData::store_module_self.size() >= 1) {
+        PyObject* m = AllData::store_module_self[0];
+        Py_INCREF(m);
+        return m;
+    }
+    if (init_all_slots() <0 ||
+        atexit_register_clean_func() < 0 ||
+        PyType_Ready(&PrivateWrapType) < 0 ||
+        PyType_Ready(&PrivateWrapProxyType) < 0 ||
+        PyType_Ready(&PrivateAttrType) < 0 ||
+        PyType_Ready(&PrivateModuleType) < 0 ||
+        PyType_Ready(&PrivateTempType) < 0) {
+        return NULL;
+    }
+    return PyModuleDef_Init(&def);
 }
