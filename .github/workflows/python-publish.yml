@@ -26,16 +26,6 @@ jobs:
         with:
           platforms: all
 
-      - name: Locate ARM64 MSVC Runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $crt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC" -Recurse -Directory -Filter "Microsoft.VC143.CRT" |
-            Where-Object { $_.FullName -like "*\arm64\*" } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $crt) { throw "ARM64 MSVC CRT not found" }
-          echo "ARM64_CRT_PATH=$crt" >> $env:GITHUB_ENV
-
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
         with:
@@ -52,8 +42,13 @@ jobs:
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
-            pip install delvewheel &&
-            delvewheel repair -w {dest_dir} {wheel} --add-path "${{ env.ARM64_CRT_PATH }}"
+            pwsh -Command "
+              $crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC' -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
+                Where-Object { $_.FullName -like '*\arm64\*' } |
+                Select-Object -First 1 -ExpandProperty FullName;
+              pip install delvewheel;
+              delvewheel repair -w {dest_dir} {wheel} --add-path $crt
+              "
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -77,15 +72,6 @@ jobs:
         with:
           platforms: all
 
-      - name: Locate ARM64 MSVC Runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $crt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC" -Recurse -Directory -Filter "Microsoft.VC143.CRT" |
-            Where-Object { $_.FullName -like "*\arm64\*" } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $crt) { throw "ARM64 MSVC CRT not found" }
-          echo "ARM64_CRT_PATH=$crt" >> $env:GITHUB_ENV
 
       - name: Setup Python (for cibuildwheel only)
         uses: actions/setup-python@v7.0.0
@@ -103,8 +89,13 @@ jobs:
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
-            pip install delvewheel &&
-            delvewheel repair -w {dest_dir} {wheel} --add-path "${{ env.ARM64_CRT_PATH }}"
+            pwsh -Command "
+              $crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC' -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
+                Where-Object { $_.FullName -like '*\arm64\*' } |
+                Select-Object -First 1 -ExpandProperty FullName;
+              pip install delvewheel;
+              delvewheel repair -w {dest_dir} {wheel} --add-path $crt
+              "
 
       - uses: actions/upload-artifact@v7.0.1
         with:
