@@ -42,6 +42,7 @@ jobs:
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
+            pip install delvewheel &&
             delvewheel repair -w {dest_dir} {wheel} --add-path "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Redist\\MSVC\\*\\arm64\\Microsoft.VC143.CRT"
 
       - uses: actions/upload-artifact@v7.0.1
@@ -82,6 +83,7 @@ jobs:
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
+            pip install delvewheel &&
             delvewheel repair -w {dest_dir} {wheel} --add-path "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Redist\\MSVC\\*\\arm64\\Microsoft.VC143.CRT"
 
       - uses: actions/upload-artifact@v7.0.1
