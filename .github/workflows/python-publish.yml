@@ -41,14 +41,15 @@ jobs:
           CIBW_PRERELEASE_PYTHONS: "1"
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: |
-            pwsh -NoProfile -Command "& {
-            $crt = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-            if (-not $crt) { $crt = $env:RUNNER_TEMP }
-            pip install delvewheel
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
+            pip install delvewheel &&
+            $crt = (Get-ChildItem
+              -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT'
+              -Directory
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName);
+            if (-not $crt) { $crt = $env:RUNNER_TEMP };
             delvewheel repair -w {dest_dir} {wheel} --add-path $crt
-            }"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -88,14 +89,15 @@ jobs:
           CIBW_ENABLE: "cpython-freethreading"
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: |
-            pwsh -NoProfile -Command "& {
-            $crt = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-            if (-not $crt) { $crt = $env:RUNNER_TEMP }
-            pip install delvewheel
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
+            pip install delvewheel &&
+            $crt = (Get-ChildItem
+              -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT'
+              -Directory
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName);
+            if (-not $crt) { $crt = $env:RUNNER_TEMP };
             delvewheel repair -w {dest_dir} {wheel} --add-path $crt
-            }"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
