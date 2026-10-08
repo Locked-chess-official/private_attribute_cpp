@@ -70,12 +70,18 @@ build_cpython_from_source() {
     local dirver="${tarball#Python-}"; dirver="${dirver%.tgz}"
     local url="https://www.python.org/ftp/python/${dirver}/${tarball}"
     banner "downloading ${url}"
-    curl -fsSL "${url}" -o "${SCRATCH}/${tarball}"
+    if ! curl -fsSL "${url}" -o "${SCRATCH}/${tarball}"; then
+      echo "download FAILED: ${url}" >&2
+      return 1
+    fi
     tar -xzf "${SCRATCH}/${tarball}" -C "${srcdir}" --strip-components=1
   else
     banner "cloning CPython ${ver} (no stable tarball pinned)"
     (pkg install -yq git >/dev/null 2>&1 || apt install -yq git >/dev/null 2>&1) || true
-    git clone --depth 1 --branch "${ver}" https://github.com/python/cpython.git "${srcdir}"
+    if ! git clone --depth 1 --branch "${ver}" https://github.com/python/cpython.git "${srcdir}"; then
+      echo "git clone FAILED for CPython ${ver}" >&2
+      return 1
+    fi
   fi
 
   local conf_args=(
@@ -86,12 +92,17 @@ build_cpython_from_source() {
   [[ "$ft" == "1" ]] && conf_args+=(--disable-gil)
 
   banner "configuring+building CPython ${ver}${ft_suffix} (this may take several minutes)"
-  (
+  if (
     cd "${srcdir}"
-    ./configure "${conf_args[@]}" >"${SCRATCH}/pyconf.log" 2>&1
-    make -j"$(nproc)" >"${SCRATCH}/pymake.log" 2>&1
-    make install >"${SCRATCH}/pyinstall.log" 2>&1
-  )
+    ./configure "${conf_args[@]}" >"${SCRATCH}/pyconf.log" 2>&1 \
+      && make -j"$(nproc)" >"${SCRATCH}/pymake.log" 2>&1 \
+      && make install >"${SCRATCH}/pyinstall.log" 2>&1
+  ); then
+    :
+  else
+    echo "CPython ${ver}${ft_suffix} build FAILED (see ${SCRATCH}/pyconf.log, ${SCRATCH}/pymake.log, ${SCRATCH}/pyinstall.log)" >&2
+    return 1
+  fi
 
   echo "${install_dir}"
 }
@@ -132,7 +143,8 @@ if [[ "${TARGET}" == "termux" ]]; then
     banner "using prebuilt interpreter: ${PY_BIN}"
   else
     banner "prebuilt '${name}' not available (or free-threaded) -> building from source"
-    PY_INSTALL_DIR="$(build_cpython_from_source "${PYVER_SHORT}" "${FREETHREADED}")"
+    PY_INSTALL_DIR="$(build_cpython_from_source "${PYVER_SHORT}" "${FREETHREADED}")" \
+      || { echo "building CPython ${PYVER} FAILED (see ${SCRATCH}/py*.log)" >&2; exit 1; }
     PY_BIN="${PY_INSTALL_DIR}/bin/$(bin_name)"
   fi
 
@@ -142,7 +154,8 @@ if [[ "${TARGET}" == "termux" ]]; then
 # ---------------------------------------------------------------------------
 elif [[ "${TARGET}" == "pydroid3" ]]; then
   banner "Pydroid3 target: building CPython from source (Chaquopy-compatible ABI)"
-  PY_INSTALL_DIR="$(build_cpython_from_source "${PYVER_SHORT}" "${FREETHREADED}")"
+  PY_INSTALL_DIR="$(build_cpython_from_source "${PYVER_SHORT}" "${FREETHREADED}")" \
+    || { echo "building CPython ${PYVER} FAILED (see ${SCRATCH}/py*.log)" >&2; exit 1; }
   PY_BIN="${PY_INSTALL_DIR}/bin/$(bin_name)"
 else
   echo "unknown TARGET: ${TARGET}" >&2

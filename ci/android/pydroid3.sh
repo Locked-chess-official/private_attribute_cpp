@@ -17,9 +17,24 @@ set -euo pipefail
 banner() { printf '\033[1;35m[pydroid3]\033[0m %s\n' "$*"; }
 
 banner "installing build dependencies"
-(pkg update >/dev/null 2>&1 || apt update >/dev/null 2>&1) || true
-(pkg install -yq clang make binutils curl wget zip tar git patch python python-pip >/dev/null 2>&1 \
-  || apt install -yq clang make binutils curl wget zip tar git patch python python-pip >/dev/null 2>&1) || true
+# Strict install: if the package manager fails, we MUST know - otherwise the
+# CPython source build below fails silently (curl/tar/configure need these
+# tools) and the log shows nothing but "failed to provision".
+if command -v pkg >/dev/null 2>&1; then
+  pkg update || { echo "pkg update FAILED" >&2; exit 1; }
+  pkg install -yq clang make binutils curl wget zip tar git patch python python-pip \
+    || { echo "pkg install FAILED" >&2; exit 1; }
+else
+  apt update || { echo "apt update FAILED" >&2; exit 1; }
+  apt install -yq clang make binutils curl wget zip tar git patch python python-pip \
+    || { echo "apt install FAILED" >&2; exit 1; }
+fi
+
+# Self-check: the tools the build depends on must actually be on PATH.
+for tool in clang make curl tar zip git patch; do
+  command -v "${tool}" >/dev/null 2>&1 \
+    || { echo "MISSING build tool: ${tool}" >&2; exit 1; }
+done
 
 python -m pip --version >/dev/null 2>&1 || python -m ensurepip >/dev/null 2>&1 || true
 
