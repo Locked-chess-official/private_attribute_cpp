@@ -1,0 +1,185 @@
+name: Build Android wheels (Termux + Pydroid3)
+
+# ---------------------------------------------------------------------------
+# Builds the `private_attribute` C extension for Android-native CPython
+# runtimes. Two targets share the same ABI (Android bionic libc, aarch64):
+#
+#   * termux   - https://github.com/termux/termux-docker
+#                (.cpython-3XX-aarch64-linux-android.so)
+#   * pydroid3 - Chaquopy-based interpreter (flat .cpython-3XX.so)
+#
+# Release-tag routing (tag acts as a switch):
+#   * vX.Y.Z            -> python-publish.yml (PyPI), NOT this workflow
+#   * vX.Y.Z-termux     -> build ONLY the termux wheels
+#   * vX.Y.Z-android    -> build ONLY the pydroid3 wheels
+#   * workflow_dispatch -> manual; pick target(s) freely (default: all)
+#
+# Python versions (matrix):
+#   3.10, 3.11, 3.12, 3.13, 3.13t, 3.14, 3.14t, 3.15, 3.15t
+#   ("t" = free-threaded / no-GIL build; introduced in 3.13)
+#
+# Fallback rule: if a matching prebuilt interpreter is not available in the
+# target environment, CPython source is downloaded and built (see
+# ci/android/build_python.sh). This is always the case for the "t" variants
+# and for Pydroid3 (no prebuilt interpreter is shipped in CI).
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Comma-separated Python versions to build (blank = all). e.g. 3.13,3.13t"
+        required: false
+        default: ""
+      target:
+        description: "Target runtime environment"
+        required: false
+        type: choice
+        default: "all"
+        options:
+          - all
+          - termux
+          - pydroid3
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.version }} @ ${{ matrix.target }}
+    # Skip this workflow entirely for plain version tags (those go to PyPI via
+    # python-publish.yml). Also skip if a tag routes to the OTHER target only.
+    if: |
+      github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && (endsWith(github.ref_name, '-termux') || endsWith(github.ref_name, '-android')))
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [termux, pydroid3]
+        version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.13t"
+          - "3.14"
+          - "3.14t"
+          - "3.15"
+          - "3.15t"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve target routing (tag or manual input)
+        id: filter
+        shell: bash
+        run: |
+          this_target="${{ matrix.target }}"
+          this_version="${{ matrix.version }}"
+
+          # Default: build everything (manual dispatch without input).
+          want_target="all"
+          want_versions=""
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Tag-based routing.
+            case "${{ github.ref_name }}" in
+              *-termux)  want_target="termux" ;;
+              *-android) want_target="pydroid3" ;;
+              *)         want_target="none" ;;
+            esac
+          else
+            # Manual dispatch.
+            want_target="${{ github.event.inputs.target || 'all' }}"
+            want_versions="${{ github.event.inputs.python-version || '' }}"
+          fi
+
+          # target filter
+          if [ "$want_target" != "all" ] && [ "$want_target" != "$this_target" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping $this_target/$this_version (target=$want_target)"
+            exit 0
+          fi
+
+          # version filter
+          if [ -n "$want_versions" ]; then
+            if ! printf '%s' "$want_versions" | tr ',' '\n' | grep -qx "$this_version"; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Skipping $this_target/$this_version (not in selection)"
+              exit 0
+            fi
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (arm64 userspace emulation)
+        if: steps.filter.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build Android wheel
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          PYVER: ${{ matrix.version }}
+          TARGET: ${{ matrix.target }}
+        run: bash ci/android/run.sh
+
+      - name: Upload wheel artifact
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: android-wheels-${{ matrix.target }}-${{ matrix.version }}
+          path: dist-android/
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # On a published -termux / -android release, collect the built wheels and
+  # attach them to that release. Plain vX.Y.Z releases are handled by
+  # python-publish.yml (PyPI).
+  # -------------------------------------------------------------------------
+  upload-to-release:
+    name: Attach Android wheels to release
+    if: github.event_name == 'release' && github.event.action == 'published' && (endsWith(github.ref_name, '-termux') || endsWith(github.ref_name, '-android'))
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all Android wheels
+        uses: actions/download-artifact@v8
+        with:
+          pattern: android-wheels-*
+          path: android-wheels/
+          # Keep each artifact in its own subdir (name carries the target),
+          # because termux/pydroid3 share the linux_aarch64 platform tag and
+          # would otherwise collide on the same wheel filename.
+          merge-multiple: false
+
+      - name: Flatten wheel directory (disambiguate by target)
+        shell: bash
+        run: |
+          mkdir -p android-dist
+          for f in $(find android-wheels -type f -name '*.whl'); do
+            case "$f" in
+              *termux*)   t=termux ;;
+              *pydroid3*) t=pydroid3 ;;
+              *)          t=unknown ;;
+            esac
+            b="$(basename "$f")"
+            cp -n "$f" "android-dist/${b%.whl}-${t}.whl"
+          done
+          ls -lah android-dist/
+
+      - name: Attach wheels to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android-dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

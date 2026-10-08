@@ -1,6 +1,7 @@
 .vscode/*
 build/*
 dist/*
+dist-android/*
 __pycache__/*
 *.egg-info/*
 *.pyd
