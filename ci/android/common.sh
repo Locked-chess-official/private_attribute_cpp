@@ -70,7 +70,10 @@ info()  { printf '\033[1;34m[android:%s]\033[0m %s\n' "${PYVER}" "$*"; }
 warn()  { printf '\033[1;33m[android:%s]\033[0m %s\n' "${PYVER}" "$*" >&2; }
 fail()  { printf '\033[1;31m[android:%s]\033[0m %s\n' "${PYVER}" "$*" >&2; exit 1; }
 
-sha256_b64() { python3 -c 'import hashlib,base64,sys;print("sha256="+base64.urlsafe_b64encode(hashlib.sha256(open(sys.argv[1],"rb").read()).digest()).rstrip(b"=").decode())' "$1"; }
+# Note: deliberately not using bare `python3` here (the container's system
+# python may be a minimal build lacking the needed modules); use the
+# just-provisioned interpreter via PY_BIN.
+sha256_b64() { "${PY_BIN:-python3}" -c 'import hashlib,base64,sys;print("sha256="+base64.urlsafe_b64encode(hashlib.sha256(open(sys.argv[1],"rb").read()).digest()).rstrip(b"=").decode())' "$1"; }
 
 # ---------------------------------------------------------------------------
 # Probe the interpreter for its include dirs (header location only).
@@ -189,7 +192,7 @@ build_and_package() {
       zip -q -r "${wheel_path}" "private_attribute_cpp-${VERSION}.dist-info" )
   else
     rm -f "${wheel_path}"
-    python3 - "${wheel_path}" "${pkg_dir}" "${dist_info}" <<'PY'
+    "${PY_BIN:-python3}" - "${wheel_path}" "${pkg_dir}" "${dist_info}" <<'PY'
 import zipfile, os, sys
 wheel, pkg_dir, dist_info = sys.argv[1], sys.argv[2], sys.argv[3]
 with zipfile.ZipFile(wheel, 'w', zipfile.ZIP_DEFLATED) as z:

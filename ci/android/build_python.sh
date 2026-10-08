@@ -7,7 +7,7 @@
 #                TARGET           termux | pydroid3
 #                PYVER_FULL_3xx   pinned stable tarball versions (optional)
 #
-# Outputs (written to /tmp/pyenv.txt, sourced by callers):
+# Outputs (written to $SCRATCH/pyenv.txt, sourced by callers):
 #   PY_BIN   -> path to the python binary to use
 #   PY_TAG   -> pip python tag, e.g. cp313 or cp313t
 #   PY_ABI   -> abi tag ("none")
@@ -29,6 +29,15 @@ MINOR="${PYVER_SHORT#3.}"
 banner() { printf '\033[1;32m[provision]\033[0m %s\n' "$*"; }
 
 # ---------------------------------------------------------------------------
+# Scratch directory. /tmp inside termux-docker is root-owned and the
+# container runs as uid 1000 ('system'), so hard-coded /tmp paths fail with
+# EACCES. Use $TMPDIR instead (= $PREFIX/tmp, owned by the container user);
+# falling back to $HOME keeps this working outside the container too.
+# ---------------------------------------------------------------------------
+SCRATCH="${TMPDIR:-${HOME}/.ci-tmp}"
+mkdir -p "${SCRATCH}"
+
+# ---------------------------------------------------------------------------
 # Build CPython from source inside termux (bionic). Returns the install dir.
 # ---------------------------------------------------------------------------
 build_cpython_from_source() {
@@ -44,7 +53,7 @@ build_cpython_from_source() {
     return 0
   fi
 
-  local srcdir="/tmp/cpython-src-${ver}${ft_suffix}"
+  local srcdir="${SCRATCH}/cpython-src-${ver}${ft_suffix}"
   rm -rf "${srcdir}"
   mkdir -p "${srcdir}"
 
@@ -61,8 +70,8 @@ build_cpython_from_source() {
     local dirver="${tarball#Python-}"; dirver="${dirver%.tgz}"
     local url="https://www.python.org/ftp/python/${dirver}/${tarball}"
     banner "downloading ${url}"
-    curl -fsSL "${url}" -o "/tmp/${tarball}"
-    tar -xzf "/tmp/${tarball}" -C "${srcdir}" --strip-components=1
+    curl -fsSL "${url}" -o "${SCRATCH}/${tarball}"
+    tar -xzf "${SCRATCH}/${tarball}" -C "${srcdir}" --strip-components=1
   else
     banner "cloning CPython ${ver} (no stable tarball pinned)"
     (pkg install -yq git >/dev/null 2>&1 || apt install -yq git >/dev/null 2>&1) || true
@@ -79,9 +88,9 @@ build_cpython_from_source() {
   banner "configuring+building CPython ${ver}${ft_suffix} (this may take several minutes)"
   (
     cd "${srcdir}"
-    ./configure "${conf_args[@]}" >/tmp/pyconf.log 2>&1
-    make -j"$(nproc)" >/tmp/pymake.log 2>&1
-    make install >/tmp/pyinstall.log 2>&1
+    ./configure "${conf_args[@]}" >"${SCRATCH}/pyconf.log" 2>&1
+    make -j"$(nproc)" >"${SCRATCH}/pymake.log" 2>&1
+    make install >"${SCRATCH}/pyinstall.log" 2>&1
   )
 
   echo "${install_dir}"
@@ -152,7 +161,7 @@ ABITAG=""
   echo "PY_TAG=cp3${MINOR}${ABITAG}"
   echo "PY_ABI=none"
   echo "PY_PLAT=linux_aarch64"
-} > /tmp/pyenv.txt
+} > "${SCRATCH}/pyenv.txt"
 
 banner "provisioned: ${PY_BIN}"
 "${PY_BIN}" -c 'import sys, sysconfig; print("  ", sys.version.split()[0], "| platform =", sysconfig.get_platform(), "| SOABI =", sysconfig.get_config_var("SOABI"))' >&2

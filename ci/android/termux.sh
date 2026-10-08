@@ -22,7 +22,7 @@ banner "provisioning CPython ${PYVER} (termux)"
 bash /tmp/ci/build_python.sh
 
 # shellcheck disable=SC1091
-source /tmp/pyenv.txt
+source "${TMPDIR:-/tmp}/pyenv.txt"
 source /tmp/ci/common.sh
 
 banner "building extension + wheel with ${PY_BIN}"

@@ -27,7 +27,7 @@ banner "provisioning CPython ${PYVER} (pydroid3)"
 bash /tmp/ci/build_python.sh
 
 # shellcheck disable=SC1091
-source /tmp/pyenv.txt
+source "${TMPDIR:-/tmp}/pyenv.txt"
 source /tmp/ci/common.sh
 
 # NOTE: TARGET=pydroid3 -> common.sh uses the flat `.cpython-3XX.so` suffix.
