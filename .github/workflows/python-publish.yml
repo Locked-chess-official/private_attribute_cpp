@@ -195,3 +195,37 @@ jobs:
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Upload distributions as artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: all-distributions
+          path: dist/*
+
+
+  upload-to-release:
+    name: Upload distributions to GitHub Release
+    needs:
+      - publish-to-pypi
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: all-distributions
+          path: dist/
+
+      - name: List distributions
+        run: ls -lah dist/
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
