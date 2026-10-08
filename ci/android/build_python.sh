@@ -84,23 +84,115 @@ build_cpython_from_source() {
     fi
   fi
 
+  # Configure args mirror termux-packages/packages/python/build.sh - CPython
+  # on bionic (Android) needs explicit ac_cv_* cache vars for functions that
+  # exist in glibc but NOT in bionic, otherwise configure says "yes" and make
+  # dies (e.g. sem_clockwait -> Python/parking_lot.c, issue python/cpython
+  # #143640). This is the authoritative set used by the official Termux build.
   local conf_args=(
     --prefix="${install_dir}"
     --disable-shared
     --without-ensurepip
+    --with-system-ffi
+    --with-system-expat
+    --enable-loadable-sqlite-extensions
+    # bionic is missing several glibc functions; force 'no' so configure
+    # doesn't detect them and make doesn't fail on implicit declarations.
+    ac_cv_file__dev_ptmx=yes
+    ac_cv_file__dev_ptc=no
+    ac_cv_func_wcsftime=no
+    ac_cv_func_ftime=no
+    ac_cv_func_faccessat=no
+    ac_cv_func_link=no
+    ac_cv_func_linkat=no
+    ac_cv_func_fexecve=no
+    ac_cv_func_getlogin_r=no
+    ac_cv_func_getloadavg=no
+    ac_cv_func_sem_clockwait=no
+    ac_cv_func_preadv2=no
+    ac_cv_func_pwritev2=no
+    ac_cv_func_close_range=no
+    ac_cv_func_copy_file_range=no
+    ac_cv_buggy_getaddrinfo=no
+    ac_cv_little_endian_double=yes
+    ac_cv_working_tzset=yes
+    ac_cv_header_sys_xattr_h=no
+    ac_cv_func_getgrent=yes
+    # POSIX semaphores / shared memory: enable via cache vars (bionic needs
+    # libandroid-posix-semaphore; configure's link check may fail otherwise).
+    ac_cv_posix_semaphores_enabled=yes
+    ac_cv_func_sem_open=yes
+    ac_cv_func_sem_timedwait=yes
+    ac_cv_func_sem_getvalue=yes
+    ac_cv_func_sem_unlink=yes
+    ac_cv_func_shm_open=yes
+    ac_cv_func_shm_unlink=yes
   )
   [[ "$ft" == "1" ]] && conf_args+=(--disable-gil)
 
+  # In termux-docker we build natively for aarch64 (QEMU emulates the CPU but
+  # uname -m is aarch64), so --build is the android tuple, NOT the x86_64 host.
+  # --with-build-python points configure at a host python for regen/freeze so
+  # it never aborts with "Cross compiling requires --with-build-python".
+  local machine
+  machine="$(uname -m)"   # aarch64 inside termux-docker
+  banner "building for machine=${machine} (uname), CC=$(command -v clang || echo missing)"
+  conf_args+=(--build="${machine}-linux-android")
+  local build_py
+  build_py="$(command -v "python${ver}" || command -v python || true)"
+  [[ -n "${build_py}" ]] && conf_args+=(--with-build-python="${build_py}")
+
+  # Critical (python/cpython#143640, termux/termux-packages#2469): termux's
+  # clang defaults to a linux-gnu target, so __ANDROID__ is NOT defined and
+  # configure can't detect the Android API level (it even hard-aborts with
+  # "Fatal: you must define __ANDROID_API__"). bionic functions like
+  # sem_clockwait then get misdetected and make fails. Fix: run clang in
+  # Android mode via a CC wrapper, exactly as mhsmith/IEEE-754 recommend on
+  # the issue: clang --target=aarch64-linux-android24 (API 24 = Termux's
+  # minimum; defines __ANDROID_API__ automatically).
+  local android_api="24"
+  local cc_wrapper="${SCRATCH}/cc-android.sh"
+  local cxx_wrapper="${SCRATCH}/cxx-android.sh"
+  cat > "${cc_wrapper}" <<EOF
+#!${PREFIX:-/data/data/com.termux/files/usr}/bin/sh
+exec clang --target=${machine}-linux-android${android_api} "\$@"
+EOF
+  cat > "${cxx_wrapper}" <<EOF
+#!${PREFIX:-/data/data/com.termux/files/usr}/bin/sh
+exec clang++ --target=${machine}-linux-android${android_api} "\$@"
+EOF
+  chmod +x "${cc_wrapper}" "${cxx_wrapper}"
+  export CC="${cc_wrapper}"
+  export CXX="${cxx_wrapper}"
+  export CFLAGS="${CFLAGS:-} -D__ANDROID_API__=${android_api}"
+  export CXXFLAGS="${CXXFLAGS:-} -D__ANDROID_API__=${android_api}"
+  banner "CC wrapper: ${cc_wrapper} (clang --target=${machine}-linux-android${android_api})"
+  "${cc_wrapper}" -dM -E -x c /dev/null 2>/dev/null | grep -E "__ANDROID__|__ANDROID_API__" \
+    && echo "android mode OK" || echo "WARNING: android mode not confirmed" >&2
+
+  # Link against libandroid-posix-semaphore (provides the POSIX sem_* symbols
+  # that bionic itself does not ship). Same as termux-packages build.sh.
+  export LDFLAGS="${LDFLAGS:-} -landroid-posix-semaphore"
+
   banner "configuring+building CPython ${ver}${ft_suffix} (this may take several minutes)"
+  # -j2 under QEMU: nproc reports host cores but QEMU translates each
+  # instruction; high -j causes thrashing/OOM. 2 is a safe sweet spot.
+  local make_jobs="2"
   if (
     cd "${srcdir}"
     ./configure "${conf_args[@]}" >"${SCRATCH}/pyconf.log" 2>&1 \
-      && make -j"$(nproc)" >"${SCRATCH}/pymake.log" 2>&1 \
+      && make -j"${make_jobs}" >"${SCRATCH}/pymake.log" 2>&1 \
       && make install >"${SCRATCH}/pyinstall.log" 2>&1
   ); then
     :
   else
     echo "CPython ${ver}${ft_suffix} build FAILED (see ${SCRATCH}/pyconf.log, ${SCRATCH}/pymake.log, ${SCRATCH}/pyinstall.log)" >&2
+    echo "--- tail ${SCRATCH}/pyconf.log ---" >&2
+    tail -n 50 "${SCRATCH}/pyconf.log" >&2 || true
+    echo "--- tail ${SCRATCH}/pymake.log ---" >&2
+    tail -n 50 "${SCRATCH}/pymake.log" >&2 || true
+    echo "--- tail ${SCRATCH}/pyinstall.log ---" >&2
+    tail -n 50 "${SCRATCH}/pyinstall.log" >&2 || true
     return 1
   fi
 
