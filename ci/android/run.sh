@@ -44,18 +44,27 @@ chmod 777 "${REPO_ROOT}/dist-android"
 banner "pulling ${IMAGE}"
 docker pull "${IMAGE}"
 
+# The termux-docker entrypoint drops privileges to the 'system' user (uid
+# 1000) via `su` and rebuilds the environment from a small whitelist
+# (ANDROID_DATA, ANDROID_ROOT, HOME, LANG, PATH, PREFIX, TMPDIR, TZ, TERM).
+# Any `-e VAR` passed to `docker run` is therefore SCRUBBED before the inner
+# script starts - this is the "PYVER: unbound variable" failure. The vars
+# must travel on the command line instead: `env VAR=... bash <script>` runs
+# after the scrub and re-exports them for the inner script (and also works
+# unchanged if the image's entrypoint ever stops scrubbing).
 banner "running ${INNER} in ${IMAGE} (aarch64 via QEMU)"
+env_args=(env)
+for v in PYVER TARGET PYVER_FULL_310 PYVER_FULL_311 PYVER_FULL_312 PYVER_FULL_313; do
+  if [[ -v "${v}" && -n "${!v}" ]]; then
+    env_args+=("${v}=${!v}")
+  fi
+done
+
 docker run --rm --privileged \
-  -e PYVER="${PYVER}" \
-  -e TARGET="${TARGET}" \
-  -e PYVER_FULL_310="${PYVER_FULL_310:-}" \
-  -e PYVER_FULL_311="${PYVER_FULL_311:-}" \
-  -e PYVER_FULL_312="${PYVER_FULL_312:-}" \
-  -e PYVER_FULL_313="${PYVER_FULL_313:-}" \
   -v "${REPO_ROOT}:/repo" \
   -v "${CI_DIR}:/tmp/ci" \
   "${IMAGE}" \
-  bash "/tmp/ci/${INNER}"
+  "${env_args[@]}" bash "/tmp/ci/${INNER}"
 
 banner "done: ${REPO_ROOT}/dist-android"
 ls -lah "${REPO_ROOT}/dist-android/"
