@@ -3765,13 +3765,6 @@ metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
     }
     uintptr_t id = (uintptr_t)pointer;
 
-    // Clean up the class-level AllData owned by this registered metaclass
-    // (type_attr_dict / all_type_subclass_attr / object buckets / caches).
-    // This replaces the old tp_finalize hook (register_finalize) which has
-    // been removed: a weakref callback fires on every death path (refcount and
-    // cyclic GC) without making the metaclass "finalizable".
-    PrivateAttrType_finalize((PyObject*)id);
-
     std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
 
     auto it = ::AllData::all_register_type_weak_ref.find(id);
