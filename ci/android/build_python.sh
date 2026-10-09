@@ -101,9 +101,12 @@ build_cpython_from_source() {
   local conf_args=(
     --prefix="${install_dir}"
     --without-ensurepip
-    --with-system-ffi
-    --with-system-expat
-    --enable-loadable-sqlite-extensions
+    # NOTE: deliberately NO --with-system-ffi / --with-system-expat /
+    # --enable-loadable-sqlite-extensions / --disable-static. Those options
+    # only matter for _ctypes/pyexpat/sqlite3 (all irrelevant to our single
+    # C++ extension), and some are not even valid in CPython 3.13+ configure
+    # (e.g. --with-system-ffi and --disable-static only emit "unrecognized
+    # options" warnings). Bundled libffi/expat/sqlite build fine on bionic.
     # bionic is missing several glibc functions; force 'no' so configure
     # doesn't detect them and make doesn't fail on implicit declarations.
     ac_cv_file__dev_ptmx=yes
@@ -140,8 +143,6 @@ build_cpython_from_source() {
 
   # In termux-docker we build natively for aarch64 (QEMU emulates the CPU but
   # uname -m is aarch64), so --build is the android tuple, NOT the x86_64 host.
-  # --with-build-python points configure at a host python for regen/freeze so
-  # it never aborts with "Cross compiling requires --with-build-python".
   local machine
   machine="$(uname -m)"   # aarch64 inside termux-docker
   banner "building for machine=${machine} (uname), TARGET=${TARGET}, CC=$(command -v clang || echo missing)"
@@ -162,7 +163,7 @@ build_cpython_from_source() {
   # arch-ful EXT_SUFFIX split is forced in common.sh, not by these tuples.
   local android_api
   if [[ "${TARGET}" == "pydroid3" ]]; then
-    conf_args+=(--enable-shared --disable-static --enable-ipv6)
+    conf_args+=(--enable-shared --enable-ipv6)
     android_api="21"
   else
     conf_args+=(--disable-shared)
@@ -170,12 +171,12 @@ build_cpython_from_source() {
   fi
   conf_args+=(--build="${machine}-linux-android")
 
-  # Native build: point configure at a build-machine python for the
-  # freeze/regen step if available (same-version preferred, harmless when
-  # absent). NOT required for cross-compilation here since we build natively.
-  local build_py
-  build_py="$(command -v "python${ver}" || command -v python || true)"
-  [[ -n "${build_py}" ]] && conf_args+=(--with-build-python="${build_py}")
+  # DO NOT pass --with-build-python here. It is only needed when CROSS-
+  # compiling (host != build), and configure hard-requires it to be the SAME
+  # minor version as the target -- passing termux's `python` (3.14) while
+  # building 3.13 aborts with "incompatible version ... (expected: 3.13)".
+  # We build NATIVELY (aarch64 under QEMU), so CPython uses the just-built
+  # ./python for its freeze/regen step automatically; no build python needed.
 
   # Critical (python/cpython#143640, termux/termux-packages#2469): clang
   # defaults to a linux-gnu target, so __ANDROID__ is NOT defined and
