@@ -57,26 +57,35 @@ build_cpython_from_source() {
   rm -rf "${srcdir}"
   mkdir -p "${srcdir}"
 
-  # Resolve source: pinned tarball for stable versions, git branch for 3.14+.
+  # Resolve source: pinned tarball for every supported minor (3.10..3.15).
+  # A failed tarball download falls back to a git branch clone below, so a
+  # freshly-released minor (e.g. 3.15.0) still builds even if its tarball is
+  # not yet mirrored on python.org.
   local tarball=""
   case "${ver}" in
-    3.10) tarball="Python-${PYVER_FULL_310:-3.10.16}.tgz" ;;
-    3.11) tarball="Python-${PYVER_FULL_311:-3.11.11}.tgz" ;;
-    3.12) tarball="Python-${PYVER_FULL_312:-3.12.8}.tgz"  ;;
-    3.13) tarball="Python-${PYVER_FULL_313:-3.13.13}.tgz" ;;
+    3.10) tarball="Python-${PYVER_FULL_310:-3.10.22}.tgz" ;;
+    3.11) tarball="Python-${PYVER_FULL_311:-3.11.17}.tgz" ;;
+    3.12) tarball="Python-${PYVER_FULL_312:-3.12.15}.tgz" ;;
+    3.13) tarball="Python-${PYVER_FULL_313:-3.13.16}.tgz" ;;
+    3.14) tarball="Python-${PYVER_FULL_314:-3.14.8}.tgz"  ;;
+    3.15) tarball="Python-${PYVER_FULL_315:-3.15.0}.tgz"  ;;
   esac
 
+  local downloaded=0
   if [[ -n "${tarball}" ]]; then
     local dirver="${tarball#Python-}"; dirver="${dirver%.tgz}"
     local url="https://www.python.org/ftp/python/${dirver}/${tarball}"
     banner "downloading ${url}"
-    if ! curl -fsSL "${url}" -o "${SCRATCH}/${tarball}"; then
-      echo "download FAILED: ${url}" >&2
-      return 1
+    if curl -fsSL "${url}" -o "${SCRATCH}/${tarball}"; then
+      tar -xzf "${SCRATCH}/${tarball}" -C "${srcdir}" --strip-components=1
+      downloaded=1
+    else
+      banner "tarball download FAILED (${url}); falling back to git branch ${ver}"
     fi
-    tar -xzf "${SCRATCH}/${tarball}" -C "${srcdir}" --strip-components=1
-  else
-    banner "cloning CPython ${ver} (no stable tarball pinned)"
+  fi
+
+  if [[ "${downloaded}" != "1" ]]; then
+    banner "cloning CPython ${ver} (git branch)"
     (pkg install -yq git >/dev/null 2>&1 || apt install -yq git >/dev/null 2>&1) || true
     if ! git clone --depth 1 --branch "${ver}" https://github.com/python/cpython.git "${srcdir}"; then
       echo "git clone FAILED for CPython ${ver}" >&2
@@ -91,7 +100,6 @@ build_cpython_from_source() {
   # #143640). This is the authoritative set used by the official Termux build.
   local conf_args=(
     --prefix="${install_dir}"
-    --disable-shared
     --without-ensurepip
     --with-system-ffi
     --with-system-expat
@@ -136,23 +144,49 @@ build_cpython_from_source() {
   # it never aborts with "Cross compiling requires --with-build-python".
   local machine
   machine="$(uname -m)"   # aarch64 inside termux-docker
-  banner "building for machine=${machine} (uname), CC=$(command -v clang || echo missing)"
+  banner "building for machine=${machine} (uname), TARGET=${TARGET}, CC=$(command -v clang || echo missing)"
+
+  # Shared/static + API level differ per target.
+  # Pydroid3's live interpreter (captured from its own sysconfig) is a SHARED
+  # build at API 21:
+  #   --enable-shared --disable-static --enable-ipv6
+  #   Py_ENABLE_SHARED=1   CFLAGS="... -D__ANDROID_API__=21"
+  # Termux builds statically at its own minimum API 24.
+  #
+  # NOTE on --host/--build: Chaquopy's own build used
+  # `--host=aarch64-linux-android --build=i686-linux` because IT ran on an
+  # x86 build machine with the NDK. WE are not on x86 - this container is
+  # QEMU-emulated aarch64 - so we do NOT copy those tuples verbatim; we build
+  # NATIVELY (--host=--build=aarch64-linux-android) and reproduce the RESULT
+  # (shared libpython, Py_ENABLE_SHARED=1, API 21, flat SOABI). The flat vs
+  # arch-ful EXT_SUFFIX split is forced in common.sh, not by these tuples.
+  local android_api
+  if [[ "${TARGET}" == "pydroid3" ]]; then
+    conf_args+=(--enable-shared --disable-static --enable-ipv6)
+    android_api="21"
+  else
+    conf_args+=(--disable-shared)
+    android_api="24"
+  fi
   conf_args+=(--build="${machine}-linux-android")
+
+  # Native build: point configure at a build-machine python for the
+  # freeze/regen step if available (same-version preferred, harmless when
+  # absent). NOT required for cross-compilation here since we build natively.
   local build_py
   build_py="$(command -v "python${ver}" || command -v python || true)"
   [[ -n "${build_py}" ]] && conf_args+=(--with-build-python="${build_py}")
 
-  # Critical (python/cpython#143640, termux/termux-packages#2469): termux's
-  # clang defaults to a linux-gnu target, so __ANDROID__ is NOT defined and
+  # Critical (python/cpython#143640, termux/termux-packages#2469): clang
+  # defaults to a linux-gnu target, so __ANDROID__ is NOT defined and
   # configure can't detect the Android API level (it even hard-aborts with
   # "Fatal: you must define __ANDROID_API__"). bionic functions like
   # sem_clockwait then get misdetected and make fails. Fix: run clang in
   # Android mode via a CC wrapper, exactly as mhsmith/IEEE-754 recommend on
-  # the issue: clang --target=aarch64-linux-android24 (API 24 = Termux's
-  # minimum; defines __ANDROID_API__ automatically).
-  local android_api="24"
-  local cc_wrapper="${SCRATCH}/cc-android.sh"
-  local cxx_wrapper="${SCRATCH}/cxx-android.sh"
+  # the issue: clang --target=aarch64-linux-android<api> (defines
+  # __ANDROID_API__ automatically). api is 24 for termux, 21 for pydroid3.
+  local cc_wrapper="${SCRATCH}/cc-${TARGET}.sh"
+  local cxx_wrapper="${SCRATCH}/cxx-${TARGET}.sh"
   cat > "${cc_wrapper}" <<EOF
 #!${PREFIX:-/data/data/com.termux/files/usr}/bin/sh
 exec clang --target=${machine}-linux-android${android_api} "\$@"
@@ -164,8 +198,12 @@ EOF
   chmod +x "${cc_wrapper}" "${cxx_wrapper}"
   export CC="${cc_wrapper}"
   export CXX="${cxx_wrapper}"
-  export CFLAGS="${CFLAGS:-} -D__ANDROID_API__=${android_api}"
-  export CXXFLAGS="${CXXFLAGS:-} -D__ANDROID_API__=${android_api}"
+  # Pydroid3's real CFLAGS use -Os -s -fno-builtin-copysignf: copysignf is
+  # missing from bionic before API 23, so it must NOT be treated as a builtin.
+  # Applying the same flags to termux is harmless and keeps one code path.
+  local opt_cflags="-Os -s -fno-builtin-copysignf"
+  export CFLAGS="${CFLAGS:-} ${opt_cflags} -D__ANDROID_API__=${android_api}"
+  export CXXFLAGS="${CXXFLAGS:-} ${opt_cflags} -D__ANDROID_API__=${android_api}"
   banner "CC wrapper: ${cc_wrapper} (clang --target=${machine}-linux-android${android_api})"
   "${cc_wrapper}" -dM -E -x c /dev/null 2>/dev/null | grep -E "__ANDROID__|__ANDROID_API__" \
     && echo "android mode OK" || echo "WARNING: android mode not confirmed" >&2

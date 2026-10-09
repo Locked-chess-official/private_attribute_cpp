@@ -54,7 +54,7 @@ docker pull "${IMAGE}"
 # unchanged if the image's entrypoint ever stops scrubbing).
 banner "running ${INNER} in ${IMAGE} (aarch64 via QEMU)"
 env_args=(env)
-for v in PYVER TARGET PYVER_FULL_310 PYVER_FULL_311 PYVER_FULL_312 PYVER_FULL_313; do
+for v in PYVER TARGET PYVER_FULL_310 PYVER_FULL_311 PYVER_FULL_312 PYVER_FULL_313 PYVER_FULL_314 PYVER_FULL_315; do
   if [[ -v "${v}" && -n "${!v}" ]]; then
     env_args+=("${v}=${!v}")
   fi
