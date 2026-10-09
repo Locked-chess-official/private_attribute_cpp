@@ -212,15 +212,44 @@ EOF
   # that bionic itself does not ship). Same as termux-packages build.sh.
   export LDFLAGS="${LDFLAGS:-} -landroid-posix-semaphore"
 
+  # ---------------------------------------------------------------------
+  # termux-docker has NO /bin/sh. Its Dockerfile literally does:
+  #   ENV PATH=${TERMUX__PREFIX}/bin
+  #   SHELL ["sh", "-c"]   # comment: "Docker uses /bin/sh by default,
+  #                         #  but we don't have it."
+  # CPython's autoconf `configure` starts with "#!/bin/sh" and the generated
+  # Makefiles hardcode "SHELL = /bin/sh", so `./configure` dies with
+  # "bad interpreter: /bin/sh: No such file or directory" and `make` cannot
+  # run recipe lines. Fix: point autoconf + make at termux's real shell.
+  # ---------------------------------------------------------------------
+  local real_sh="${PREFIX:-/data/data/com.termux/files/usr}/bin/sh"
+  export CONFIG_SHELL="${real_sh}"
+  export SHELL="${real_sh}"
+
+  # Belt-and-suspenders: rewrite the shipped #!/bin/sh shebangs too, so any
+  # nested re-exec of these helpers works (termux-fix-shebang is the official
+  # helper when present; sed fallback otherwise).
+  if command -v termux-fix-shebang >/dev/null 2>&1; then
+    find "${srcdir}" -type f \( -name configure -o -name config.guess -o -name config.sub -o -name install-sh \) \
+      -exec termux-fix-shebang {} +
+  else
+    find "${srcdir}" -type f \( -name configure -o -name config.guess -o -name config.sub -o -name install-sh \) \
+      -exec sed -i "1s|^#!.*/bin/sh.*|#!${real_sh}|" {} +
+  fi
+
   banner "configuring+building CPython ${ver}${ft_suffix} (this may take several minutes)"
   # -j2 under QEMU: nproc reports host cores but QEMU translates each
   # instruction; high -j causes thrashing/OOM. 2 is a safe sweet spot.
+  #
+  # Logs are `tee`d to stdout so they stream into the CI runner log; a plain
+  # redirect-to-file would hide every failure from the Actions UI (the file
+  # lives in the container's /tmp, which is not mounted back to the host).
   local make_jobs="2"
   if (
     cd "${srcdir}"
-    ./configure "${conf_args[@]}" >"${SCRATCH}/pyconf.log" 2>&1 \
-      && make -j"${make_jobs}" >"${SCRATCH}/pymake.log" 2>&1 \
-      && make install >"${SCRATCH}/pyinstall.log" 2>&1
+    "${real_sh}" ./configure "${conf_args[@]}" 2>&1 | tee "${SCRATCH}/pyconf.log" \
+      && make -j"${make_jobs}" SHELL="${real_sh}" 2>&1 | tee "${SCRATCH}/pymake.log" \
+      && make install SHELL="${real_sh}" 2>&1 | tee "${SCRATCH}/pyinstall.log"
   ); then
     :
   else
