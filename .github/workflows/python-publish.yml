@@ -229,10 +229,12 @@ jobs:
       - name: List distributions
         run: ls -lah dist/
 
+      - name: Remove attestation files
+        run: rm -f dist/*.publish.attestation
+
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          exclude: dist/*.publish.attestation
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
