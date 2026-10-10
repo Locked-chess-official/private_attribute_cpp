@@ -147,27 +147,17 @@ build_cpython_from_source() {
   machine="$(uname -m)"   # aarch64 inside termux-docker
   banner "building for machine=${machine} (uname), TARGET=${TARGET}, CC=$(command -v clang || echo missing)"
 
-  # Shared/static + API level differ per target.
-  # Pydroid3's live interpreter (captured from its own sysconfig) is a SHARED
-  # build at API 21:
-  #   --enable-shared --disable-static --enable-ipv6
-  #   Py_ENABLE_SHARED=1   CFLAGS="... -D__ANDROID_API__=21"
-  # Termux builds statically at its own minimum API 24.
-  #
-  # NOTE on --host/--build: Chaquopy's own build used
-  # `--host=aarch64-linux-android --build=i686-linux` because IT ran on an
-  # x86 build machine with the NDK. WE are not on x86 - this container is
-  # QEMU-emulated aarch64 - so we do NOT copy those tuples verbatim; we build
-  # NATIVELY (--host=--build=aarch64-linux-android) and reproduce the RESULT
-  # (shared libpython, Py_ENABLE_SHARED=1, API 21, flat SOABI). The flat vs
-  # arch-ful EXT_SUFFIX split is forced in common.sh, not by these tuples.
-  local android_api
+  # Shared vs static differs per target: pydroid3's real interpreter is a
+  # SHARED build (Py_ENABLE_SHARED=1), termux's is static. We reproduce only
+  # the RESULT that matters for the extension: shared libpython + flat SOABI
+  # for pydroid3 (the flat-vs-arch EXT_SUFFIX split is forced in common.sh,
+  # not by these flags). We build NATIVELY (aarch64 under QEMU), so there is
+  # no --host/--build cross tuple — Chaquopy's `--host=... --build=i686-linux`
+  # only applied because IT compiled on an x86 host with the NDK.
   if [[ "${TARGET}" == "pydroid3" ]]; then
     conf_args+=(--enable-shared --enable-ipv6)
-    android_api="21"
   else
     conf_args+=(--disable-shared)
-    android_api="24"
   fi
   conf_args+=(--build="${machine}-linux-android")
 
@@ -178,36 +168,18 @@ build_cpython_from_source() {
   # We build NATIVELY (aarch64 under QEMU), so CPython uses the just-built
   # ./python for its freeze/regen step automatically; no build python needed.
 
-  # Critical (python/cpython#143640, termux/termux-packages#2469): clang
-  # defaults to a linux-gnu target, so __ANDROID__ is NOT defined and
-  # configure can't detect the Android API level (it even hard-aborts with
-  # "Fatal: you must define __ANDROID_API__"). bionic functions like
-  # sem_clockwait then get misdetected and make fails. Fix: run clang in
-  # Android mode via a CC wrapper, exactly as mhsmith/IEEE-754 recommend on
-  # the issue: clang --target=aarch64-linux-android<api> (defines
-  # __ANDROID_API__ automatically). api is 24 for termux, 21 for pydroid3.
-  local cc_wrapper="${SCRATCH}/cc-${TARGET}.sh"
-  local cxx_wrapper="${SCRATCH}/cxx-${TARGET}.sh"
-  cat > "${cc_wrapper}" <<EOF
-#!${PREFIX:-/data/data/com.termux/files/usr}/bin/sh
-exec clang --target=${machine}-linux-android${android_api} "\$@"
-EOF
-  cat > "${cxx_wrapper}" <<EOF
-#!${PREFIX:-/data/data/com.termux/files/usr}/bin/sh
-exec clang++ --target=${machine}-linux-android${android_api} "\$@"
-EOF
-  chmod +x "${cc_wrapper}" "${cxx_wrapper}"
-  export CC="${cc_wrapper}"
-  export CXX="${cxx_wrapper}"
-  # Pydroid3's real CFLAGS use -Os -s -fno-builtin-copysignf: copysignf is
-  # missing from bionic before API 23, so it must NOT be treated as a builtin.
-  # Applying the same flags to termux is harmless and keeps one code path.
-  local opt_cflags="-Os -s -fno-builtin-copysignf"
-  export CFLAGS="${CFLAGS:-} ${opt_cflags} -D__ANDROID_API__=${android_api}"
-  export CXXFLAGS="${CXXFLAGS:-} ${opt_cflags} -D__ANDROID_API__=${android_api}"
-  banner "CC wrapper: ${cc_wrapper} (clang --target=${machine}-linux-android${android_api})"
-  "${cc_wrapper}" -dM -E -x c /dev/null 2>/dev/null | grep -E "__ANDROID__|__ANDROID_API__" \
-    && echo "android mode OK" || echo "WARNING: android mode not confirmed" >&2
+  # Use termux's native clang AS-IS: NO --target and NO -D__ANDROID_API__.
+  # termux's clang already defaults to the Android target at termux's own API
+  # level and searches termux's real headers ($PREFIX/include) + libc
+  # ($PREFIX/lib). Forcing --target=aarch64-linux-android21 (or any old API)
+  # gates out <signal.h> decls like sigwaitinfo/sigtimedwait (API 26+) and
+  # <spawn.h> (API 28+), which then fail in Modules/signalmodule.c
+  # ("implicit declaration") and Modules/posixmodule.c ("spawn.h file not
+  # found"). termux-packages' own python/build.sh builds with bare clang +
+  # ac_cv_* cache vars (no --target) — the proven path we follow.
+  export CC="clang"
+  export CXX="clang++"
+  banner "using native termux clang ($(clang --version 2>/dev/null | head -n1 || echo clang))"
 
   # Link against libandroid-posix-semaphore (provides the POSIX sem_* symbols
   # that bionic itself does not ship). Same as termux-packages build.sh.

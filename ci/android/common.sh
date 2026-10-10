@@ -42,23 +42,14 @@ PYABI_TAG=""
 case "${TARGET:-}" in
   termux)
     EXT_SUFFIX=".cpython-3${PYVER_MINOR}${PYABI_TAG}-aarch64-linux-android.so"
-    TARGET_TRIPLE="aarch64-linux-android24"
-    ANDROID_API="24"
     ;;
   pydroid3)
-    # Pydroid3 = Chaquopy NDK cross-build at minSdk 21 (see its live
-    # sysconfig: CFLAGS carry -D__ANDROID_API__=21). Compile the extension
-    # against the same API floor so it links only bionic symbols that exist
-    # on Pydroid3's runtime.
+    # Pydroid3 = Chaquopy NDK build, flat extension suffix (no arch segment).
     EXT_SUFFIX=".cpython-3${PYVER_MINOR}${PYABI_TAG}.so"
-    TARGET_TRIPLE="aarch64-linux-android21"
-    ANDROID_API="21"
     ;;
   *)
     # Default: pydroid3-style (no arch), safe fallback.
     EXT_SUFFIX=".cpython-3${PYVER_MINOR}${PYABI_TAG}.so"
-    TARGET_TRIPLE="aarch64-linux-android21"
-    ANDROID_API="21"
     ;;
 esac
 
@@ -131,10 +122,12 @@ build_and_package() {
   # Match setup.py flags + -fPIC -shared -O2 for a release Android .so.
   # (-fno-exceptions -fno-rtti are used on Linux by setup.py already.)
   local out_so="${OUT_DIR}/private_attribute${ext_suffix}"
-  # --target pins the bionic ABI floor (termux=24, pydroid3=21) so the .so
-  # does not reference libc/libm symbols newer than the target runtime.
+  # Compile with termux's native clang++ (already Android-targeting). No
+  # --target / -D__ANDROID_API__ override: this extension only uses the Python
+  # C API + libc/libc++ basics (no API>21 bionic symbols), so pinning an old
+  # API level buys nothing and risks the same header-gating breakage seen in
+  # the interpreter build.
   clang++ -std=c++17 -fno-exceptions -fno-rtti -g0 -O2 -fPIC -shared \
-    --target="${TARGET_TRIPLE}" -D__ANDROID_API__="${ANDROID_API}" \
     "${inc_flags[@]}" \
     -I"${REPO_ROOT}" \
     "${REPO_ROOT}/private_attribute.cpp" \
