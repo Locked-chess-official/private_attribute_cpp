@@ -1,6 +1,6 @@
 """A module that provides a metaclass for creating classes with private attributes.
-Private attributes are defined in the `__private_attrs__` sequence and are only
-You can use the `PrivateAttrBase` metaclass to create classes with private attributes.
+Private attributes are defined in the `__private_attrs__` sequence and are only visitable in class codes.
+You can use the `PrivateAttrBase` as the base class to create classes with private attributes.
 The attributes which are private are not on the instance's `__dict__` and cannot be accessed outside
 but in the methods defined in class it is reachable.
 Usage example:
@@ -105,6 +105,7 @@ class _PrivateTemp:
     def attrs(self) -> dict[str, Any]: ...
     @property
     def kwds(self) -> dict[str, Any]: ...
+    def postprocess(self, typ: type, /) -> None: ... # add in 2.1.17
 
 def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _PrivateTemp:
     """
@@ -129,7 +130,7 @@ def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _Pri
         def __new__(cls, *args, **kwargs):
             temp = private_attribute.prepare(*args, **kwargs)
             typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)
+            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
             return typ
 
     private_attribute.register_metaclass(PrivateAbcMeta)
@@ -160,7 +161,7 @@ def postprocess(typ: type, temp: _PrivateTemp, /) -> None:
         def __new__(cls, *args, **kwargs):
             temp = private_attribute.prepare(*args, **kwargs)
             typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)
+            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
             return typ
 
     private_attribute.register_metaclass(PrivateAbcMeta)
@@ -190,7 +191,7 @@ def register_metaclass(typ: type, /) -> None:
         def __new__(cls, *args, **kwargs):
             temp = private_attribute.prepare(*args, **kwargs)
             typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)
+            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
             return typ
 
     private_attribute.register_metaclass(PrivateAbcMeta)
