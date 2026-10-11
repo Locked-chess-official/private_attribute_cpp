@@ -3702,7 +3702,7 @@ PrivateTempObject_postprocess(PyObject* self, PyObject* type) noexcept
 
 static PyMethodDef PrivateTempObject_methods[] = {
     {"postprocess", (PyCFunction)PrivateTempObject_postprocess, METH_O, "postprocess the temp object"},
-    {NULL}  
+    {NULL}
 };
 
 static PyTypeObject PrivateTempType = {
