@@ -3188,9 +3188,14 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
     return result;
 }
 
+static bool has_init_slots = false;
+
 static int
 init_all_slots() noexcept
 {
+    if (has_init_slots || PyType_Type.tp_setattro == new_type_tp_setattro) {
+        return 0;
+    }
     original_type_tp_setattro = PyType_Type.tp_setattro;
     PyObject* original_setattr = PyObject_GetAttrString((PyObject*)&PyType_Type, "__setattr__");
     if (!original_setattr) {return -1;}
@@ -3209,6 +3214,7 @@ init_all_slots() noexcept
     if (!all_metaclasses) {return -1;}
     if (!PyList_Check(all_metaclasses)) {
         Py_DECREF(all_metaclasses);
+        has_init_slots = true;
         return 0;
     }
     Py_ssize_t list_len = PyList_GET_SIZE(all_metaclasses);
@@ -3220,6 +3226,7 @@ init_all_slots() noexcept
         }
     }
     Py_DECREF(all_metaclasses);
+    has_init_slots = true;
     return 0;
 }
 
@@ -4301,9 +4308,14 @@ static PyMethodDef clean_storage = {
     "Clean all storages"
 };
 
+static bool resigtered_clean_func = false;
+
 static int
 atexit_register_clean_func(void) noexcept
 {
+    if (resigtered_clean_func) {
+        return 0;
+    }
     PyObject* atexit = PyImport_ImportModule("atexit");
     if (!atexit) {
         return -1;
@@ -4323,6 +4335,7 @@ atexit_register_clean_func(void) noexcept
         return -1;
     }
     Py_DECREF(result);
+    resigtered_clean_func = true;
     return 0;
 }
 
