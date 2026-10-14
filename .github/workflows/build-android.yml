@@ -120,7 +120,7 @@ jobs:
 
       - name: Set up QEMU (arm64 userspace emulation)
         if: steps.filter.outputs.skip != 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
 
