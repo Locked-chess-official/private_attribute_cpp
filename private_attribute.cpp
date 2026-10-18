@@ -1120,41 +1120,67 @@ PrivateWrap_descrset(PyObject* obj, PyObject* name, PyObject* value) noexcept
     }
 }
 
+static int
+PrivateWrap_traverse(PyObject* obj, visitproc visit, void* arg) noexcept
+{
+    PrivateWrapObject* self = (PrivateWrapObject*)obj;
+    if (self->result) {
+        Py_VISIT(self->result);
+    }
+    if (self->func_list) {
+        Py_VISIT(self->func_list);
+    }
+    return 0;
+}
+
+static int
+PrivateWrap_clear(PyObject* obj) noexcept
+{
+    PrivateWrapObject* self = (PrivateWrapObject*)obj;
+    if (self->result) {
+        Py_CLEAR(self->result);
+    }
+    if (self->func_list) {
+        Py_CLEAR(self->func_list);
+    }
+    return 0;
+}
+
 static PyTypeObject PrivateWrapType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "_PrivateWrap",                    // tp_name
-    sizeof(PrivateWrapObject),         // tp_basicsize
-    0,                                 // tp_itemsize
-    (destructor)PrivateWrap_dealloc,   // tp_dealloc
-    0,                                 // tp_print
-    0,                                 // tp_getattr
-    0,                                 // tp_setattr
-    0,                                 // tp_reserved
-    0,                                 // tp_repr
-    0,                                 // tp_as_number
-    0,                                 // tp_as_sequence
-    0,                                 // tp_as_mapping
-    0,                                 // tp_hash
-    (ternaryfunc)PrivateWrap_call,     // tp_call
-    0,                                 // tp_str
-    PrivateWrap_getattro,              // tp_getattro
-    0,                                 // tp_setattro
-    0,                                 // tp_as_buffer
-    Py_TPFLAGS_DEFAULT,                // tp_flags
-    "private_attribute._PrivateWrap",  // tp_doc
-    0,                                 // tp_traverse
-    0,                                 // tp_clear
-    0,                                 // tp_richcompare
-    0,                                 // tp_weaklistoffset
-    0,                                 // tp_iter
-    0,                                 // tp_iternext
-    0,                                 // tp_methods
-    PrivateWrap_members,               // tp_members
-    PrivateWrap_getset,                // tp_getset
-    0,                                 // tp_base
-    0,                                 // tp_dict
-    PrivateWrap_descrget,              // tp_descr_get
-    PrivateWrap_descrset,              // tp_descr_set
+    "_PrivateWrap",                            // tp_name
+    sizeof(PrivateWrapObject),                 // tp_basicsize
+    0,                                         // tp_itemsize
+    (destructor)PrivateWrap_dealloc,           // tp_dealloc
+    0,                                         // tp_print
+    0,                                         // tp_getattr
+    0,                                         // tp_setattr
+    0,                                         // tp_reserved
+    0,                                         // tp_repr
+    0,                                         // tp_as_number
+    0,                                         // tp_as_sequence
+    0,                                         // tp_as_mapping
+    0,                                         // tp_hash
+    (ternaryfunc)PrivateWrap_call,             // tp_call
+    0,                                         // tp_str
+    PrivateWrap_getattro,                      // tp_getattro
+    0,                                         // tp_setattro
+    0,                                         // tp_as_buffer
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,   // tp_flags
+    "private_attribute._PrivateWrap",          // tp_doc
+    PrivateWrap_traverse,                      // tp_traverse
+    PrivateWrap_clear,                         // tp_clear
+    0,                                         // tp_richcompare
+    0,                                         // tp_weaklistoffset
+    0,                                         // tp_iter
+    0,                                         // tp_iternext
+    0,                                         // tp_methods
+    PrivateWrap_members,                       // tp_members
+    PrivateWrap_getset,                        // tp_getset
+    0,                                         // tp_base
+    0,                                         // tp_dict
+    PrivateWrap_descrget,                      // tp_descr_get
+    PrivateWrap_descrset,                      // tp_descr_set
 };
 
 static PrivateWrapObject*
@@ -1171,7 +1197,7 @@ PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list) noexcept
     }
 
     PrivateWrapObject *self =
-        PyObject_New(PrivateWrapObject, &PrivateWrapType);
+        PyObject_GC_New(PrivateWrapObject, &PrivateWrapType);
     self->func_list = list;
     Py_INCREF(list);
 
@@ -1207,7 +1233,7 @@ static PyObject*
 PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /* kwgs */) noexcept
 {
     PyObject *func;
-    if (!PyArg_ParseTuple(args, "O", &func)) return NULL;
+    if (!PyArg_ParseTuple(args, "O:private_attribute.PrivateWrapProxy.__call__", &func)) return NULL;
     if(PyObject_TypeCheck(func, &PrivateWrapType)) {
         return (PyObject*)PrivateWrap_New(
             self->decorator,
@@ -1262,6 +1288,22 @@ class MyClass(PrivateAttrBase):
 ```
 )";
 
+static int
+PrivateWrapProxy_traverse(PrivateWrapProxyObject *self, visitproc visit, void *arg) noexcept
+{
+    Py_VISIT(self->decorator);
+    Py_VISIT(self->func_list);
+    return 0;
+}
+
+static int
+PrivateWrapProxy_clear(PrivateWrapProxyObject *self) noexcept
+{
+    Py_CLEAR(self->decorator);
+    Py_CLEAR(self->func_list);
+    return 0;
+}
+
 static PyTypeObject PrivateWrapProxyType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "private_attribute.PrivateWrapProxy",   // tp_name
@@ -1282,10 +1324,10 @@ static PyTypeObject PrivateWrapProxyType = {
     0,                                      // tp_getattro
     0,                                      // tp_setattro
     0,                                      // tp_as_buffer
-    Py_TPFLAGS_DEFAULT,                     // tp_flags
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,// tp_flags
     PrivateWrapProxy_doc,                   // tp_doc
-    0,                                      // tp_traverse
-    0,                                      // tp_clear
+    (traverseproc)PrivateWrapProxy_traverse,// tp_traverse
+    (inquiry)PrivateWrapProxy_clear,        // tp_clear
     0,                                      // tp_richcompare
     0,                                      // tp_weaklistoffset
     0,                                      // tp_iter
@@ -1310,7 +1352,7 @@ PrivateWrapProxy_New(PyTypeObject *type, PyObject *args, PyObject* /*kwds*/) noe
     PyObject *decorator;
     PyObject *orig = NULL;
 
-    if (!PyArg_ParseTuple(args, "O|O", &decorator, &orig))
+    if (!PyArg_ParseTuple(args, "O|O:private_attribute.PrivateWrapProxy", &decorator, &orig))
         return NULL;
 
     self = (PrivateWrapProxyObject*)type->tp_alloc(type, 0);
@@ -2522,7 +2564,7 @@ need_analyse_type(PyObject* type) noexcept
 }
 
 static bool
-PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data) noexcept
+PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data, const std::string& func_name = "") noexcept
 {
     static const char* invalid_name[] = {"__private_attrs__", "__slots__", "__getattribute__", "__getattr__", "__init__",
         "__setattr__", "__delattr__", "__name__", "__module__", "__doc__", "__getstate__", "__setstate__",
@@ -2534,7 +2576,11 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     }
 
     // only parse name, bases, attrs
-    if (!PyArg_ParseTuple(args, "OOO", &data.name, &data.bases, &data.attrs)) {
+    std::string parse = "OOO";
+    if (func_name.length() > 0) {
+        parse += ":" + func_name;
+    }
+    if (!PyArg_ParseTuple(args, parse.c_str(), &data.name, &data.bases, &data.attrs)) {
         return false;
     }
     Py_INCREF(data.name);
@@ -3069,7 +3115,7 @@ PrivateAttrType_new(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
     PrivateAttrCreationData data;
     PyObject* new_type = nullptr;
 
-    if (!PrivateAttrType_preprocess(args, kwds, data)) {
+    if (!PrivateAttrType_preprocess(args, kwds, data, "private_attribute.PrivateAttrType")) {
         return nullptr;
     }
 
@@ -3705,6 +3751,31 @@ static PyMethodDef PrivateTempObject_methods[] = {
     {NULL}
 };
 
+static int
+PrivateTempObject_traverse(PyObject* self, visitproc visit, void* arg) noexcept
+{
+    PrivateTempObject* tmp = (PrivateTempObject*)self;
+    if (tmp->tmp) {
+        PrivateAttrCreationData* data = tmp->tmp;
+        if (!data->cleared) {
+            Py_VISIT(data->attrs_copy);
+            Py_VISIT(data->base_kwds);
+            Py_VISIT(data->attrs);
+        }
+    }
+    return 0;
+}
+
+static int
+PrivateTempObject_clear(PyObject* self) noexcept
+{
+    PrivateTempObject* tmp = (PrivateTempObject*)self;
+    if (tmp->tmp && !tmp->tmp->cleared) {
+        tmp->tmp->clear();
+    }
+    return 0;
+}
+
 static PyTypeObject PrivateTempType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "private_attribute._PrivateTemp",    // tp_name
@@ -3725,10 +3796,10 @@ static PyTypeObject PrivateTempType = {
     0, //tp_getattro
     0, //tp_setattro
     0, //tp_as_buffer
-    Py_TPFLAGS_DEFAULT, //tp_flags
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC, //tp_flags
     0, //tp_doc
-    0, //tp_traverse
-    0, //tp_clear
+    PrivateTempObject_traverse, //tp_traverse
+    PrivateTempObject_clear, //tp_clear
     0, //tp_richcompare
     0, //tp_weaklistoffset
     0, //tp_iter
@@ -3742,12 +3813,12 @@ static PyObject*
 prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs) noexcept
 {
     PrivateAttrCreationData* tmp_data = new PrivateAttrCreationData();
-    if (!PrivateAttrType_preprocess(args, kwargs, *tmp_data)) {
+    if (!PrivateAttrType_preprocess(args, kwargs, *tmp_data, "private_attribute.prepare")) {
         tmp_data->clear();
         delete tmp_data;
         return NULL;
     }
-    PrivateTempObject* tmp = PyObject_New(PrivateTempObject, &PrivateTempType);
+    PrivateTempObject* tmp = PyObject_GC_New(PrivateTempObject, &PrivateTempType);
     if (!tmp) {
         tmp_data->clear();
         delete tmp_data;
