@@ -233,7 +233,7 @@ jobs:
         run: rm -f dist/*.publish.attestation
 
       - name: Upload assets to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
         env:
