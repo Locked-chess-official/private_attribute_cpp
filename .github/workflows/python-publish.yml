@@ -26,7 +26,7 @@ jobs:
 
       - name: Set up QEMU
         if: startsWith(matrix.os, 'ubuntu')
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: all
 
@@ -62,7 +62,7 @@ jobs:
           CIBW_ARCHS_WINDOWS: "AMD64 x86 ARM64"
           CIBW_TEST_SKIP: "*-win_arm64"
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse
@@ -81,7 +81,7 @@ jobs:
 
       - name: Set up QEMU
         if: startsWith(matrix.os, 'ubuntu')
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: all
 
@@ -137,7 +137,7 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
             delvewheel repair -w {dest_dir} -v {wheel}
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: wheels-cp313t-${{ matrix.os }}
           path: wheelhouse
@@ -162,7 +162,7 @@ jobs:
         run: python -m build --sdist
 
       - name: Upload source distribution
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: source-distribution
           path: dist/*.tar.gz
@@ -207,7 +207,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Upload distributions as artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: all-distributions
           path: dist/*
@@ -237,7 +237,7 @@ jobs:
         run: rm -f dist/*.publish.attestation
 
       - name: Upload assets to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
         env:
