@@ -2364,17 +2364,12 @@ PrivateAttrType_tp_clear(PyObject* self) noexcept
 static void
 PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept
 {
-    if (::AllData::all_object_mutex.find(type_id) == ::AllData::all_object_mutex.end()) {
-        ::AllData::all_object_mutex[type_id].clear();
-    }
-    if (::AllData::all_object_attr.find(type_id) == ::AllData::all_object_attr.end()) {
-        ::AllData::all_object_attr[type_id] = {};
-    }
-    if (::AllData::all_object_mutex[type_id].find(obj_id) == ::AllData::all_object_mutex[type_id].end()) {
-        ::AllData::all_object_mutex[type_id][obj_id] = std::make_unique<std::shared_mutex>();
-    }
-    if (::AllData::all_object_attr[type_id].find(obj_id) == ::AllData::all_object_attr[type_id].end()) {
-        ::AllData::all_object_attr[type_id][obj_id] = {};
+    object_create_mutex(type_id, obj_id);
+    {
+        std::unique_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[type_id][obj_id]);
+        if (::AllData::all_object_attr[type_id].find(obj_id) == ::AllData::all_object_attr[type_id].end()) {
+            ::AllData::all_object_attr[type_id][obj_id] = {};
+        }
     }
     if (::AllData::all_type_parent_id.find(type_id) != ::AllData::all_type_parent_id.end()) {
         for (auto parent_id : ::AllData::all_type_parent_id[type_id]) {
@@ -2441,7 +2436,7 @@ get_string_hash_tuple(const std::string& name) noexcept
     std::string name1hash, name2hash;
     picosha2::hash256_hex_string(name1, name1hash);
     picosha2::hash256_hex_string(name2, name2hash);
-    return PyTuple_Pack(2, PyUnicode_FromString(name1hash.c_str()), PyUnicode_FromString(name2hash.c_str()));
+    return Py_BuildValue("(ss)", name1hash.c_str(), name2hash.c_str());
 }
 
 static TwoStringTuple
@@ -2730,6 +2725,14 @@ real_class_name(const std::string& name, const std::string& class_name) noexcept
     return name;
 }
 
+#define PRIVATEATTR_CREATION_DATA_CLEAR(name) do \
+    { \
+        if (name) { \
+            Py_DECREF(name); \
+            name = nullptr; \
+        } \
+    } while (0)
+
 struct PrivateAttrCreationData
 {
     std::string class_name;
@@ -2753,34 +2756,13 @@ struct PrivateAttrCreationData
         if (cleared) {
             return;
         }
-        if (name) {
-            Py_DECREF(name);
-            name = nullptr;
-        }
-        if (bases) {
-            Py_DECREF(bases);
-            bases = nullptr;
-        }
-        if (attrs) {
-            Py_DECREF(attrs);
-            attrs = nullptr;
-        }
-        if (attrs_copy) {
-            Py_DECREF(attrs_copy);
-            attrs_copy = nullptr;
-        }
-        if (new_hash_private_attrs) {
-            Py_DECREF(new_hash_private_attrs);
-            new_hash_private_attrs = nullptr;
-        }
-        if (private_func) {
-            Py_DECREF(private_func);
-            private_func = nullptr;
-        }
-        if (base_kwds) {
-            Py_DECREF(base_kwds);
-            base_kwds = nullptr;
-        }
+        PRIVATEATTR_CREATION_DATA_CLEAR(name);
+        PRIVATEATTR_CREATION_DATA_CLEAR(bases);
+        PRIVATEATTR_CREATION_DATA_CLEAR(attrs);
+        PRIVATEATTR_CREATION_DATA_CLEAR(attrs_copy);
+        PRIVATEATTR_CREATION_DATA_CLEAR(new_hash_private_attrs);
+        PRIVATEATTR_CREATION_DATA_CLEAR(private_func);
+        PRIVATEATTR_CREATION_DATA_CLEAR(base_kwds);
 
         need_remove_itself.clear();
         need_remove_subclass.clear();
@@ -3011,7 +2993,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 
     // forbidden to have "__static_attributes__" in attrs, because it exposes the private attributes name.
     if (PyDict_ContainsString(data.attrs_copy, "__static_attributes__")) {
-        PyDict_DelItemString(data.attrs_copy, "__static_attributes__");
+        if (PyDict_DelItemString(data.attrs_copy, "__static_attributes__") < 0) return false;
     }
 
     {
@@ -3036,7 +3018,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 // (PrivateAttrCreationData::clear). No manual INCREF here,
                 // otherwise the value leaks (+1) when the class is destroyed.
                 data.need_remove_itself[attr_name] = need_value;
-                PyDict_DelItem(data.attrs_copy, key);
+                if (PyDict_DelItem(data.attrs_copy, key)) return false;
                 continue;
             }
             uintptr_t need_remove_subclass_id = need_remove_to_subclass(attr_name);
@@ -3049,10 +3031,12 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 }
                 // PyObjectStorage assignment INCREFs (RAII); no manual INCREF.
                 data.need_remove_subclass[need_remove_subclass_id][attr_name] = need_value;
-                PyDict_DelItem(data.attrs_copy, key);
+                if (PyDict_DelItem(data.attrs_copy, key)) return false;
                 continue;
             }
-            if (value != need_value) PyDict_SetItem(data.attrs_copy, key, need_value);
+            if (value != need_value) {
+                if (PyDict_SetItem(data.attrs_copy, key, need_value) < 0) return false;
+            }
         }
         Py_DECREF(forward_analyse);
     }
@@ -3068,7 +3052,9 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         if (!data.base_kwds) {
             return false;
         }
-        if (has_private_func) PyDict_DelItemString(data.base_kwds, "private_func");
+        if (has_private_func) {
+            if (PyDict_DelItemString(data.base_kwds, "private_func") < 0) return false;
+        }
     }
 
     return true;
@@ -3874,54 +3860,78 @@ static const char* PrivateAttrBase_doc = "The class to help to create private at
 static PyObject*
 create_private_attr_base_simple(void) noexcept
 {
-    PyObject* name = PyUnicode_InternFromString("PrivateAttrBase");
-    if (!name) return NULL;
-    PyObject* bases = PyTuple_New(0);
-    if (!bases) {
-        Py_DECREF(name);
-        return NULL;
-    }
-    PyObject* dict = PyDict_New();
-    if (!dict) {
-        Py_DECREF(name);
-        Py_DECREF(bases);
-        return NULL;
-    }
-    PyObject *private_attrs = PyTuple_New(0);
-    if (!private_attrs) {
-        Py_DECREF(name);
-        Py_DECREF(bases);
-        Py_DECREF(dict);
-        return NULL;
-    }
-    PyDict_SetItemString(dict, "__private_attrs__", private_attrs);
-    PyDict_SetItemString(dict, "__slots__", private_attrs);
-    PyDict_SetItemString(dict, "__doc__", PyUnicode_InternFromString(PrivateAttrBase_doc));
-    PyDict_SetItemString(dict, "__module__", PyUnicode_InternFromString("private_attribute"));
-    PyObject *args = PyTuple_Pack(3, name, bases, dict);
-    PyObject* base_type;
-    if (args) {
+    PyObject* name = NULL;
+    PyObject* bases = NULL;
+    PyObject* dict = NULL;
+    PyObject* private_attrs = NULL;
+    PyObject* doc = NULL;
+    PyObject* module_name = NULL;
+    PyObject* args = NULL;
+    PyObject* base_type = NULL;
+
+    name = PyUnicode_InternFromString("PrivateAttrBase");
+    if (!name) goto fail;
+
+    bases = PyTuple_New(0);
+    if (!bases) goto fail;
+
+    dict = PyDict_New();
+    if (!dict) goto fail;
+
+    private_attrs = PyTuple_New(0);
+    if (!private_attrs) goto fail;
+
+    doc = PyUnicode_InternFromString(PrivateAttrBase_doc);
+    if (!doc) goto fail;
+
+    module_name = PyUnicode_InternFromString("private_attribute");
+    if (!module_name) goto fail;
+
+    if (PyDict_SetItemString(dict, "__private_attrs__", private_attrs) < 0) goto fail;
+    if (PyDict_SetItemString(dict, "__slots__", private_attrs) < 0) goto fail;
+    if (PyDict_SetItemString(dict, "__doc__", doc) < 0) goto fail;
+    if (PyDict_SetItemString(dict, "__module__", module_name) < 0) goto fail;
+
+    Py_DECREF(doc);
+    doc = NULL;
+    Py_DECREF(module_name);
+    module_name = NULL;
+
+    args = PyTuple_Pack(3, name, bases, dict);
+    if (!args) goto fail;
+
+    {
         // RAII: the first heap type created through tp_new (PrivateAttrBase)
         // carries CPython's pristine subtype_traverse/subtype_clear in its
         // tp_traverse/tp_clear; PrivateAttrType_new captures those pointers
         // while this guard is active.
         PrivateAttrCaptureGuard capture_guard;
         base_type = PrivateAttrType_new((PyTypeObject*)&PrivateAttrType, args, NULL);
-        Py_DECREF(args);
-    } else {
-        Py_DECREF(name);
-        Py_DECREF(bases);
-        Py_DECREF(dict);
-        return NULL;
     }
+    Py_DECREF(args);
+    args = NULL;
+
     Py_DECREF(name);
+    name = NULL;
     Py_DECREF(bases);
+    bases = NULL;
     Py_DECREF(dict);
-    if (!base_type) {
-        return NULL;
-    }
+    dict = NULL;
+
+    if (!base_type) goto fail;
+
     ((PyTypeObject*)base_type)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     return base_type;
+
+fail:
+    Py_XDECREF(name);
+    Py_XDECREF(bases);
+    Py_XDECREF(dict);
+    Py_XDECREF(private_attrs);
+    Py_XDECREF(doc);
+    Py_XDECREF(module_name);
+    Py_XDECREF(args);
+    return NULL;
 }
 
 typedef struct {
