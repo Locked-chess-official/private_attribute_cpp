@@ -34,15 +34,27 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          $crts = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending
-          if ($crts) {
-            foreach ($crt in $crts) {
-              Write-Host "Adding ARM64 CRT to PATH: $($crt.FullName)"
-              Add-Content -Path $env:GITHUB_PATH -Value $crt.FullName
+          # Resolve the ARM64 cl.exe actually used by this build and derive the
+          # matching CRT redist directory from its toolset version, so msvcp140.dll
+          # matches the compiler (avoids prepending every installed toolset, whose
+          # newest-first order the runner then reverses and resolves an older DLL).
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products "*" -property installationPath
+          $cl = & $vswhere -latest -products "*" -find "VC\Tools\MSVC\**\bin\Host*\ARM64\cl.exe" |
+            Sort-Object { [version]($_ -replace '.*\\MSVC\\([^\\]+)\\.*', '$1') } -Descending |
+            Select-Object -First 1
+          if ($cl) {
+            $msvcVer = $cl.Trim() -replace '.*\\MSVC\\([^\\]+)\\.*', '$1'
+            $crt = Get-ChildItem -Path "$vsRoot\VC\Redist\MSVC\$msvcVer\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+            if ($crt) {
+              Write-Host "Adding ARM64 CRT to PATH: $crt"
+              Add-Content -Path $env:GITHUB_PATH -Value $crt
+            } else {
+              Write-Host "ARM64 CRT not found for MSVC $msvcVer; leaving PATH unchanged."
             }
           } else {
-            Write-Host "ARM64 CRT not found; leaving PATH unchanged."
+            Write-Host "ARM64 cl.exe not found; leaving PATH unchanged."
           }
 
       - name: Setup Python (for cibuildwheel only)
@@ -89,15 +101,27 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          $crts = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending
-          if ($crts) {
-            foreach ($crt in $crts) {
-              Write-Host "Adding ARM64 CRT to PATH: $($crt.FullName)"
-              Add-Content -Path $env:GITHUB_PATH -Value $crt.FullName
+          # Resolve the ARM64 cl.exe actually used by this build and derive the
+          # matching CRT redist directory from its toolset version, so msvcp140.dll
+          # matches the compiler (avoids prepending every installed toolset, whose
+          # newest-first order the runner then reverses and resolves an older DLL).
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products "*" -property installationPath
+          $cl = & $vswhere -latest -products "*" -find "VC\Tools\MSVC\**\bin\Host*\ARM64\cl.exe" |
+            Sort-Object { [version]($_ -replace '.*\\MSVC\\([^\\]+)\\.*', '$1') } -Descending |
+            Select-Object -First 1
+          if ($cl) {
+            $msvcVer = $cl.Trim() -replace '.*\\MSVC\\([^\\]+)\\.*', '$1'
+            $crt = Get-ChildItem -Path "$vsRoot\VC\Redist\MSVC\$msvcVer\arm64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+            if ($crt) {
+              Write-Host "Adding ARM64 CRT to PATH: $crt"
+              Add-Content -Path $env:GITHUB_PATH -Value $crt
+            } else {
+              Write-Host "ARM64 CRT not found for MSVC $msvcVer; leaving PATH unchanged."
             }
           } else {
-            Write-Host "ARM64 CRT not found; leaving PATH unchanged."
+            Write-Host "ARM64 cl.exe not found; leaving PATH unchanged."
           }
 
       - name: Setup Python (for cibuildwheel only)
