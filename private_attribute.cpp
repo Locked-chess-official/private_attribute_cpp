@@ -974,7 +974,7 @@ listproxy_count(PyObject* self, PyObject* value) noexcept
     if (m < 0) {
         return NULL;
     }
-    PyObject* result = PyLong_FromLong(m);
+    PyObject* result = PyLong_FromSsize_t(m);
     return result;
 }
 
@@ -1172,7 +1172,7 @@ static PyTypeObject listproxyType = {
     0,                                       // tp_getattro
     0,                                       // tp_setattro
     0,                                       // tp_as_buffer
-    Py_TPFLAGS_DEFAULT| Py_TPFLAGS_HAVE_GC,  // tp_flags
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC, // tp_flags
     "A read-only proxy of a list.",          // tp_doc
     listproxy_traverse,                      // tp_traverse
     listproxy_clear,                         // tp_clear
