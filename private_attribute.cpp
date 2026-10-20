@@ -931,6 +931,270 @@ type_delattr(PyObject* typ, const std::string& attr_name) noexcept
     return 0;
 }
 
+// list proxy
+// privatewrap.funcs return this type after 2.1.19
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *list;
+} listproxy;
+
+static bool
+listproxy_check(listproxy *obj) noexcept
+{
+    if (!obj->list) {
+        PyErr_SetString(PyExc_RuntimeError, "listproxy object has no list");
+        return false;
+    }
+    if (!PyList_CheckExact(obj->list)) {
+        PyErr_Format(PyExc_TypeError, "listproxy object can only proxy list, not '%s'", Py_TYPE(obj->list)->tp_name);
+        return false;
+    }
+    return true;
+}
+
+static PyObject*
+listproxy_copy(PyObject* self, PyObject* /*args*/) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    return PySequence_List(obj->list);
+}
+
+static PyObject*
+listproxy_count(PyObject* self, PyObject* value) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    Py_ssize_t m =  PySequence_Count(obj->list, value);
+    if (m < 0) {
+        return NULL;
+    }
+    PyObject* result = PyLong_FromLong(m);
+    return result;
+}
+
+static PyObject*
+listproxy_index(PyObject* self, PyObject* args) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    PyObject* method = PyObject_GetAttrString(obj->list, "index");
+    if (!method) {
+        return NULL;
+    }
+    PyObject* result = PyObject_Call(method, args, NULL);
+    Py_DECREF(method);
+    return result;
+}
+
+static Py_ssize_t
+listproxy_length(PyObject* self) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return -1;
+    }
+    return PyList_Size(obj->list);
+}
+
+static PyObject*
+listproxy_iter(PyObject* self) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    return PyObject_GetIter(obj->list);
+}
+
+static PyObject*
+listproxy_item(PyObject* self, Py_ssize_t i) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    Py_ssize_t size = PyList_Size(obj->list);
+    if (i < 0) {
+        i += size;
+    }
+    if (i < 0 || i >= size) {
+        PyErr_SetString(PyExc_IndexError, "listproxy index out of range");
+        return NULL;
+    }
+    PyObject* item = PyList_GetItem(obj->list, i);
+    if (!item) {
+        return NULL;
+    }
+    Py_INCREF(item);
+    return item;
+}
+
+static PyObject*
+listproxy_subscript(PyObject* self, PyObject* key) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    return PyObject_GetItem(obj->list, key);
+}
+
+static int
+listproxy_contains(PyObject* self, PyObject* value) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return -1;
+    }
+    return PySequence_Contains(obj->list, value);
+}
+
+static PyObject*
+listproxy_repr(PyObject* self) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+    PyObject* inner = PyObject_Repr(obj->list);
+    if (!inner) {
+        return NULL;
+    }
+    PyObject* result = PyUnicode_FromFormat("listproxy(%U)", inner);
+    Py_DECREF(inner);
+    return result;
+}
+
+static PyObject*
+listproxy_richcompare(PyObject* self, PyObject* other, int op) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    if (!listproxy_check(obj)) {
+        return NULL;
+    }
+
+    // If the counterpart is a genuine Python list, compare the underlying
+    // list directly. Otherwise copy the counterpart into a real list first
+    // (so that listproxy == listproxy and listproxy == tuple behave like a
+    // list-to-list comparison), then compare.
+    PyObject* self_list = obj->list;
+    bool decref_self_list = false;
+    if (!PyList_CheckExact(other)) {
+        self_list = PySequence_List(obj->list);
+        if (!self_list) {
+            PyErr_Clear();
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        decref_self_list = true;
+    }
+
+    PyObject* result = PyObject_RichCompare(self_list, other, op);
+    if (decref_self_list) {
+        Py_DECREF(self_list);
+    }
+    return result;
+}
+
+static void
+listproxy_dealloc(listproxy* self) noexcept
+{
+    Py_XDECREF(self->list);
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
+static PySequenceMethods listproxy_as_sequence = {
+    listproxy_length,       // sq_length
+    0,                      // sq_concat
+    0,                      // sq_repeat
+    listproxy_item,         // sq_item
+    0,                      // was_sq_slice
+    0,                      // sq_ass_item
+    0,                      // was_sq_ass_slice
+    listproxy_contains,     // sq_contains
+    0,                      // sq_inplace_concat
+    0,                      // sq_inplace_repeat
+};
+
+static PyMappingMethods listproxy_as_mapping = {
+    listproxy_length,       // mp_length
+    listproxy_subscript,    // mp_subscript
+    0,                      // mp_ass_subscript
+};
+
+static PyMethodDef listproxy_methods[] = {
+    {"copy", listproxy_copy, METH_NOARGS, "Return a copy of the proxied list."},
+    {"count", listproxy_count, METH_O, "Return number of occurrences of value."},
+    {"index", listproxy_index, METH_VARARGS, "Return first index of value."},
+    {NULL, NULL, 0, NULL}
+};
+
+static int
+listproxy_traverse(PyObject* self, visitproc visit, void* arg) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    Py_VISIT(obj->list);
+    return 0;
+}
+
+static int
+listproxy_clear(PyObject* self) noexcept
+{
+    listproxy* obj = (listproxy*)self;
+    Py_CLEAR(obj->list);
+    return 0;
+}
+
+static PyTypeObject listproxyType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "private_attribute.listproxy",           // tp_name
+    sizeof(listproxy),                       // tp_basicsize
+    0,                                       // tp_itemsize
+    (destructor)listproxy_dealloc,           // tp_dealloc
+    0,                                       // tp_print
+    0,                                       // tp_getattr
+    0,                                       // tp_setattr
+    0,                                       // tp_reserved
+    listproxy_repr,                          // tp_repr
+    0,                                       // tp_as_number
+    &listproxy_as_sequence,                  // tp_as_sequence
+    &listproxy_as_mapping,                   // tp_as_mapping
+    0,                                       // tp_hash
+    0,                                       // tp_call
+    0,                                       // tp_str
+    0,                                       // tp_getattro
+    0,                                       // tp_setattro
+    0,                                       // tp_as_buffer
+    Py_TPFLAGS_DEFAULT| Py_TPFLAGS_HAVE_GC,  // tp_flags
+    "A read-only proxy of a list.",          // tp_doc
+    listproxy_traverse,                      // tp_traverse
+    listproxy_clear,                         // tp_clear
+    listproxy_richcompare,                   // tp_richcompare
+    0,                                       // tp_weaklistoffset
+    listproxy_iter,                          // tp_iter
+    0,                                       // tp_iternext
+    listproxy_methods,                       // tp_methods
+};
+
+static PyObject*
+listproxy_new(PyObject* list) noexcept
+{
+    listproxy* obj = PyObject_GC_New(listproxy, &listproxyType);
+    if (!obj) {
+        return NULL;
+    }
+    obj->list = list;
+    Py_INCREF(list);
+    return (PyObject*)obj;
+}
+
 // ================================================================
 // _PrivateWrap
 // ================================================================
@@ -957,7 +1221,7 @@ PrivateWrap_funcs(PyObject *obj, void* /*closure*/) noexcept
         Py_RETURN_NONE;
     }
 
-    return PySequence_Tuple(((PrivateWrapObject*)obj)->func_list);
+    return listproxy_new(((PrivateWrapObject*)obj)->func_list);
 }
 
 static PyObject*
@@ -1148,7 +1412,7 @@ PrivateWrap_clear(PyObject* obj) noexcept
 
 static PyTypeObject PrivateWrapType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "_PrivateWrap",                            // tp_name
+    "private_attribute._PrivateWrap",          // tp_name
     sizeof(PrivateWrapObject),                 // tp_basicsize
     0,                                         // tp_itemsize
     (destructor)PrivateWrap_dealloc,           // tp_dealloc
@@ -4496,6 +4760,7 @@ PyInit_private_attribute(void) noexcept
     }
     if (init_all_slots() <0 ||
         atexit_register_clean_func() < 0 ||
+        PyType_Ready(&listproxyType) < 0 ||
         PyType_Ready(&PrivateWrapType) < 0 ||
         PyType_Ready(&PrivateWrapProxyType) < 0 ||
         PyType_Ready(&PrivateAttrType) < 0 ||

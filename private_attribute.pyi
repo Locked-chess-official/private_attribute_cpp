@@ -15,14 +15,25 @@ class MyClass(PrivateAttrBase):
         return self._private_attr1
 ```
 """
-from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast
+from typing import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast, Iterator
 from types import FunctionType
+import sys
 
 # define the dict that must have a key "__private_attrs__" and value must be the sequence of strings
 class _PrivateAttrDict(TypedDict):
     __private_attrs__: Optional[Sequence[str]]
 
 _T = TypeVar('_T')
+
+class listproxy(Generic[_T]):
+    "a read-only proxy of a list"
+    def copy(self) -> list[_T]: ...
+    def count(self, value: Any, /) -> int: ...
+    def index(self, value: Any, start: int = 0, stop: int = sys.maxsize, /) -> int: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[_T]: ...
+    def __getitem__(self, key: int | slice) -> Any: ...
+    def __contains__(self, value: object) -> bool: ...
 
 class _PrivateWrap(Generic[_T]):
     @property
@@ -31,7 +42,7 @@ class _PrivateWrap(Generic[_T]):
         ...
 
     @property
-    def funcs(self) -> tuple[FunctionType]:
+    def funcs(self) -> listproxy[FunctionType]:
         "the original functions"
         ...
 
