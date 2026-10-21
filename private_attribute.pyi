@@ -102,7 +102,7 @@ class PrivateAttrType(type):
                 private_func: Callable[[int, str], str]|None = None) -> PrivateAttrType: ...
 
 class PrivateAttrBase(metaclass=PrivateAttrType):
-    "The class to help to create private attribute. It does not have any special behavior."
+    "The class to help creating private attribute. It does not have any special behavior."
     __slots__ = ()
     __private_attrs__ = ()
 

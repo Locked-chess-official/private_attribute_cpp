@@ -3854,7 +3854,7 @@ PrivateAttrType_del(PyObject* cls) noexcept
     PyType_Type.tp_dealloc(cls);
 }
 
-static const char* PrivateAttrBase_doc = "The class to help to create private attribute. It does not have any special behavior.";
+static const char* PrivateAttrBase_doc = "The class to help creating private attribute. It does not have any special behavior.";
 
 // PrivateAttrBase
 static PyObject*
