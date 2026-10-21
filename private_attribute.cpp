@@ -4387,7 +4387,7 @@ PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
 {
     PyObject* parent_dir = PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self);
     if (!parent_dir) return NULL;
-    PyObject* attr_list = Py_BuildValue("[ssssssss]", 
+    PyObject* attr_list = Py_BuildValue("[ssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
         "PrivateAttrBase",
@@ -4712,7 +4712,7 @@ PrivateModule_exec(PyObject* m) noexcept
         return -1;
     }
     Py_DECREF(private_attr_base);
-    PyObject* all = Py_BuildValue("[ssssssss]", 
+    PyObject* all = Py_BuildValue("[ssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
         "PrivateAttrBase",
