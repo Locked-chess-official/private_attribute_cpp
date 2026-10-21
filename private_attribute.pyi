@@ -25,7 +25,7 @@ class _PrivateAttrDict(TypedDict):
 
 _T = TypeVar('_T')
 
-class listproxy(Generic[_T]):
+class _listproxy(Generic[_T]):
     "a read-only proxy of a list"
     def copy(self) -> list[_T]: ...
     def count(self, value: Any, /) -> int: ...
@@ -42,7 +42,7 @@ class _PrivateWrap(Generic[_T]):
         ...
 
     @property
-    def funcs(self) -> listproxy[FunctionType]:
+    def funcs(self) -> _listproxy[FunctionType]:
         "the original functions"
         ...
 

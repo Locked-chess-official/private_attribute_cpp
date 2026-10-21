@@ -508,8 +508,8 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
             lock.unlock();
             PyObject* python_result = PyObject_CallFunction(
                 func,
-                "ns",
-                static_cast<Py_ssize_t>(obj_id),
+                "Ks",
+                static_cast<unsigned long long>(obj_id),
                 attr_name.c_str()
             );
             if (python_result) {
@@ -1154,7 +1154,7 @@ listproxy_clear(PyObject* self) noexcept
 
 static PyTypeObject listproxyType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "private_attribute.listproxy",           // tp_name
+    "private_attribute._listproxy",          // tp_name
     sizeof(listproxy),                       // tp_basicsize
     0,                                       // tp_itemsize
     (destructor)listproxy_dealloc,           // tp_dealloc
