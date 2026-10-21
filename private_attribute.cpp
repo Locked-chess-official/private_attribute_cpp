@@ -4374,8 +4374,7 @@ PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/) noexcep
             return NULL;
         }
         AllData::store_module_self[AllData::kPrivateAttrBaseKey] = base;
-        Py_DECREF(base);
-        it = AllData::store_module_self.find(AllData::kPrivateAttrBaseKey);
+        return base;
     }
     PyObject* PrivateAttrBase = it->second.get();
     Py_INCREF(PrivateAttrBase);
