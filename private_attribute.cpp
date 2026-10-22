@@ -134,6 +134,9 @@ public:
         storage.obj = obj;
         return storage;
     }
+    static PyObjectStorage from_new_ref(PyCodeObject* obj) noexcept {
+        return from_new_ref(reinterpret_cast<PyObject*>(obj));
+    }
     // support for PyCodeObject*
     PyObjectStorage(PyCodeObject* obj) noexcept : obj(reinterpret_cast<PyObject*>(obj)) {
         Py_XINCREF(obj);
@@ -185,9 +188,10 @@ public:
         return obj;
     }
 
-    operator PyCodeObject*() const noexcept {
-        return reinterpret_cast<PyCodeObject*>(obj);
+    explicit operator bool() const noexcept {
+        return obj != NULL;
     }
+
     PyObject* get() const noexcept {
         return obj;
     }
@@ -1508,11 +1512,11 @@ PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*
     PyObject *func;
     if (!PyArg_ParseTuple(args, "O:private_attribute.PrivateWrapProxy.__call__", &func)) return NULL;
     if(PyObject_TypeCheck(func, &PrivateWrapType)) {
+        PyObjectStorage final_func_list = PySequence_Concat(((PrivateWrapObject*)func)->func_list, self->func_list);
         return (PyObject*)PrivateWrap_New(
             self->decorator,
             ((PrivateWrapObject*)func)->result,
-            PySequence_Concat(((PrivateWrapObject*)func)->func_list,
-                              self->func_list)
+            final_func_list
         );
     }
 
@@ -1677,25 +1681,24 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
     uintptr_t type_id = (uintptr_t)typ;
     PrivateAttr_object_init_private_dict((uintptr_t)self, type_id);
     std::string name_str = PyUnicode_AsUTF8(name);
-    auto code = get_now_code();
-    if (type_private_attr(type_id, name_str)) {
-        if (!code) {
-            Py_XDECREF(code);
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            return NULL;
+    {
+        PyObjectStorage code = get_now_code();
+        if (type_private_attr(type_id, name_str)) {
+            if (!code) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return NULL;
+            }
+            AttrClassifyResult classify = attr_classify(type_id, name_str, (PyCodeObject*)(code.get()));
+            if (!classify.allowed) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return NULL;
+            }
+            if (classify.type_id != 0) {
+                return id_getattr(classify.type_id, name_str, self, (PyObject*)typ);
+            }
+            // owner is 0: not private for this access context -> normal attribute
         }
-        AttrClassifyResult classify = attr_classify(type_id, name_str, code);
-        Py_XDECREF(code);
-        if (!classify.allowed) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            return NULL;
-        }
-        if (classify.type_id != 0) {
-            return id_getattr(classify.type_id, name_str, self, (PyObject*)typ);
-        }
-        // owner is 0: not private for this access context -> normal attribute
     }
-    Py_XDECREF(code);
     if (::AllData::all_type_getattro.find(type_id) != ::AllData::all_type_getattro.end()){
         if (::AllData::all_type_getattro[type_id]) {
             PyObject* result = ::AllData::all_type_getattro[type_id](self, name);
@@ -1716,28 +1719,27 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcep
         return -1;
     }
     std::string name_str(c_name);
-    auto code = get_now_code();
-    if (type_private_attr(typ_id, name_str)) {
-        if (!code) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            Py_XDECREF(code);
-            return -1;
-        }
-        AttrClassifyResult classify = attr_classify(typ_id, name_str, code);
-        Py_XDECREF(code);
-        if (!classify.allowed) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            return -1;
-        }
-        if (classify.type_id != 0) {
-            if (!value) {
-                return id_delattr(classify.type_id, name_str, self, (PyObject*)typ);
+    {
+        PyObjectStorage code = get_now_code();
+        if (type_private_attr(typ_id, name_str)) {
+            if (!code) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return -1;
             }
-            return id_setattr(classify.type_id, name_str, self, (PyObject*)typ, value);
+            AttrClassifyResult classify = attr_classify(typ_id, name_str, (PyCodeObject*)(code.get()));
+            if (!classify.allowed) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return -1;
+            }
+            if (classify.type_id != 0) {
+                if (!value) {
+                    return id_delattr(classify.type_id, name_str, self, (PyObject*)typ);
+                }
+                return id_setattr(classify.type_id, name_str, self, (PyObject*)typ, value);
+            }
+            // owner is 0: not private for this access context -> normal attribute
         }
-        // owner is 0: not private for this access context -> normal attribute
     }
-    Py_XDECREF(code);
     if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()){
         int result = ::AllData::all_type_setattro[typ_id](self, name, value);
         ensure_tp(typ);
@@ -3406,25 +3408,23 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
     }
     uintptr_t typ_id = (uintptr_t)(cls);
     std::string name_str = PyUnicode_AsUTF8(name);
-    PyCodeObject* now_code = get_now_code();
-    if (type_private_attr(typ_id, name_str)) {
-        if (!now_code) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            Py_XDECREF(now_code);
-            return NULL;
+    {
+        PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
+        if (type_private_attr(typ_id, name_str)) {
+            if (!now_code) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return NULL;
+            }
+            AttrClassifyResult classify = attr_classify(typ_id, name_str, (PyCodeObject*)(now_code.get()));
+            if (!classify.allowed) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return NULL;
+            }
+            if (classify.type_id != 0) {
+                return type_getattr(cls, name_str);
+            }
         }
-        AttrClassifyResult classify = attr_classify(typ_id, name_str, now_code);
-        Py_XDECREF(now_code);
-        if (!classify.allowed) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            return NULL;
-        }
-        if (classify.type_id != 0) {
-            return type_getattr(cls, name_str);
-        }
-        // owner is 0: not private for this access context -> normal attribute
     }
-    Py_XDECREF(now_code);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
     while (base && base->tp_base && base->tp_getattro == PrivateAttrType_getattr) {
         base = base->tp_base;
@@ -3760,25 +3760,24 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
         PyErr_SetString(PyExc_TypeError, error_message.c_str());
         return -1;
     }
-    PyCodeObject* now_code = get_now_code();
-    if (type_private_attr(typ_id, name_str)) {
-        if (!now_code) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            Py_XDECREF(now_code);
-            return -1;
+    {
+        PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
+        if (type_private_attr(typ_id, name_str)) {
+            if (!now_code) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return -1;
+            }
+            AttrClassifyResult classify = attr_classify(typ_id, name_str, (PyCodeObject*)(now_code.get()));
+            if (!classify.allowed) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return -1;
+            }
+            if (classify.type_id != 0) {
+                return type_setattr(cls, name_str, value);
+            }
+            // owner is 0: not private for this access context -> normal attribute
         }
-        AttrClassifyResult classify = attr_classify(typ_id, name_str, now_code);
-        Py_XDECREF(now_code);
-        if (!classify.allowed) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
-            return -1;
-        }
-        if (classify.type_id != 0) {
-            return type_setattr(cls, name_str, value);
-        }
-        // owner is 0: not private for this access context -> normal attribute
     }
-    Py_XDECREF(now_code);
     PyTypeObject* base = Py_TYPE(cls)->tp_base;
     while (base && base->tp_base && base->tp_setattro == PrivateAttrType_setattr) {
         base = base->tp_base;
