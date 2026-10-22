@@ -1,6 +1,7 @@
 import private_attribute
 import unittest
 
+# test whether the PrivateWrapProxy can find the original function if the decorator is a custom type
 class MyWrap:
     def __init__(self, func):
         self.func1 = func
@@ -19,6 +20,12 @@ class MyWrap:
             return func.__get__(instance, owner)(*args, **kwargs)
         return wrapper
 
+# test whether the PrivateWrapProxy can find the original function if the decorator forgets to use functools.wrap
+def ill_decorator(func):
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
 class MyClass(private_attribute.PrivateAttrBase):
     __private_attrs__ = ["_secret1", "_secret2", "_secret3"]
     def __init__(self, secret1, secret2, secret3):
@@ -27,11 +34,12 @@ class MyClass(private_attribute.PrivateAttrBase):
         self._secret3 = secret3
 
     @private_attribute.PrivateWrapProxy(MyWrap)
-    def get_secret(self):
+    def get_secret(self): # type: ignore
         return self._secret1
 
     @private_attribute.PrivateWrapProxy(get_secret.result.add, get_secret)
-    def get_secret(self):
+    @private_attribute.PrivateWrapProxy(ill_decorator, get_secret)
+    def get_secret(self): # type: ignore
         return self._secret2
 
     @private_attribute.PrivateWrapProxy(get_secret.result.add, get_secret)
