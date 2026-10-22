@@ -125,6 +125,15 @@ public:
     PyObjectStorage(PyObject* obj) noexcept : obj(obj) {
         Py_XINCREF(obj);
     }
+    // Construct a PyObjectStorage that takes ownership of a strong reference
+    // already held by the caller (a "new reference"). The reference count is
+    // NOT incremented; the stored object's ownership is simply transferred
+    // into the storage, and the destructor will release it exactly once.
+    static PyObjectStorage from_new_ref(PyObject* obj) noexcept {
+        PyObjectStorage storage;
+        storage.obj = obj;
+        return storage;
+    }
     // support for PyCodeObject*
     PyObjectStorage(PyCodeObject* obj) noexcept : obj(reinterpret_cast<PyObject*>(obj)) {
         Py_XINCREF(obj);
@@ -2854,8 +2863,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         __private_attrs__ = PyDict_GetItemString(data.attrs, "__private_attrs__");
     }
     else {
-        __private_attrs__ = PyTuple_New(0);
-        Py_DECREF(__private_attrs__);
+        __private_attrs__ = PyObjectStorage::from_new_ref(PyTuple_New(0));
     }
 
     if (PyUnicode_Check(__private_attrs__)) {
@@ -2864,8 +2872,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
             return false;
         }
         PyTuple_SET_ITEM(new___private_attrs__, 0, __private_attrs__);
-        __private_attrs__ = new___private_attrs__;
-        Py_DECREF(__private_attrs__);
+        __private_attrs__ = PyObjectStorage::from_new_ref(new___private_attrs__);
     }
 
     if (!PySequence_Check(__private_attrs__)) {
@@ -2935,41 +2942,38 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         if (PyUnicode_Check(all_slots)) {
             const char* slot_cstr = PyUnicode_AsUTF8(all_slots);
             if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
-                std::string error_msg = "'__slots__' and '__private_attrs__' cannot have the same attribute name: '" + std::string(slot_cstr) + "'";
-                PyErr_SetString(PyExc_TypeError, error_msg.c_str());
+                PyErr_Format(PyExc_TypeError, "'__slots__' and '__private_attrs__' cannot have the same attribute name: '%s'", slot_cstr);
                 return false;
             }
         } else {
-            PyObject* slot_seq;
+            PyObjectStorage slot_seq;
             if (PyAnyDict_Check(all_slots)) {
                 // use the key of the dict as the slot name
                 PyObject* keys = PyDict_Keys(all_slots);
                 if (!keys) {
                     return false;
                 }
-                slot_seq = keys;
+                slot_seq = PyObjectStorage::from_new_ref(keys);
             } else {
-                slot_seq = PySequence_Fast(all_slots, "__slots__ must be a string, dict or sequence");
+                slot_seq = PyObjectStorage::from_new_ref(PySequence_Fast(all_slots, "__slots__ must be a string, dict or sequence"));
             }
-            if (!slot_seq) {
+            if (!slot_seq.get()) {
                 return false;
             }
 
-            Py_ssize_t slot_len = PySequence_Fast_GET_SIZE(slot_seq);
+            Py_ssize_t slot_len = PySequence_Fast_GET_SIZE(slot_seq.get());
 
             for (Py_ssize_t j = 0; j < slot_len; j++) {
-                PyObject* slot = PySequence_Fast_GET_ITEM(slot_seq, j);
+                PyObject* slot = PySequence_Fast_GET_ITEM(slot_seq.get(), j);
                 if (PyUnicode_Check(slot)) {
                     const char* slot_cstr = PyUnicode_AsUTF8(slot);
                     std::string final_name = real_class_name(slot_cstr, data.class_name);
                     if (data.private_attrs_vector_string.find(final_name) != data.private_attrs_vector_string.end()){
                         PyErr_Format(PyExc_TypeError, "'__slots__' and '__private_attrs__' cannot have the same attribute name: '%s'", final_name.c_str());
-                        Py_DECREF(slot_seq);
                         return false;
                     }
                 }
             }
-            Py_DECREF(slot_seq);
         }
     }
 
@@ -2999,7 +3003,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     {
         Py_ssize_t pos = 0;
         PyObject* key, *value;
-        PyObject* forward_analyse = PyDict_Copy(data.attrs_copy);
+        PyObjectStorage forward_analyse = PyObjectStorage::from_new_ref(PyDict_Copy(data.attrs_copy));
         while (PyDict_Next(forward_analyse, &pos, &key, &value)) {
             if (!key || !PyUnicode_Check(key)) {
                 PyErr_SetString(PyExc_TypeError, "all keys in 'attrs' must be strings");
@@ -3038,7 +3042,6 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 if (PyDict_SetItem(data.attrs_copy, key, need_value) < 0) return false;
             }
         }
-        Py_DECREF(forward_analyse);
     }
 
     // get "private_func" from kwds
@@ -3314,7 +3317,8 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     }
 
     if (data.private_func) {
-        Py_INCREF(data.private_func);
+        // The PyObjectStorage assignment already INCREFs (RAII); the manual
+        // INCREF was removed to avoid a +1 leak.
         ::AllData::type_need_call[type_id] = data.private_func;
     }
 
@@ -4132,7 +4136,8 @@ metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
 
     auto it = ::AllData::all_register_type_weak_ref.find(id);
     if (it != ::AllData::all_register_type_weak_ref.end()) {
-        Py_DECREF(it->second);
+        // The PyObjectStorage destructor releases the stored reference on
+        // erase; do not DECREF here (double-DECREF).
         ::AllData::all_register_type_weak_ref.erase(it);
     }
     METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(getattro);
@@ -4229,7 +4234,9 @@ register_metaclass_head(PyObject* metaclass) noexcept
         Py_DECREF(capsule);
         return NULL;
     }
-    ::AllData::all_register_type_weak_ref[id] = ref;
+    // PyWeakref_NewRef returns a new reference; transfer it into the storage
+    // without an extra INCREF (which the plain assignment operator would add).
+    ::AllData::all_register_type_weak_ref[id] = PyObjectStorage::from_new_ref(ref);
     PyTypeObject* mt = (PyTypeObject*)metaclass;
     // Save the ORIGINAL slots before wrapping. Always resolve through the
     // get_type_need_tp_* walkers so a delegating default (CPython's
