@@ -4637,7 +4637,7 @@ atexit_register_clean_func(void) noexcept
         return -1;
     }
 
-    PyObjectStorage result = PyObjectStorage::from_new_ref(PyObject_CallMethod(atexit, "register", "O", func));
+    PyObjectStorage result = PyObjectStorage::from_new_ref(PyObject_CallMethod(atexit, "register", "O", func.get()));
 
     if (!result) {
         return -1;
