@@ -519,22 +519,22 @@ custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* f
             return result;
         } else {
             lock.unlock();
-            PyObject* python_result = PyObject_CallFunction(
-                func,
-                "Ks",
-                static_cast<unsigned long long>(obj_id),
-                attr_name.c_str()
+            PyObjectStorage python_result = PyObjectStorage::from_new_ref(
+                    PyObject_CallFunction(
+                    func,
+                    "Ks",
+                    static_cast<unsigned long long>(obj_id),
+                    attr_name.c_str()
+                )
             );
             if (python_result) {
                 if (!PyUnicode_Check(python_result)) {
-                    Py_DECREF(python_result);
-                    PyErr_SetString(PyExc_TypeError, "private_func function must return a string");
+                    PyErr_Format(PyExc_TypeError, "private_func function must return a string, not '%s'", Py_TYPE(python_result)->tp_name);
                     result.ok = false;
                     result.value = "private_func function must return a string";
                     return result;
                 }
                 result.value = PyUnicode_AsUTF8(python_result);
-                Py_DECREF(python_result);
                 std::string original_result = result.value;
                 unsigned long long i = 1;
                 std::unique_lock<std::shared_mutex> lock2(::AllData::cache_mutex);
@@ -1475,6 +1475,10 @@ PrivateWrap_New(PyObject *decorator, PyObject *func, PyObject *list) noexcept
 
     PrivateWrapObject *self =
         PyObject_GC_New(PrivateWrapObject, &PrivateWrapType);
+    if (!self) {
+        Py_DECREF(wrapped);
+        return NULL;
+    }
     self->func_list = list;
     Py_INCREF(list);
 
@@ -1512,7 +1516,8 @@ PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*
     PyObject *func;
     if (!PyArg_ParseTuple(args, "O:private_attribute.PrivateWrapProxy.__call__", &func)) return NULL;
     if(PyObject_TypeCheck(func, &PrivateWrapType)) {
-        PyObjectStorage final_func_list = PySequence_Concat(((PrivateWrapObject*)func)->func_list, self->func_list);
+        PyObjectStorage final_func_list = PyObjectStorage::from_new_ref(
+            PySequence_Concat(((PrivateWrapObject*)func)->func_list, self->func_list));
         return (PyObject*)PrivateWrap_New(
             self->decorator,
             ((PrivateWrapObject*)func)->result,
@@ -1523,8 +1528,8 @@ PrivateWrapProxy_call(PrivateWrapProxyObject *self, PyObject *args, PyObject* /*
     PyObject *new_list = PyList_New(0);
     PyList_Append(new_list, func);
 
-    PyObject *combined =
-        PySequence_Concat(new_list, self->func_list);
+    PyObjectStorage combined =
+        PyObjectStorage::from_new_ref(PySequence_Concat(new_list, self->func_list));
 
     return (PyObject*)PrivateWrap_New(
         self->decorator,
@@ -1682,7 +1687,7 @@ PrivateAttr_tp_getattro(PyObject* self, PyObject* name) noexcept
     PrivateAttr_object_init_private_dict((uintptr_t)self, type_id);
     std::string name_str = PyUnicode_AsUTF8(name);
     {
-        PyObjectStorage code = get_now_code();
+        PyObjectStorage code = PyObjectStorage::from_new_ref(get_now_code());
         if (type_private_attr(type_id, name_str)) {
             if (!code) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
@@ -1720,7 +1725,7 @@ PrivateAttr_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcep
     }
     std::string name_str(c_name);
     {
-        PyObjectStorage code = get_now_code();
+        PyObjectStorage code = PyObjectStorage::from_new_ref(get_now_code());
         if (type_private_attr(typ_id, name_str)) {
             if (!code) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
@@ -2647,10 +2652,9 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
             Py_ssize_t len = PySequence_Length(co_contain);
             if (len >= 0) {
                 for (Py_ssize_t i = 0; i < len; i++) {
-                    PyObject* item = PySequence_GetItem(co_contain, i);
+                    PyObjectStorage item = PyObjectStorage::from_new_ref(PySequence_GetItem(co_contain, i));
                     if (item) {
                         analyse_all_code(item, map, _seen);
-                        Py_DECREF(item);
                     }
                 }
             }
@@ -2664,10 +2668,9 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
             Py_ssize_t len = PySequence_Length(func_list);
             if (len >= 0) {
                 for (Py_ssize_t i = 0; i < len; i++) {
-                    PyObject* func = PySequence_GetItem(func_list, i);
+                    PyObjectStorage func = PyObjectStorage::from_new_ref(PySequence_GetItem(func_list, i));
                     if (func) {
                         analyse_all_code(func, map, _seen);
-                        Py_DECREF(func);
                     }
                 }
             }
@@ -2675,50 +2678,44 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
         return;
     }
     if (PyObject_TypeCheck(obj, &PyProperty_Type)) {
-        PyObject* fget = try_get_attr_string(obj, "fget");
+        PyObjectStorage fget = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "fget"));
         if (fget) {
             analyse_all_code(fget, map, _seen);
-            Py_DECREF(fget);
         }
-        PyObject* fset = try_get_attr_string(obj, "fset");
+        PyObjectStorage fset = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "fset"));
         if (fset) {
             analyse_all_code(fset, map, _seen);
-            Py_DECREF(fset);
         }
-        PyObject* fdel = try_get_attr_string(obj, "fdel");
+        PyObject* fdel = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "fdel"));
         if (fdel) {
             analyse_all_code(fdel, map, _seen);
-            Py_DECREF(fdel);
         }
         return;
     }
     if (PyObject_TypeCheck(obj, &PyClassMethod_Type) || PyObject_TypeCheck(obj, &PyStaticMethod_Type)) {
-        PyObject* func = try_get_attr_string(obj, "__func__");
+        PyObjectStorage func = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "__func__"));
         if (func) {
             analyse_all_code(func, map, _seen);
-            Py_DECREF(func);
         }
         return;
     }
-    PyObject* wrap = try_get_attr_string(obj, "__wrapped__");
-    if (wrap) {
-        if (wrap == obj) {
-            PyObject* code = try_get_attr_string(obj, "__code__");
-            if (code) {
-                analyse_all_code(code, map, _seen);
-                Py_DECREF(code);
+    {
+        PyObjectStorage wrap = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "__wrapped__"));
+        if (wrap) {
+            if (wrap == obj) {
+                PyObjectStorage code = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "__code__"));
+                if (code) {
+                    analyse_all_code(code, map, _seen);
+                }
+                return;
             }
-            Py_DECREF(wrap);
+            analyse_all_code(wrap, map, _seen);
             return;
         }
-        analyse_all_code(wrap, map, _seen);
-        Py_DECREF(wrap);
-        return;
     }
-    PyObject* code = try_get_attr_string(obj, "__code__");
+    PyObjectStorage code = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "__code__"));
     if (code) {
         analyse_all_code(code, map, _seen);
-        Py_DECREF(code);
     }
 }
 
@@ -3497,35 +3494,31 @@ init_all_slots() noexcept
         return 0;
     }
     original_type_tp_setattro = PyType_Type.tp_setattro;
-    PyObject* original_setattr = PyObject_GetAttrString((PyObject*)&PyType_Type, "__setattr__");
+    PyObjectStorage original_setattr = PyObjectStorage::from_new_ref(PyObject_GetAttrString((PyObject*)&PyType_Type, "__setattr__"));
     if (!original_setattr) {return -1;}
     if (original_setattr && PyObject_IsInstance(original_setattr, (PyObject*)&PyWrapperDescr_Type)) {
-        ((PyWrapperDescrObject*)original_setattr)->d_wrapped = (void*)new_type_tp_setattro;
+        ((PyWrapperDescrObject*)(original_setattr.get()))->d_wrapped = (void*)new_type_tp_setattro;
     }
-    Py_DECREF(original_setattr);
-    PyObject* original_delattr = PyObject_GetAttrString((PyObject*)&PyType_Type, "__delattr__");
+    PyObjectStorage original_delattr = PyObjectStorage::from_new_ref(PyObject_GetAttrString((PyObject*)&PyType_Type, "__delattr__"));
     if (!original_delattr) {return -1;}
     if (original_delattr && PyObject_IsInstance(original_delattr, (PyObject*)&PyWrapperDescr_Type)) {
-        ((PyWrapperDescrObject*)original_delattr)->d_wrapped = (void*)new_type_tp_setattro;
+        ((PyWrapperDescrObject*)(original_delattr.get()))->d_wrapped = (void*)new_type_tp_setattro;
     }
-    Py_DECREF(original_delattr);
     PyType_Type.tp_setattro = new_type_tp_setattro;
-    PyObject* all_metaclasses = PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", (PyObject*)&PyType_Type);
+    PyObjectStorage all_metaclasses = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", (PyObject*)&PyType_Type));
     if (!all_metaclasses) {return -1;}
     if (!PyList_Check(all_metaclasses)) {
-        Py_DECREF(all_metaclasses);
-        has_init_slots = true;
-        return 0;
+        PyErr_SetString(PyExc_TypeError, "subclasses of type is not list");
+        return -1;
     }
-    Py_ssize_t list_len = PyList_GET_SIZE(all_metaclasses);
+    Py_ssize_t list_len = PyList_GET_SIZE(all_metaclasses.get());
     for (Py_ssize_t i = 0; i < list_len; i++) {
-        PyObject* metaclass = PyList_GET_ITEM(all_metaclasses, i);
+        PyObject* metaclass = PyList_GET_ITEM(all_metaclasses.get(), i);
         if (!PyType_Check(metaclass)) {continue;}
         if (((PyTypeObject*)metaclass)->tp_setattro == original_type_tp_setattro) {
             ((PyTypeObject*)metaclass)->tp_setattro = new_type_tp_setattro;
         }
     }
-    Py_DECREF(all_metaclasses);
     has_init_slots = true;
     return 0;
 }
@@ -3863,79 +3856,48 @@ static const char* PrivateAttrBase_doc = "The class to help creating private att
 static PyObject*
 create_private_attr_base_simple(void) noexcept
 {
-    PyObject* name = NULL;
-    PyObject* bases = NULL;
-    PyObject* dict = NULL;
-    PyObject* private_attrs = NULL;
-    PyObject* doc = NULL;
-    PyObject* module_name = NULL;
-    PyObject* args = NULL;
+    PyObjectStorage name = PyObjectStorage::from_new_ref(PyUnicode_InternFromString("PrivateAttrBase"));
+    if (!name) return NULL;
+
+    PyObjectStorage bases = PyObjectStorage::from_new_ref(PyTuple_New(0));
+    if (!bases) return NULL;
+
+    PyObjectStorage dict = PyObjectStorage::from_new_ref(PyDict_New());
+    if (!dict) return NULL;
+
+    PyObjectStorage private_attrs = PyObjectStorage::from_new_ref(PyTuple_New(0));
+    if (!private_attrs) return NULL;
+
+    PyObjectStorage doc = PyObjectStorage::from_new_ref(PyUnicode_InternFromString(PrivateAttrBase_doc));
+    if (!doc) return NULL;
+
+    PyObjectStorage module_name = PyObjectStorage::from_new_ref(PyUnicode_InternFromString("private_attribute"));
+    if (!module_name) return NULL;
+
+    if (PyDict_SetItemString(dict, "__private_attrs__", private_attrs) < 0) return NULL;
+    if (PyDict_SetItemString(dict, "__slots__", private_attrs) < 0) return NULL;
+    if (PyDict_SetItemString(dict, "__doc__", doc) < 0) return NULL;
+    if (PyDict_SetItemString(dict, "__module__", module_name) < 0) return NULL;
+
+    PyObjectStorage args = PyObjectStorage::from_new_ref(PyTuple_Pack(3, name.get(), bases.get(), dict.get()));
+    if (!args) return NULL;
+
     PyObject* base_type = NULL;
-
-    name = PyUnicode_InternFromString("PrivateAttrBase");
-    if (!name) goto fail;
-
-    bases = PyTuple_New(0);
-    if (!bases) goto fail;
-
-    dict = PyDict_New();
-    if (!dict) goto fail;
-
-    private_attrs = PyTuple_New(0);
-    if (!private_attrs) goto fail;
-
-    doc = PyUnicode_InternFromString(PrivateAttrBase_doc);
-    if (!doc) goto fail;
-
-    module_name = PyUnicode_InternFromString("private_attribute");
-    if (!module_name) goto fail;
-
-    if (PyDict_SetItemString(dict, "__private_attrs__", private_attrs) < 0) goto fail;
-    if (PyDict_SetItemString(dict, "__slots__", private_attrs) < 0) goto fail;
-    if (PyDict_SetItemString(dict, "__doc__", doc) < 0) goto fail;
-    if (PyDict_SetItemString(dict, "__module__", module_name) < 0) goto fail;
-
-    Py_DECREF(doc);
-    doc = NULL;
-    Py_DECREF(module_name);
-    module_name = NULL;
-
-    args = PyTuple_Pack(3, name, bases, dict);
-    if (!args) goto fail;
-
     {
         // RAII: the first heap type created through tp_new (PrivateAttrBase)
         // carries CPython's pristine subtype_traverse/subtype_clear in its
         // tp_traverse/tp_clear; PrivateAttrType_new captures those pointers
         // while this guard is active.
         PrivateAttrCaptureGuard capture_guard;
-        base_type = PrivateAttrType_new((PyTypeObject*)&PrivateAttrType, args, NULL);
+        base_type = PrivateAttrType_new((PyTypeObject*)&PrivateAttrType, args.get(), NULL);
     }
-    Py_DECREF(args);
-    args = NULL;
 
-    Py_DECREF(name);
-    name = NULL;
-    Py_DECREF(bases);
-    bases = NULL;
-    Py_DECREF(dict);
-    dict = NULL;
-
-    if (!base_type) goto fail;
+    if (!base_type) return NULL;
 
     ((PyTypeObject*)base_type)->tp_flags |= Py_TPFLAGS_IMMUTABLETYPE;
     return base_type;
-
-fail:
-    Py_XDECREF(name);
-    Py_XDECREF(bases);
-    Py_XDECREF(dict);
-    Py_XDECREF(private_attrs);
-    Py_XDECREF(doc);
-    Py_XDECREF(module_name);
-    Py_XDECREF(args);
-    return NULL;
 }
+
 
 typedef struct {
     PyObject_HEAD
@@ -4665,25 +4627,21 @@ atexit_register_clean_func(void) noexcept
     if (resigtered_clean_func) {
         return 0;
     }
-    PyObject* atexit = PyImport_ImportModule("atexit");
+    PyObjectStorage atexit = PyObjectStorage::from_new_ref(PyImport_ImportModule("atexit"));
     if (!atexit) {
         return -1;
     }
 
-    PyObject* func = PyCFunction_New(&clean_storage, NULL);
+    PyObjectStorage func = PyObjectStorage::from_new_ref(PyCFunction_New(&clean_storage, NULL));
     if (!func) {
-        Py_DECREF(atexit);
         return -1;
     }
 
-    PyObject* result = PyObject_CallMethod(atexit, "register", "O", func);
-    Py_DECREF(func);
-    Py_DECREF(atexit);
+    PyObjectStorage result = PyObjectStorage::from_new_ref(PyObject_CallMethod(atexit, "register", "O", func));
 
     if (!result) {
         return -1;
     }
-    Py_DECREF(result);
     resigtered_clean_func = true;
     return 0;
 }
@@ -4691,7 +4649,7 @@ atexit_register_clean_func(void) noexcept
 static PyObject*
 PrivateModule_create(PyObject* spec, PyModuleDef* /*def*/) noexcept
 {
-    PyObject* name = PyObject_GetAttrString(spec, "name");
+    PyObjectStorage name = PyObjectStorage::from_new_ref(PyObject_GetAttrString(spec, "name"));
     if (!name) {
         return NULL;
     }
@@ -4700,9 +4658,7 @@ PrivateModule_create(PyObject* spec, PyModuleDef* /*def*/) noexcept
     // PyInit_private_attribute is genuinely a
     // `private_attribute.private_attribute_module` instance from the start,
     // rather than a plain module re-typed with Py_SET_TYPE afterwards.
-    PyObject* m = PyObject_CallFunction((PyObject*)&PrivateModuleType, "O", name);
-    Py_DECREF(name);
-    return m;
+    return PyObject_CallFunction((PyObject*)&PrivateModuleType, "O", name.get());
 }
 
 static int
