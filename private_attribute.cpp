@@ -2767,8 +2767,8 @@ struct PrivateAttrCreationData
             AllData::tmp_type_allowed_code_map.clear();
             AllData::tmp_type_attr_set.clear();
             AllData::type_creation_locked = false;
-            lock_.unlock();
             locked = false;
+            lock_.unlock();
         }
     }
 
@@ -3312,7 +3312,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
         return false;
     }
     ::AllData::all_type_attr_set[type_id] = data.private_attrs_set;
-    data.unlock();
 
     ensure_tp(type_instance);
 
@@ -3338,6 +3337,7 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
     ::AllData::all_object_attr[type_id] = {};
     ::AllData::all_type_subclass_attr[type_id] = {};
     ::AllData::all_type_subclass_mutex[type_id].clear();
+    ::AllData::type_allowed_code_map[type_id] = data.code_map;
 
     for (uintptr_t i: mro_vector) {
         if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
@@ -3404,7 +3404,7 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
         // INCREF was removed to avoid a +1 leak.
         ::AllData::type_need_call[type_id] = data.private_func;
     }
-    ::AllData::type_allowed_code_map[type_id] = data.code_map;
+    data.unlock();
 
     return true;
 }
