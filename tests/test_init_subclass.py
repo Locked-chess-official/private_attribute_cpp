@@ -16,6 +16,7 @@ class TestInitSubclassWrite(unittest.TestCase):
             def __init_subclass__(cls, **kw):
                 super().__init_subclass__(**kw)
                 cls._value = "from_parent"
+                cls.setup()
 
             @classmethod
             def get_cls_value(cls):
@@ -24,8 +25,11 @@ class TestInitSubclassWrite(unittest.TestCase):
             def get_value(self):
                 return self._value
 
+            @classmethod
+            def setup(cls): ...
+
         class Child(Parent):
-            __private_attrs__ = ["_value"]
+            __private_attrs__ = ["_value", "_other_value"]
 
             def __init__(self):
                 super().__init__()
@@ -33,6 +37,14 @@ class TestInitSubclassWrite(unittest.TestCase):
 
             def get_own(self):
                 return self._value
+
+            @classmethod
+            def setup(cls):
+                cls._other_value = 2
+
+            @classmethod
+            def get_other_value(cls):
+                return cls._other_value
 
         # parent code reading the subclass class / instance sees the
         # parent-stored value
@@ -42,6 +54,8 @@ class TestInitSubclassWrite(unittest.TestCase):
         self.assertEqual(Child().get_own(), "child_own")
         # the parent's own storage is untouched
         self.assertEqual(Parent().get_value(), "parent_own")
+        # parent successfully called Child.setup()
+        self.assertTrue(Child.get_other_value(), 2)
         # private attribute stays hidden from outside
         with self.assertRaises(AttributeError):
             Child()._value
