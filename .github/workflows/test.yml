@@ -5,19 +5,20 @@ on:
     branches: ["main", "master"]
     paths:
       - "tests/**"
+      - "CMakeLists.txt"
       - "pyproject.toml"
       - "picosha2.h"
       - "private_attribute.cpp"
-      - "CMakeLists.txt"
+      - "private_attribute.pyi"
   pull_request:
     branches: ["main", "master"]
     paths:
       - "tests/**"
+      - "CMakeLists.txt"
       - "pyproject.toml"
       - "picosha2.h"
       - "private_attribute.cpp"
-      - "CMakeLists.txt"
-  workflow_dispatch:
+      - "private_attribute.pyi"
 
 jobs:
   build-and-test:
@@ -41,24 +42,26 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           python -m pip install pytest
 
-      - name: Build extension in-place for native debugging (Linux/Windows only)
+      - name: Build and install extension
         shell: bash
         run: |
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            echo "Skipping in-place build on macOS to avoid CI failures; using pip install for macOS jobs"
+          # scikit-build-core builds the extension via CMake. On Linux a Debug
+          # build is used so native crash backtraces carry full symbols; the
+          # CMakeLists.txt only adds -g0 when PRIVATE_ATTR_KEEP_DEBUG is unset,
+          # so we set it to 1 to keep -g (and -fno-omit-frame-pointer for
+          # reliable gdb frame info). Windows/macOS build a plain release
+          # extension: MSVC must stay on the release CRT (/MD) that CPython
+          # extensions link against, so no Debug config is used there.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            export CFLAGS="-O0 -g -fno-omit-frame-pointer"
+            export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
+            export PRIVATE_ATTR_KEEP_DEBUG=1
+            python -m pip install . --config-settings=cmake.build-type=Debug
           else
-            if [ "${{ runner.os }}" = "Linux" ]; then
-              export CFLAGS="-O0 -g -fno-omit-frame-pointer"
-              export CXXFLAGS="-O0 -g -fno-omit-frame-pointer"
-              export PRIVATE_ATTR_KEEP_DEBUG=1
-            else
-              export CFLAGS="-g -O0"
-              export CXXFLAGS="-g -O0"
-            fi
-            python setup.py build_ext --inplace
+            python -m pip install .
           fi
 
       - name: Install native debugging tools
@@ -77,7 +80,6 @@ jobs:
         shell: bash
         env:
           PYTHONFAULTHANDLER: "1"
-          PYTHONPATH: "."
         run: |
           set -o pipefail
 
@@ -90,11 +92,6 @@ jobs:
               -ex "thread apply all bt full" \
               -ex "quit \$_exitcode" \
               --args python -m pytest tests/ -vvs -W error
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            # Use regular pytest on macOS CI to avoid lldb-related early stops; install via pip
-            python -m pip install --upgrade pip
-            python -m pip install .
-            python -X faulthandler -m pytest tests/ -vvs -W error
           else
             python -X faulthandler -m pytest tests/ -vvs -W error
           fi
