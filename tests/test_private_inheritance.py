@@ -88,11 +88,9 @@ class TestPrivateInheritance(unittest.TestCase):
         with self.assertRaises(AttributeError):
             obj._value
 
-    def test_same_name_class_attrs_stored_separately(self):
-        # A class-body attribute reusing a parent's private name is stored
-        # separately (all_type_subclass_attr[parent][child]) and resolves
-        # per-subject through the PARENT's code. It does NOT grant the
-        # subclass's own code any access to the name.
+    def test_same_name_class_attrs_require_use_parents(self):
+        # 2.2.0: a class body may not define a name that is private to a parent
+        # unless it declares the name itself or opts in via use_parents=True.
         class Parent(private_attribute.PrivateAttrBase):
             __private_attrs__ = ["_value"]
             _value = 10
@@ -100,7 +98,24 @@ class TestPrivateInheritance(unittest.TestCase):
             def get_value(self):
                 return self._value
 
-        class Child(Parent):
+        with self.assertRaises(TypeError):
+            class Child(Parent):
+                __private_attrs__ = []
+                _value = 20
+
+    def test_use_parents_class_attrs(self):
+        # 2.2.0: use_parents=True lets a subclass define a parent's private
+        # name in its own body; the value is stored in the subclass's own
+        # storage and the parent's value is untouched. Parent code always
+        # reads the parent's own storage.
+        class Parent(private_attribute.PrivateAttrBase):
+            __private_attrs__ = ["_value"]
+            _value = 10
+
+            def get_value(self):
+                return self._value
+
+        class Child(Parent, use_parents=True):
             __private_attrs__ = []
             _value = 20
 
@@ -109,19 +124,20 @@ class TestPrivateInheritance(unittest.TestCase):
 
         self.assertEqual(Parent().get_value(), 10)
         obj = Child()
-        # parent's code resolves per-subject: the child's own value
-        self.assertEqual(obj.get_value(), 20)
-        # the subclass's own code is NOT allowed to touch the name
-        with self.assertRaises(AttributeError):
-            obj.get_child_value()
+        # parent's code reads the parent's own storage, not the child's shadow
+        self.assertEqual(obj.get_value(), 10)
+        # the subclass's own code reads its own value
+        self.assertEqual(obj.get_child_value(), 20)
         with self.assertRaises(AttributeError):
             obj._value
         with self.assertRaises(AttributeError):
             Child._value
 
-    def test_same_name_class_attrs_write_separately(self):
-        # Writes through the parent's code go to the subject's own storage;
-        # the subclass's own code cannot write the name at all.
+    def test_use_parents_class_attrs_write_separately(self):
+        # 2.2.0: with use_parents=True, parent code (set_value/get_value) writes
+        # and reads the parent's own shadow of the child's storage
+        # (all_type_subclass_attr[Parent][Child]); the subclass's own code
+        # operates on the child's own storage (type_attr_dict[Child]).
         class Parent(private_attribute.PrivateAttrBase):
             __private_attrs__ = ["_value"]
             _value = 1
@@ -134,7 +150,7 @@ class TestPrivateInheritance(unittest.TestCase):
             def get_value(cls):
                 return cls._value
 
-        class Child(Parent):
+        class Child(Parent, use_parents=True):
             __private_attrs__ = []
             _value = 2
 
@@ -142,16 +158,22 @@ class TestPrivateInheritance(unittest.TestCase):
             def set_own(cls, v):
                 cls._value = v
 
+            @classmethod
+            def get_own(cls):
+                return cls._value
+
         self.assertEqual(Parent.get_value(), 1)
-        self.assertEqual(Child.get_value(), 2)
-        # parent's classmethod called on the child writes the child's own storage
+        # parent code reads the parent's shadow (empty -> falls back to parent storage)
+        self.assertEqual(Child.get_value(), 1)
+        # parent's classmethod called on the child writes the parent's shadow
         Child.set_value(99)
         self.assertEqual(Child.get_value(), 99)
         self.assertEqual(Parent.get_value(), 1)
-        # the subclass's own code cannot write the parent's private name
-        with self.assertRaises(AttributeError):
-            Child.set_own(7)
+        # the subclass's own code writes its own storage
+        Child.set_own(7)
+        self.assertEqual(Child.get_own(), 7)
         self.assertEqual(Child.get_value(), 99)
+        self.assertEqual(Parent.get_value(), 1)
         # parent's own storage still writable through the parent
         Parent.set_value(5)
         self.assertEqual(Parent.get_value(), 5)

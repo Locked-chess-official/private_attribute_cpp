@@ -80,24 +80,24 @@ class TestCodeSwapOwnership(unittest.TestCase):
 
 
 class TestFallbackSemantics(unittest.TestCase):
-    """Per-subject fallback is preserved: an unwritten read resolves to the
-    subject's own class-level default, consistently for both methods."""
+    """Parent code always reads the parent's own storage, even when a subclass
+    shadows the name in its own class-level storage."""
 
-    def test_unwritten_read_falls_back_per_subject(self):
+    def test_unwritten_read_uses_parent_storage(self):
         class FreshChild(Parent):
             __private_attrs__ = ["_n"]
             _n = 100
             f = Parent.inc
 
         c = FreshChild()
-        self.assertEqual(c.peek(), 100)
+        self.assertEqual(c.peek(), 0)
         v1 = c.f()
         self.assertEqual(v1, c.peek())
 
 
 class TestNormalUsageRegression(unittest.TestCase):
     """Without tampering, nothing changes: child's own code uses child
-    storage, parent's code keeps its per-subject view."""
+    storage, parent's code reads the parent's own storage (0)."""
 
     def test_child_own_code_uses_child_storage(self):
         class NormChild(Parent):
@@ -110,7 +110,7 @@ class TestNormalUsageRegression(unittest.TestCase):
 
         c = NormChild()
         self.assertEqual(c.own_inc(), 101)
-        self.assertEqual(c.peek(), 100)
+        self.assertEqual(c.peek(), 0)
         self.assertEqual(Parent().peek(), 0)
 
 

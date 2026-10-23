@@ -99,7 +99,8 @@ class PrivateAttrType(type):
     "metaclass for private attributes"
     def __new__(cls, name: str, bases: tuple,
                 attrs: _PrivateAttrDict, /, *,
-                private_func: Callable[[int, str], str]|None = None) -> PrivateAttrType: ...
+                private_func: Callable[[int, str], str]|None = None,
+                use_parents: bool = False) -> PrivateAttrType: ...
 
 class PrivateAttrBase(metaclass=PrivateAttrType):
     "The class to help creating private attribute. It does not have any special behavior."
@@ -146,6 +147,13 @@ def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _Pri
 
     private_attribute.register_metaclass(PrivateAbcMeta)
     ```
+
+    Optional keyword arguments:
+    - private_func: custom hidden-name generator `(obj_id, attr_name) -> str`.
+    - use_parents: when True, merge every parent class's private attribute names
+      into this class's own private-attribute set, so the subclass's code may
+      read/write those names (stored in the subclass's own storage). Default
+      False.
     """
     ...
 
