@@ -5,16 +5,19 @@ on:
     branches: ["main", "master"]
     paths:
       - "tests/**"
-      - "setup.py"
+      - "pyproject.toml"
       - "picosha2.h"
       - "private_attribute.cpp"
+      - "CMakeLists.txt"
   pull_request:
     branches: ["main", "master"]
     paths:
       - "tests/**"
-      - "setup.py"
+      - "pyproject.toml"
       - "picosha2.h"
       - "private_attribute.cpp"
+      - "CMakeLists.txt"
+  workflow_dispatch:
 
 jobs:
   build-and-test:
