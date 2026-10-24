@@ -2750,7 +2750,6 @@ struct PrivateAttrCreationData
     PyObject* base_kwds = nullptr;
     PyObject* name = nullptr;
     PyObject* bases = nullptr;
-    PyObject* attrs = nullptr;
     bool use_parents = false;
     bool cleared = false;
     std::unique_lock<std::mutex> lock_;
@@ -2783,7 +2782,6 @@ struct PrivateAttrCreationData
         }
         PRIVATEATTR_CREATION_DATA_CLEAR(name);
         PRIVATEATTR_CREATION_DATA_CLEAR(bases);
-        PRIVATEATTR_CREATION_DATA_CLEAR(attrs);
         PRIVATEATTR_CREATION_DATA_CLEAR(attrs_copy);
         PRIVATEATTR_CREATION_DATA_CLEAR(new_hash_private_attrs);
         PRIVATEATTR_CREATION_DATA_CLEAR(private_func);
@@ -2852,12 +2850,12 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     if (func_name.length() > 0) {
         parse += ":" + func_name;
     }
-    if (!PyArg_ParseTuple(args, parse.c_str(), &data.name, &data.bases, &data.attrs)) {
+    PyObject* attrs;
+    if (!PyArg_ParseTuple(args, parse.c_str(), &data.name, &data.bases, &attrs)) {
         return false;
     }
     Py_INCREF(data.name);
     Py_INCREF(data.bases);
-    Py_INCREF(data.attrs);
 
     if (!PyUnicode_Check(data.name)) {
         PyErr_SetString(PyExc_TypeError, "name must be a string");
@@ -2870,7 +2868,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    if (!PyAnyDict_Check(data.attrs)) {
+    if (!PyAnyDict_Check(attrs)) {
         PyErr_SetString(PyExc_TypeError, "attrs must be a dict");
         return false;
     }
@@ -2891,8 +2889,12 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     }
 
     PyObjectStorage __private_attrs__;
-    if (PyDict_ContainsString(data.attrs, "__private_attrs__")) {
-        __private_attrs__ = PyDict_GetItemString(data.attrs, "__private_attrs__");
+    int contains_private_attrs = PyDict_ContainsString(attrs, "__private_attrs__");
+    if (contains_private_attrs < 0) {
+        return false;
+    }
+    if (contains_private_attrs) {
+        __private_attrs__ = PyDict_GetItemString(attrs, "__private_attrs__");
     }
     else {
         __private_attrs__ = PyObjectStorage::from_new_ref(PyTuple_New(0));
@@ -2916,7 +2918,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    data.attrs_copy = PyDict_Copy(data.attrs);
+    data.attrs_copy = PyDict_Copy(attrs);
     if (!data.attrs_copy) {
         return false;
     }
@@ -2971,6 +2973,9 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     }
 
     int has_slots = PyDict_ContainsString(data.attrs_copy, "__slots__");
+    if (has_slots < 0) {
+        return false;
+    }
 
     if (has_slots) {
         PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
@@ -3053,7 +3058,11 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     };
 
     // forbidden to have "__static_attributes__" in attrs, because it exposes the private attributes name.
-    if (PyDict_ContainsString(data.attrs_copy, "__static_attributes__")) {
+    int has_static_attributes = PyDict_ContainsString(data.attrs_copy, "__static_attributes__");
+    if (has_static_attributes < 0) {
+        return false;
+    }
+    if (has_static_attributes) {
         if (PyDict_DelItemString(data.attrs_copy, "__static_attributes__") < 0) return false;
     }
 
@@ -3109,7 +3118,10 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 
     // get "private_func" from kwds
     if (kwds && PyDict_Check(kwds)) {
-        bool has_private_func = PyDict_ContainsString(kwds, "private_func");
+        int has_private_func = PyDict_ContainsString(kwds, "private_func");
+        if (has_private_func < 0) {
+            return false;
+        }
         if (has_private_func) {
             data.private_func = PyDict_GetItemString(kwds, "private_func");
             Py_INCREF(data.private_func);
@@ -3121,7 +3133,11 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         if (has_private_func) {
             if (PyDict_DelItemString(data.base_kwds, "private_func") < 0) return false;
         }
-        if (PyDict_ContainsString(kwds, "use_parents")) {
+        int kwds_has_use_parents = PyDict_ContainsString(kwds, "use_parents");
+        if (kwds_has_use_parents < 0) {
+            return false;
+        }
+        if (kwds_has_use_parents) {
             if (PyDict_DelItemString(data.base_kwds, "use_parents") < 0) return false;
         }
     }
@@ -3129,7 +3145,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         PyObject* original_key;
         Py_ssize_t original_pos = 0;
         PyObject* original_value;
-        while (PyDict_Next(data.attrs, &original_pos, &original_key, &original_value)) {
+        while (PyDict_Next(attrs, &original_pos, &original_key, &original_value)) {
             std::unordered_set<uintptr_t> set;
             analyse_all_code(original_value, data.code_map, set);
         }
@@ -3308,7 +3324,11 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
 
     PyTypeObject* type_instance = (PyTypeObject*)new_type;
     uintptr_t type_id = (uintptr_t)(type_instance);
-    if (PyDict_ContainsString(type_instance->tp_dict, "__static_attributes__")) {
+    int tp_dict_has_static_attr = PyDict_ContainsString(type_instance->tp_dict, "__static_attributes__");
+    if (tp_dict_has_static_attr < 0) {
+        return false;
+    }
+    if (tp_dict_has_static_attr) {
         PyErr_Format(PyExc_SystemError,
             "%s (%d): '__static_attributes__' will expose private attribute names and cannot be used in private attribute types", __FILE__, __LINE__);
         return false;
@@ -4095,7 +4115,6 @@ PrivateTempObject_traverse(PyObject* self, visitproc visit, void* arg) noexcept
         if (!data->cleared) {
             Py_VISIT(data->attrs_copy);
             Py_VISIT(data->base_kwds);
-            Py_VISIT(data->attrs);
         }
     }
     return 0;
