@@ -238,6 +238,7 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 - CPython may change "tp_getattro", "tp_setattro" and so on when you change the attribute "\_\_getattribute\_\_", "\_\_setattr\_\_" and so on. If you are fear about it, you can use `ensure_type` to reset those tp slots. For the other metaclasses, you can use `ensure_metaclass` to reset those tp slots. Also, don't set those methods on these classes in your code.
 - `private_attribute.register_metaclass` must be called with the metaclass which supports weakref.
 - Don't set `__static_attributes__` in private attribute class, or it will be removed.
+- After 2.2.1, when `prepare` was called, it will lock the creation of new private attribute type. There will be only one private attribute type in building (type.\_\_new\_\_) at the same time. Call `postprocess` to unlock it. If build failed, the lock will be released automatically.
 
 ## License
 
