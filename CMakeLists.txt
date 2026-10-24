@@ -37,6 +37,13 @@ else()
     private_attribute.cpp
   )
 
+  if(APPLE)
+    target_link_options(
+      private_attribute PRIVATE
+      "-undefined" "dynamic_lookup"
+    )
+  endif()
+
   target_include_directories(
     private_attribute PRIVATE
     ${Python_INCLUDE_DIRS}
