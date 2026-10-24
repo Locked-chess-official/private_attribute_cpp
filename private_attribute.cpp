@@ -195,6 +195,10 @@ public:
     PyObject* get() const noexcept {
         return obj;
     }
+
+    PyObject** getpointer() noexcept {
+        return &obj;
+    }
 };
 
 namespace {
@@ -247,6 +251,7 @@ namespace {
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
+        static std::unordered_map<uintptr_t, uintptr_t> weakref_type;
         // Single dict-backed strong-ref cache shared by the module itself (keyed by
         // kModuleSelfKey) and by PrivateAttrBase (keyed by kPrivateAttrBaseKey),
         // so clean_all_storages can release everything at interpreter shutdown.
@@ -2810,23 +2815,20 @@ need_analyse_type(PyObject* type) noexcept
             continue;
         }
 #if PY_VERSION_HEX < 0x030D0000
-        PyObject* metaclass = PyWeakref_GET_OBJECT((PyObject*)metaclassref);
-        if (type == metaclass) continue;
-        if (PyObject_IsInstance(type, metaclass)) {
+        PyObjectStorage metaclass = PyWeakref_GET_OBJECT((PyObject*)metaclassref);
+        if (type == metaclass.get()) continue;
+        if (PyObject_IsInstance(type, metaclass.get())) {
             return true;
         }
 #else
-        PyObject* metaclass;
-        if (PyWeakref_GetRef(metaclassref, &metaclass) == 1) {
-            if (type == metaclass) {
-                Py_DECREF(metaclass);
+        PyObjectStorage metaclass;
+        if (PyWeakref_GetRef(metaclassref, (metaclass.getpointer())) == 1) {
+            if (type == metaclass.get()) {
                 continue;
             }
-            if (PyObject_IsInstance(type, metaclass)) {
-                Py_DECREF(metaclass);
+            if (PyObject_IsInstance(type, metaclass.get())) {
                 return true;
             }
-            Py_DECREF(metaclass);
         }
 #endif
     }
@@ -3526,16 +3528,17 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
     std::vector<PyObject*> need_analyse_types_and_metaclasses;
     std::vector<PyObject*> registered_types_and_metaclasses;
     std::vector<PyObject*> all_subclasses;
-    PyObject* subclasses = PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", self);
-    if (!subclasses) return -1;
-    if (!PyList_Check(subclasses)) {
-        PyErr_SetString(PyExc_TypeError, "subclasses of this class is not list");
-        Py_DECREF(subclasses);
-        return -1;
-    }
-    Py_ssize_t list_len = PyList_GET_SIZE(subclasses);
-    for (Py_ssize_t i = 0; i < list_len; i++) {
-        all_subclasses.push_back(PyList_GET_ITEM(subclasses, i));
+    {
+        PyObjectStorage subclasses = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", self));
+        if (!subclasses) return -1;
+        if (!PyList_Check(subclasses.get())) {
+            PyErr_SetString(PyExc_TypeError, "subclasses of this class is not list");
+            return -1;
+        }
+        Py_ssize_t list_len = PyList_GET_SIZE(subclasses.get());
+        for (Py_ssize_t i = 0; i < list_len; i++) {
+            all_subclasses.push_back(PyList_GET_ITEM(subclasses.get(), i));
+        }
     }
     if (need_analyse_type(self)) {
         need_analyse_types_and_metaclasses.push_back(self);
@@ -3556,7 +3559,6 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
     for (auto& i: registered_types_and_metaclasses) {
         ensure_metaclass_tp(0, i);
     }
-    Py_DECREF(subclasses);
     return result;
 }
 
@@ -4183,15 +4185,14 @@ postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args) noexcept
 } while (0)
 
 static PyObject*
-metaclass_weakref_callback(PyObject* self, PyObject* /*weakref*/) noexcept
+metaclass_weakref_callback(PyObject* /*self*/, PyObject* weakref) noexcept
 {
-    void* pointer = PyCapsule_GetPointer(self, "metaclass_id");
-    if (!pointer) {
-        Py_RETURN_NONE;
-    }
-    uintptr_t id = (uintptr_t)pointer;
+    uintptr_t weakref_id = (uintptr_t)weakref;
 
     std::unique_lock lock(::AllData::all_register_new_metaclass_mutex);
+    if (::AllData::weakref_type.find(weakref_id) == ::AllData::weakref_type.end()) Py_RETURN_NONE;
+    uintptr_t id = ::AllData::weakref_type[weakref_id];
+    ::AllData::weakref_type.erase(weakref_id);
 
     auto it = ::AllData::all_register_type_weak_ref.find(id);
     if (it != ::AllData::all_register_type_weak_ref.end()) {
@@ -4224,23 +4225,20 @@ is_class_of_registed_type(PyObject* metaclass) noexcept
             continue;
         }
 #if PY_VERSION_HEX < 0x030D0000
-        PyObject* instance = PyWeakref_GET_OBJECT((PyObject*)instanceref);
-        if (instance == metaclass) continue;
-        if (PyObject_IsInstance(instance, metaclass)) {
+        PyObjectStorage instance = PyWeakref_GET_OBJECT((PyObject*)instanceref);
+        if (instance.get() == metaclass) continue;
+        if (PyObject_IsInstance(instance.get(), metaclass)) {
             return true;
         }
 #else
-        PyObject* instance;
-        if (PyWeakref_GetRef(instanceref, &instance) == 1) {
+        PyObjectStorage instance;
+        if (PyWeakref_GetRef(instanceref, instance.getpointer()) == 1) {
             if (instance == metaclass) {
-                Py_DECREF(instance);
                 continue;
             }
             if (PyObject_IsInstance(instance, metaclass)) {
-                Py_DECREF(instance);
                 return true;
             }
-            Py_DECREF(instance);
         }
 #endif
     }
@@ -4277,25 +4275,20 @@ register_metaclass_head(PyObject* metaclass) noexcept
         Py_RETURN_NONE;
     }
 
-    PyObject* capsule = PyCapsule_New((void*)metaclass, "metaclass_id", NULL);
-    if (!capsule) {
-        return NULL;
+    {
+        PyObjectStorage callback = PyObjectStorage::from_new_ref(PyCFunction_New(&weakref_callback_def, NULL));
+        if (!callback) {
+            return NULL;
+        }
+        PyObjectStorage ref = PyObjectStorage::from_new_ref(PyWeakref_NewRef(metaclass, callback.get()));
+        if (!ref) {
+            return NULL;
+        }
+        // PyWeakref_NewRef returns a new reference; transfer it into the storage
+        // without an extra INCREF (which the plain assignment operator would add).
+        ::AllData::all_register_type_weak_ref[id] = ref;
+        ::AllData::weakref_type[(uintptr_t)(ref.get())] = id;
     }
-
-    PyObject* callback = PyCFunction_New(&weakref_callback_def, capsule);
-    if (!callback) {
-        Py_DECREF(capsule);
-        return NULL;
-    }
-    PyObject* ref = PyWeakref_NewRef(metaclass, callback);
-    if (!ref) {
-        Py_DECREF(callback);
-        Py_DECREF(capsule);
-        return NULL;
-    }
-    // PyWeakref_NewRef returns a new reference; transfer it into the storage
-    // without an extra INCREF (which the plain assignment operator would add).
-    ::AllData::all_register_type_weak_ref[id] = PyObjectStorage::from_new_ref(ref);
     PyTypeObject* mt = (PyTypeObject*)metaclass;
     // Save the ORIGINAL slots before wrapping. Always resolve through the
     // get_type_need_tp_* walkers so a delegating default (CPython's
