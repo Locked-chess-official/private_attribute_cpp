@@ -174,10 +174,10 @@ import private_attribute
 
 class PrivateAbcMeta(ABCMeta):
     def __new__(cls, name, bases, attrs, **kwargs):
-        temp = private_attribute.prepare(name, bases, attrs, **kwargs)
-        typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-        private_attribute.postprocess(typ, temp)
-        return typ
+        with private_attribute.prepare(name, bases, attrs, **kwargs) as tmp: # In 2.2.3 it support using "with"
+            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+            private_attribute.postprocess(typ, temp) # or tmp.postprocess(typ)
+            return typ
 
 private_attribute.register_metaclass(PrivateAbcMeta)
 ```
@@ -239,6 +239,7 @@ TypeError: Can't instantiate abstract class MyClass without an implementation fo
 - `private_attribute.register_metaclass` must be called with the metaclass which supports weakref.
 - Don't set `__static_attributes__` in private attribute class, or it will be removed.
 - After 2.2.1, when `prepare` was called, it will lock the creation of new private attribute type. There will be only one private attribute type in building (type.\_\_new\_\_) at the same time. Call `postprocess` to unlock it. If build failed, the lock will be released automatically.
+- After 2.2.3, it is recommend to use "with" on `private_attribute.prepare` and `private_attribute.postprocess` to ensure the lock is released.
 
 ## License
 

@@ -119,6 +119,9 @@ class _PrivateTemp:
     def kwds(self) -> dict[str, Any]: ...
     def postprocess(self, typ: type, /) -> None: ... # add in 2.1.17
 
+    def __enter__(self) -> "_PrivateTemp": ...
+    def __exit__(self, exc_type: type, exc_val: Exception, exc_tb: Any) -> None: ...
+
 def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _PrivateTemp:
     """
     function for custom metaclass to create private attributes class.
@@ -140,10 +143,10 @@ def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _Pri
 
     class PrivateAbcMeta(ABCMeta):
         def __new__(cls, *args, **kwargs):
-            temp = private_attribute.prepare(*args, **kwargs)
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
-            return typ
+            with private_attribute.prepare(*args, **kwargs) as temp:
+                typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+                private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
+                return typ
 
     private_attribute.register_metaclass(PrivateAbcMeta)
     ```
@@ -178,10 +181,10 @@ def postprocess(typ: type, temp: _PrivateTemp, /) -> None:
 
     class PrivateAbcMeta(ABCMeta):
         def __new__(cls, *args, **kwargs):
-            temp = private_attribute.prepare(*args, **kwargs)
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
-            return typ
+            with private_attribute.prepare(*args, **kwargs) as temp:
+                            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+                            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
+                            return typ
 
     private_attribute.register_metaclass(PrivateAbcMeta)
     ```
@@ -208,10 +211,10 @@ def register_metaclass(typ: type, /) -> None:
 
     class PrivateAbcMeta(ABCMeta):
         def __new__(cls, *args, **kwargs):
-            temp = private_attribute.prepare(*args, **kwargs)
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
-            return typ
+            with private_attribute.prepare(*args, **kwargs) as temp:
+                typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+                private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
+                return typ
 
     private_attribute.register_metaclass(PrivateAbcMeta)
     ```

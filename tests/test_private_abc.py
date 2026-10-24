@@ -5,10 +5,10 @@ import unittest
 
 class PrivateAbcMeta(ABCMeta):
     def __new__(cls, *args, **kwargs):
-        temp = private_attribute.prepare(*args, **kwargs)
-        typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-        private_attribute.postprocess(typ, temp)
-        return typ
+        with private_attribute.prepare(*args, **kwargs) as temp:
+            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+            private_attribute.postprocess(typ, temp)
+            return typ
 
 
 private_attribute.register_metaclass(PrivateAbcMeta)
@@ -34,7 +34,7 @@ class ConcreteClass(MyClass):
         self._secret1 = secret1
         self._secret2 = secret2
 
-    def public_method(self):
+    def public_method(self): # type: ignore
         return self._secret1, self._secret2
 
 
@@ -47,7 +47,7 @@ class TestPrivateAbc(unittest.TestCase):
         with self.assertRaises(AttributeError):
             c._secret2
         with self.assertRaises(TypeError):
-            MyClass()
+            MyClass() # type: ignore
         with self.assertRaises(AttributeError):
             MyClass._secret1
         self.assertEqual(MyClass.get_secret1(), 10)

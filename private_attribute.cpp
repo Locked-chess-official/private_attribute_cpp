@@ -4060,8 +4060,27 @@ PrivateTempObject_postprocess(PyObject* self, PyObject* type) noexcept
     Py_RETURN_NONE;
 }
 
+static PyObject*
+PrivateTempObject_enter(PyObject* self, PyObject* /*args*/) noexcept
+{
+    Py_INCREF(self);
+    return self;
+}
+
+
+static PyObject*
+PrivateTempObject_exit(PyObject* self, PyObject* /*args*/) noexcept
+{
+    PrivateTempObject* obj = (PrivateTempObject*)self;
+    if (!obj->tmp->cleared) {
+        obj->tmp->clear();
+    }
+    Py_RETURN_NONE;
+}
 static PyMethodDef PrivateTempObject_methods[] = {
     {"postprocess", (PyCFunction)PrivateTempObject_postprocess, METH_O, "postprocess the temp object"},
+    {"__enter__", (PyCFunction)PrivateTempObject_enter, METH_NOARGS, NULL},
+    {"__exit__", (PyCFunction)PrivateTempObject_exit, METH_VARARGS, NULL},
     {NULL}
 };
 
@@ -4147,7 +4166,11 @@ postprocess_for_PrivateAttr(PyObject* /*self*/, PyObject* args) noexcept
 {
     PyObject* type;
     PyObject* tmp;
-    if (!PyArg_ParseTuple(args, "OO", &type, &tmp)) {
+    if (!PyArg_ParseTuple(args, "OO:private_attribute.postprocess", &type, &tmp)) {
+        return NULL;
+    }
+    if (!PyObject_IsInstance(tmp, (PyObject*)&PrivateTempType)) {
+        PyErr_SetString(PyExc_TypeError, "tmp must be a PrivateTempObject");
         return NULL;
     }
     return PrivateTempObject_postprocess(tmp, type);
@@ -4506,10 +4529,10 @@ import private_attribute
 
 class PrivateAbcMeta(ABCMeta):
     def __new__(cls, *args, **kwargs):
-        temp = private_attribute.prepare(*args, **kwargs)
-        typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-        private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
-        return typ
+        with private_attribute.prepare(*args, **kwargs) as temp:
+            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+            private_attribute.postprocess(typ, temp) # or temp.postprocess(typ)
+            return typ
 
 private_attribute.register_metaclass(PrivateAbcMeta)
 ```
