@@ -23,7 +23,13 @@ if(NOT PYTHON_CONFIG_RESULT EQUAL 0)
   message(FATAL_ERROR "Failed to query Python build configuration")
 endif()
 
-if(PYTHON_ENABLE_SHARED STREQUAL "1")
+if(WIN32)
+  # Windows: keep Python::Module to obtain the required import library.
+  Python_add_library(
+    private_attribute MODULE WITH_SOABI
+    private_attribute.cpp
+  )
+elseif(PYTHON_ENABLE_SHARED STREQUAL "1")
   # Keep the standard CMake Python extension-module behavior.
   Python_add_library(
     private_attribute MODULE WITH_SOABI
