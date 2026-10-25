@@ -3545,9 +3545,9 @@ static PyObject* ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass) no
 static int
 new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
 {
-    std::vector<PyObject*> need_analyse_types_and_metaclasses;
-    std::vector<PyObject*> registered_types_and_metaclasses;
-    std::vector<PyObject*> all_subclasses;
+    std::vector<PyObjectStorage> need_analyse_types_and_metaclasses;
+    std::vector<PyObjectStorage> registered_types_and_metaclasses;
+    std::vector<PyObjectStorage> all_subclasses;
     {
         PyObjectStorage subclasses = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", self));
         if (!subclasses) return -1;
@@ -3574,7 +3574,7 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
     }
     int result = original_type_tp_setattro(self, name, value);
     for (auto& i: need_analyse_types_and_metaclasses) {
-        ensure_tp((PyTypeObject*)i);
+        ensure_tp((PyTypeObject*)(i.get()));
     }
     for (auto& i: registered_types_and_metaclasses) {
         ensure_metaclass_tp(0, i);
