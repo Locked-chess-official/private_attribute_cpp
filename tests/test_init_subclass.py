@@ -29,7 +29,8 @@ class TestInitSubclassWrite(unittest.TestCase):
             def setup(cls): ...
 
         class Child(Parent):
-            __private_attrs__ = ["_value", "_other_value"]
+            __private_attrs__ = ["_value", "_other_value", "_start_value"]
+            _start_value = "child_own"
 
             def __init__(self):
                 super().__init__()
@@ -40,6 +41,7 @@ class TestInitSubclassWrite(unittest.TestCase):
 
             @classmethod
             def setup(cls):
+                assert cls._start_value
                 cls._other_value = 2
 
             @classmethod

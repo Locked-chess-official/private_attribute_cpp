@@ -223,6 +223,8 @@ namespace {
         static std::unordered_set<TwoStringTuple> tmp_type_attr_set;
         static std::unordered_map<uintptr_t, PyObjectStorage> tmp_type_allowed_code_map;
         static std::vector<PyObjectStorage> tmp_type_need_call; // use vector to avoid of the dealloc after python end
+        static std::unordered_map<std::string, PyObjectStorage> tmp_type_attr_dict;
+
         static std::unordered_map<uintptr_t, std::unique_ptr<std::shared_mutex>> all_type_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> type_need_call;
         static std::unordered_map<uintptr_t, std::unordered_set<TwoStringTuple>> all_type_attr_set;
@@ -319,6 +321,7 @@ clean_all_storages() noexcept
     AllData::tmp_type_attr_set.clear();
     AllData::tmp_type_allowed_code_map.clear();
     AllData::tmp_type_need_call.clear();
+    AllData::tmp_type_attr_dict.clear();
     AllData::type_creation_locked = false;
     AllData::all_type_mutex.clear();
     AllData::type_need_call.clear();
@@ -2526,6 +2529,12 @@ type_get_final_attr(uintptr_t main_type, uintptr_t target_type, const std::strin
             if (item_set.find(key) != item_set.end()) {
                 PyObject* obj = item_set[key];
                 return obj;
+            } else if (::AllData::type_creation_locked && ::AllData::all_type_attr_set.find(main_type) == ::AllData::all_type_attr_set.end()) {
+                // now we can only use name instead of key on ::AllData::tmp_type_attr_dict[name]
+                if (::AllData::tmp_type_attr_dict.find(name) != ::AllData::tmp_type_attr_dict.end()) {
+                    PyObject* obj = ::AllData::tmp_type_attr_dict[name];
+                    return obj;
+                }
             }
             return -1; // main_type has no such attribute -> not found
         }
@@ -2738,9 +2747,6 @@ struct PrivateAttrCreationData
     std::unordered_set<std::string> private_attrs_vector_string;
     std::vector<uintptr_t> all_need_analyse_base;
     std::unordered_map<std::string, PyObjectStorage> need_remove_itself;
-    // Class-body attributes whose name is private to a parent class: stored
-    // separately in all_type_subclass_attr[parent][this class].
-    std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> need_remove_subclass;
     PyObject* private_func = nullptr;
     PyObject* base_kwds = nullptr;
     PyObject* name = nullptr;
@@ -2758,6 +2764,7 @@ struct PrivateAttrCreationData
             locked = true;
             AllData::tmp_type_allowed_code_map = code_map;
             AllData::tmp_type_attr_set = private_attrs_set;
+            AllData::tmp_type_attr_dict = need_remove_itself;
             if (private_func) {
                 ::AllData::tmp_type_need_call.push_back(private_func);
             }
@@ -2769,6 +2776,7 @@ struct PrivateAttrCreationData
             AllData::tmp_type_allowed_code_map.clear();
             AllData::tmp_type_attr_set.clear();
             ::AllData::tmp_type_need_call.clear();
+            AllData::tmp_type_attr_dict.clear();
             AllData::type_creation_locked = false;
             locked = false;
             lock_.unlock();
@@ -2787,7 +2795,6 @@ struct PrivateAttrCreationData
         PRIVATEATTR_CREATION_DATA_CLEAR(base_kwds);
 
         need_remove_itself.clear();
-        need_remove_subclass.clear();
         code_map.clear();
         if (locked) {
             unlock();
@@ -3390,34 +3397,6 @@ PrivateAttrType_postprocess(PyObject* new_type, PrivateAttrCreationData& data) n
             final_key = default_random_string(type_id, key);
         }
         ::AllData::type_attr_dict[type_id][final_key] = value;
-    }
-
-    for (auto& [i, map]: data.need_remove_subclass) {
-        if (::AllData::all_type_subclass_attr.find(i) == ::AllData::all_type_subclass_attr.end()) {
-            ::AllData::all_type_subclass_attr[i] = {};
-        }
-        if (::AllData::all_type_subclass_mutex.find(i) == ::AllData::all_type_subclass_mutex.end()) {
-            ::AllData::all_type_subclass_mutex[i].clear();
-        }
-        if (::AllData::all_type_subclass_attr[i].find(type_id) == ::AllData::all_type_subclass_attr[i].end()) {
-            ::AllData::all_type_subclass_attr[i][type_id] = {};
-        }
-        if (::AllData::all_type_subclass_mutex[i].find(type_id) == ::AllData::all_type_subclass_mutex[i].end()) {
-            ::AllData::all_type_subclass_mutex[i][type_id] = std::make_unique<std::shared_mutex>();
-        }
-        for (auto& [key, value]: map) {
-            std::string final_key;
-            if (data.private_func) {
-                auto private_name_result = custom_random_string(type_id, key, data.private_func);
-                if (!private_name_result.ok) {
-                    return false;
-                }
-                final_key = private_name_result.value;
-            } else {
-                final_key = default_random_string(type_id, key);
-            }
-            ::AllData::all_type_subclass_attr[i][type_id][final_key] = value;
-        }
     }
 
     if (data.private_func) {
