@@ -18,6 +18,7 @@
 #include "picosha2.h"
 #include <functional>
 #include <memory>
+#include <new>
 
 // python under 3.13 doesn't have PyDict_ContainsString, so we implement it ourselves
 #if PY_VERSION_HEX < 0x030D0000
@@ -4166,7 +4167,10 @@ static PyTypeObject PrivateTempType = {
 static PyObject*
 prepare_for_PrivateAttr(PyObject* /*self*/, PyObject* args, PyObject* kwargs) noexcept
 {
-    PrivateAttrCreationData* tmp_data = new PrivateAttrCreationData();
+    PrivateAttrCreationData* tmp_data = new(std::nothrow) PrivateAttrCreationData();
+    if (!tmp_data) {
+        return PyErr_NoMemory();
+    }
     if (!PrivateAttrType_preprocess(args, kwargs, *tmp_data, "private_attribute.prepare")) {
         tmp_data->clear();
         delete tmp_data;
