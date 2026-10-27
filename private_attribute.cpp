@@ -2950,7 +2950,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         if (!hash_tuple) {
             return false;
         }
-        PyTuple_SET_ITEM(new_hash_private_attrs, i, hash_tuple);
+        PyTuple_SET_ITEM(new_hash_private_attrs.get(), i, hash_tuple);
         data.private_attrs_set.insert(hash_tuple_key);
         data.private_attrs_vector_string.insert(attr_str);
     }
@@ -3005,7 +3005,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         }
     }
 
-    Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases);
+    Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases.get());
     for (Py_ssize_t i = 0; i < bases_len; i++) {
         PyObject* base = PyTuple_GET_ITEM(data.bases.get(), i);
         if (!base || !PyType_Check(base) || !need_analyse_type(base)) {
@@ -3284,7 +3284,7 @@ ensure_subclass_tp(PyTypeObject* type_instance) noexcept
         PyErr_WriteUnraisable(unraisable_missing);
         return;
     }
-    Py_ssize_t list_len = PyList_GET_SIZE(subclasses);
+    Py_ssize_t list_len = PyList_GET_SIZE(subclasses.get());
     for (Py_ssize_t i = 0; i < list_len; i++) {
         PyObject* subclass = PyList_GetItem(subclasses, i);
         if (!PyType_Check(subclass)) continue;
@@ -4314,7 +4314,7 @@ register_metaclass(PyObject* /*self*/, PyObject* metaclass) noexcept
     if (!PyList_Check(subclasses.get())) {
         Py_RETURN_NONE;
     }
-    Py_ssize_t list_len = PyList_GET_SIZE(subclasses);
+    Py_ssize_t list_len = PyList_GET_SIZE(subclasses.get());
     for (Py_ssize_t i = 0; i < list_len; i++) {
         PyObject* subclass = PyList_GET_ITEM(subclasses.get(), i);
         if (!register_metaclass(0, subclass)) {
