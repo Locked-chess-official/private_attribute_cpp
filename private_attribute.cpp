@@ -1026,12 +1026,11 @@ listproxy_index(PyObject* self, PyObject* args) noexcept
     if (!listproxy_check(obj)) {
         return NULL;
     }
-    PyObject* method = PyObject_GetAttrString(obj->list, "index");
+    PyObjectStorage method = PyObjectStorage::from_new_ref(PyObject_GetAttrString(obj->list, "index"));
     if (!method) {
         return NULL;
     }
-    PyObject* result = PyObject_Call(method, args, NULL);
-    Py_DECREF(method);
+    PyObject* result = PyObject_Call(method.get(), args, NULL);
     return result;
 }
 
@@ -1105,12 +1104,11 @@ listproxy_repr(PyObject* self) noexcept
     if (!listproxy_check(obj)) {
         return NULL;
     }
-    PyObject* inner = PyObject_Repr(obj->list);
+    PyObjectStorage inner = PyObjectStorage::from_new_ref(PyObject_Repr(obj->list));
     if (!inner) {
         return NULL;
     }
     PyObject* result = PyUnicode_FromFormat("listproxy(%U)", inner);
-    Py_DECREF(inner);
     return result;
 }
 
@@ -3164,13 +3162,12 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 static PyObject*
 PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexcept
 {
-    PyObject* type_args = PyTuple_Pack(3, data.name, data.bases, data.attrs_copy);
+    PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(3, data.name, data.bases, data.attrs_copy));
     if (!type_args) {
         return nullptr;
     }
 
     PyObject* new_type = PyType_Type.tp_new(type, type_args, data.base_kwds);
-    Py_DECREF(type_args);
 
     if (!new_type) {
         return nullptr;
@@ -3293,19 +3290,16 @@ static void
 ensure_subclass_tp(PyTypeObject* type_instance) noexcept
 {
     KeepPythonException _;
-    PyObject* subclasses = PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", (PyObject*)type_instance);
+    PyObjectStorage subclasses = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", (PyObject*)type_instance));
     if (!subclasses) {
-        PyObject* unraisable_missing = PyUnicode_FromString("type.__subclasses__()");
+        PyObjectStorage unraisable_missing = PyObjectStorage::from_new_ref(PyUnicode_FromString("type.__subclasses__()"));
         PyErr_WriteUnraisable(unraisable_missing);
-        Py_DECREF(unraisable_missing);
         return;
     }
     if (!PyList_Check(subclasses)) {
         PyErr_SetString(PyExc_TypeError, "type.__subclasses__() did not return a list");
-        PyObject* unraisable_missing = PyUnicode_FromString("type.__subclasses__()");
+        PyObjectStorage unraisable_missing = PyObjectStorage::from_new_ref(PyUnicode_FromString("type.__subclasses__()"));
         PyErr_WriteUnraisable(unraisable_missing);
-        Py_DECREF(unraisable_missing);
-        Py_DECREF(subclasses);
         return;
     }
     Py_ssize_t list_len = PyList_GET_SIZE(subclasses);
@@ -3314,7 +3308,6 @@ ensure_subclass_tp(PyTypeObject* type_instance) noexcept
         if (!PyType_Check(subclass)) continue;
         ensure_tp((PyTypeObject*)subclass);
     }
-    Py_DECREF(subclasses);
 }
 
 static bool
@@ -3973,7 +3966,6 @@ create_private_attr_base_simple(void) noexcept
     return base_type;
 }
 
-
 typedef struct {
     PyObject_HEAD
     PrivateAttrCreationData* tmp;
@@ -4077,6 +4069,7 @@ PrivateTempObject_exit(PyObject* self, PyObject* /*args*/) noexcept
     }
     Py_RETURN_NONE;
 }
+
 static PyMethodDef PrivateTempObject_methods[] = {
     {"postprocess", (PyCFunction)PrivateTempObject_postprocess, METH_O, "postprocess the temp object"},
     {"__enter__", (PyCFunction)PrivateTempObject_enter, METH_NOARGS, NULL},
@@ -4331,20 +4324,21 @@ static PyObject*
 register_metaclass(PyObject* /*self*/, PyObject* metaclass) noexcept
 {
     if (!register_metaclass_head(metaclass)) return NULL;
-    PyObject* subclasses = PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", metaclass);
+    PyObjectStorage subclasses = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyType_Type, "__subclasses__", "O", metaclass));
     if (!subclasses) {
         PyErr_Clear();
         Py_RETURN_NONE;
     }
+    if (!PyList_Check(subclasses.get())) {
+        Py_RETURN_NONE;
+    }
     Py_ssize_t list_len = PyList_GET_SIZE(subclasses);
     for (Py_ssize_t i = 0; i < list_len; i++) {
-        PyObject* subclass = PyList_GET_ITEM(subclasses, i);
+        PyObject* subclass = PyList_GET_ITEM(subclasses.get(), i);
         if (!register_metaclass(0, subclass)) {
-            Py_DECREF(subclasses);
             return NULL;
         }
     }
-    Py_DECREF(subclasses);
     Py_RETURN_NONE;
 }
 
@@ -4443,9 +4437,9 @@ PrivateModule_get_PrivateAttrBase(PyObject* /*self*/, void* /*closure*/) noexcep
 static PyObject*
 PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
 {
-    PyObject* parent_dir = PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self);
+    PyObjectStorage parent_dir = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self));
     if (!parent_dir) return NULL;
-    PyObject* attr_list = Py_BuildValue("[ssssssss]",
+    PyObjectStorage attr_list = PyObjectStorage::from_new_ref(Py_BuildValue("[ssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
         "PrivateAttrBase",
@@ -4454,14 +4448,11 @@ PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
         "register_metaclass",
         "ensure_type",
         "ensure_metaclass"
-    );
+    ));
     if (!attr_list) {
-        Py_DECREF(parent_dir);
         return NULL;
     }
     PyObject* result = PySequence_Concat(parent_dir, attr_list);
-    Py_DECREF(parent_dir);
-    Py_DECREF(attr_list);
     return result;
 }
 
@@ -4759,11 +4750,10 @@ PrivateModule_exec(PyObject* m) noexcept
     // subtype_clear pointers are captured at import time (see
     // PrivateAttrCaptureGuard and ::AllData::captured_subtype_*), instead of
     // waiting for the first lazy attribute access to the module.
-    PyObject* private_attr_base = PrivateModule_get_PrivateAttrBase(NULL, NULL);
+    PyObjectStorage private_attr_base = PyObjectStorage::from_new_ref(PrivateModule_get_PrivateAttrBase(NULL, NULL));
     if (!private_attr_base) {
         return -1;
     }
-    Py_DECREF(private_attr_base);
     PyObject* all = Py_BuildValue("[ssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
