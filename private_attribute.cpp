@@ -20,21 +20,6 @@
 #include <memory>
 #include <new>
 
-// python under 3.13 doesn't have PyDict_ContainsString, so we implement it ourselves
-#if PY_VERSION_HEX < 0x030D0000
-static int
-PyDict_ContainsString(PyObject *op, const char *key) noexcept
-{
-    PyObject *key_obj = PyUnicode_FromString(key);
-    if (key_obj == NULL) {
-        return -1;
-    }
-    int res = PyDict_Contains(op, key_obj);
-    Py_DECREF(key_obj);
-    return res;
-}
-#endif
-
 // python >= 3.15 has PyAnyDict_Check. Under 3.15 defined it as PyDict_Check
 #if PY_VERSION_HEX < 0x030F0000
 #define PyAnyDict_Check(op) PyDict_Check(op)
@@ -201,6 +186,20 @@ public:
         return &obj;
     }
 };
+
+// python under 3.13 doesn't have PyDict_ContainsString, so we implement it ourselves
+#if PY_VERSION_HEX < 0x030D0000
+static int
+PyDict_ContainsString(PyObject *op, const char *key) noexcept
+{
+    PyObjectStorage key_obj = PyObjectStorage::from_new_ref(PyUnicode_FromString(key));
+    if (key_obj == NULL) {
+        return -1;
+    }
+    int res = PyDict_Contains(op, key_obj);
+    return res;
+}
+#endif
 
 namespace {
     namespace AllData {
@@ -1124,21 +1123,16 @@ listproxy_richcompare(PyObject* self, PyObject* other, int op) noexcept
     // list directly. Otherwise copy the counterpart into a real list first
     // (so that listproxy == listproxy and listproxy == tuple behave like a
     // list-to-list comparison), then compare.
-    PyObject* self_list = obj->list;
-    bool decref_self_list = false;
+    PyObjectStorage self_list = obj->list;
     if (!PyList_CheckExact(other)) {
-        self_list = PySequence_List(obj->list);
+        self_list = PyObjectStorage::from_new_ref(PySequence_List(obj->list));
         if (!self_list) {
             PyErr_Clear();
             Py_RETURN_NOTIMPLEMENTED;
         }
-        decref_self_list = true;
     }
 
     PyObject* result = PyObject_RichCompare(self_list, other, op);
-    if (decref_self_list) {
-        Py_DECREF(self_list);
-    }
     return result;
 }
 
@@ -2727,28 +2721,19 @@ real_class_name(const std::string& name, const std::string& class_name) noexcept
     return name;
 }
 
-#define PRIVATEATTR_CREATION_DATA_CLEAR(name) do \
-    { \
-        if (name) { \
-            Py_DECREF(name); \
-            name = nullptr; \
-        } \
-    } while (0)
-
 struct PrivateAttrCreationData
 {
     std::string class_name;
-    PyObject* attrs_copy = nullptr;
-    PyObject* new_hash_private_attrs = nullptr;
+    PyObjectStorage attrs_copy = (PyObject*)nullptr;
     std::unordered_set<TwoStringTuple> private_attrs_set;
     std::unordered_map<uintptr_t, PyObjectStorage> code_map;
     std::unordered_set<std::string> private_attrs_vector_string;
     std::vector<uintptr_t> all_need_analyse_base;
     std::unordered_map<std::string, PyObjectStorage> need_remove_itself;
-    PyObject* private_func = nullptr;
-    PyObject* base_kwds = nullptr;
-    PyObject* name = nullptr;
-    PyObject* bases = nullptr;
+    PyObjectStorage private_func = (PyObject*)nullptr;
+    PyObjectStorage base_kwds = (PyObject*)nullptr;
+    PyObjectStorage name = (PyObject*)nullptr;
+    PyObjectStorage bases = (PyObject*)nullptr;
     bool use_parents = false;
     bool cleared = false;
     std::unique_lock<std::mutex> lock_;
@@ -2785,12 +2770,11 @@ struct PrivateAttrCreationData
         if (cleared) {
             return;
         }
-        PRIVATEATTR_CREATION_DATA_CLEAR(name);
-        PRIVATEATTR_CREATION_DATA_CLEAR(bases);
-        PRIVATEATTR_CREATION_DATA_CLEAR(attrs_copy);
-        PRIVATEATTR_CREATION_DATA_CLEAR(new_hash_private_attrs);
-        PRIVATEATTR_CREATION_DATA_CLEAR(private_func);
-        PRIVATEATTR_CREATION_DATA_CLEAR(base_kwds);
+        name = (PyObject*)nullptr;
+        bases = (PyObject*)nullptr;
+        attrs_copy = (PyObject*)nullptr;
+        private_func = (PyObject*)nullptr;
+        base_kwds = (PyObject*)nullptr;
 
         need_remove_itself.clear();
         code_map.clear();
@@ -2854,12 +2838,12 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     if (func_name.length() > 0) {
         parse += ":" + func_name;
     }
-    PyObject* attrs;
-    if (!PyArg_ParseTuple(args, parse.c_str(), &data.name, &data.bases, &attrs)) {
+    PyObject *name, *bases, *attrs;
+    if (!PyArg_ParseTuple(args, parse.c_str(), &name, &bases, &attrs)) {
         return false;
     }
-    Py_INCREF(data.name);
-    Py_INCREF(data.bases);
+    data.name = name;
+    data.bases = bases;
 
     if (!PyUnicode_Check(data.name)) {
         PyErr_SetString(PyExc_TypeError, "name must be a string");
@@ -2922,7 +2906,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    data.attrs_copy = PyDict_Copy(attrs);
+    data.attrs_copy = PyObjectStorage::from_new_ref(PyDict_Copy(attrs));
     if (!data.attrs_copy) {
         return false;
     }
@@ -2931,9 +2915,8 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     if (private_attr_len < 0) {
         return false;
     }
-
-    data.new_hash_private_attrs = PyTuple_New(private_attr_len);
-    if (!data.new_hash_private_attrs) {
+    PyObjectStorage new_hash_private_attrs = PyObjectStorage::from_new_ref(PyTuple_New(private_attr_len));
+    if (!new_hash_private_attrs) {
         return false;
     }
 
@@ -2967,12 +2950,12 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         if (!hash_tuple) {
             return false;
         }
-        PyTuple_SET_ITEM(data.new_hash_private_attrs, i, hash_tuple);
+        PyTuple_SET_ITEM(new_hash_private_attrs, i, hash_tuple);
         data.private_attrs_set.insert(hash_tuple_key);
         data.private_attrs_vector_string.insert(attr_str);
     }
 
-    if (PyDict_SetItemString(data.attrs_copy, "__private_attrs__", data.new_hash_private_attrs) < 0) {
+    if (PyDict_SetItemString(data.attrs_copy, "__private_attrs__", new_hash_private_attrs) < 0) {
         return false;
     }
 
@@ -3024,7 +3007,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 
     Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases);
     for (Py_ssize_t i = 0; i < bases_len; i++) {
-        PyObject* base = PyTuple_GET_ITEM(data.bases, i);
+        PyObject* base = PyTuple_GET_ITEM(data.bases.get(), i);
         if (!base || !PyType_Check(base) || !need_analyse_type(base)) {
             continue;
         }
@@ -3128,9 +3111,8 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         }
         if (has_private_func) {
             data.private_func = PyDict_GetItemString(kwds, "private_func");
-            Py_INCREF(data.private_func);
         }
-        data.base_kwds = PyDict_Copy(kwds);
+        data.base_kwds = PyObjectStorage::from_new_ref(PyDict_Copy(kwds));
         if (!data.base_kwds) {
             return false;
         }
@@ -3162,7 +3144,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
 static PyObject*
 PrivateAttrType_create(PyTypeObject* type, PrivateAttrCreationData& data) noexcept
 {
-    PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(3, data.name, data.bases, data.attrs_copy));
+    PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(3, data.name.get(), data.bases.get(), data.attrs_copy.get()));
     if (!type_args) {
         return nullptr;
     }
