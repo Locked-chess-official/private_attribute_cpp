@@ -193,7 +193,7 @@ static int
 PyDict_ContainsString(PyObject *op, const char *key) noexcept
 {
     PyObjectStorage key_obj = PyObjectStorage::from_new_ref(PyUnicode_FromString(key));
-    if (key_obj == NULL) {
+    if (key_obj.get() == NULL) {
         return -1;
     }
     int res = PyDict_Contains(op, key_obj);
