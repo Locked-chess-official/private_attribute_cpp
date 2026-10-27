@@ -1107,7 +1107,7 @@ listproxy_repr(PyObject* self) noexcept
     if (!inner) {
         return NULL;
     }
-    PyObject* result = PyUnicode_FromFormat("listproxy(%U)", inner);
+    PyObject* result = PyUnicode_FromFormat("listproxy(%U)", inner.get());
     return result;
 }
 
