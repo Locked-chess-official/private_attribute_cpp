@@ -4736,6 +4736,10 @@ PrivateModule_exec(PyObject* m) noexcept
     if (!private_attr_base) {
         return -1;
     }
+    // add _PrivateWrap type
+    if (PyModule_AddType(m, &PrivateWrapType) < 0) {
+        return -1;
+    }
     PyObject* all = Py_BuildValue("[ssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
