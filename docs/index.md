@@ -72,5 +72,5 @@ Continue with the [Quick Start](quickstart.md) or dive into the
 | --- | --- |
 | **Language** | C++17, CPython C-API |
 | **Python** | ≥ 3.10 (CPython only, including free-threaded `t` builds) |
-| **Platforms** | Linux, macOS, Windows, Android (Termux / Pydroid3) |
+| **Platforms** | Linux, macOS, Windows |
 | **License** | [MIT](license.md) |

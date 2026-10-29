@@ -49,7 +49,6 @@ See [Installation](installation.md) for the full build matrix and the
 | --- | --- |
 | `test.yml` | Build + test across Linux/macOS/Windows × CPython 3.10–3.15 (incl. `t` builds). |
 | `python-publish.yml` | Build and upload PyPI wheels on plain `vX.Y.Z` releases. |
-| `build-android.yml` | Build Termux/Pydroid3 wheels on `-termux` / `-android` releases. |
 | `lint.yml` | Run pre-commit hooks. |
 | `update-bot.yml` | Monthly automated update of vendored PicoSHA2. |
 

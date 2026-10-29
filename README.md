@@ -62,8 +62,7 @@ pip install private-attribute-cpp
 ```
 
 Prebuilt wheels are published for CPython 3.10–3.15 (including free-threaded
-`t` builds) across Linux, macOS, and Windows. Android wheels (Termux and
-Pydroid3) are attached to the corresponding GitHub releases.
+`t` builds) across Linux, macOS, and Windows.
 
 ---
 
