@@ -10,18 +10,6 @@ Prebuilt wheels are published for CPython **3.10–3.15** — including the
 free-threaded (`t`, no-GIL) builds introduced in 3.13 — across **Linux**,
 **macOS**, and **Windows**.
 
-## Android
-
-Android wheels for **Termux** and **Pydroid3** are not published to PyPI (their
-platform tags would collide). Instead they are attached to the matching GitHub
-releases:
-
-| Release tag | Builds |
-| --- | --- |
-| `vX.Y.Z` | PyPI wheels (via `python-publish.yml`) |
-| `vX.Y.Z-termux` | Termux wheels only |
-| `vX.Y.Z-android` | Pydroid3 wheels only |
-
 ## From source
 
 The module is built with
