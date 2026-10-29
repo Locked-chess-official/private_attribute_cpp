@@ -44,7 +44,7 @@ The `_PrivateWrap` object exposes two public attributes:
 | Attribute | Meaning |
 | --- | --- |
 | `.result` | The final decorated result. |
-| `.funcs`  | A tuple of the original (pre-decoration) functions. |
+| `.funcs`  | A read-only list proxy (`_listproxy`) of the original (pre-decoration) functions. |
 
 It is also **transparent**: it forwards `__getattr__`, `__call__`, and the
 descriptor `__get__` to `.result`, so callers interact with the wrapped method

@@ -48,6 +48,23 @@ class _PrivateWrap(Generic[_T]):
 The object returned by `PrivateWrapProxy`. It is transparent: `__getattr__`,
 `__call__`, and `__get__` forward to `.result`.
 
+### `_listproxy`
+
+```python
+class _listproxy(Generic[_T]):
+    def copy(self) -> list[_T]: ...
+    def count(self, value, /) -> int: ...
+    def index(self, value, start=0, stop=sys.maxsize, /) -> int: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[_T]: ...
+    def __getitem__(self, key) -> Any: ...
+    def __contains__(self, value) -> bool: ...
+```
+
+A read-only proxy over a list. It is returned by `_PrivateWrap.funcs` and
+supports the common read-side list interface (`len`, iteration, indexing,
+`in`, `copy`, `count`, `index`) but has no mutating methods.
+
 ## Functions
 
 ### `prepare`

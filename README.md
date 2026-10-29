@@ -187,7 +187,7 @@ class MyClass(PrivateAttrBase):
 decorator application. It exposes two public attributes:
 
 - **`.result`** — the final decorated result.
-- **`.funcs`** — the tuple of original (pre-decoration) functions.
+- **`.funcs`** — a read-only list proxy (`_listproxy`) of the original (pre-decoration) functions.
 
 To stack decorators, resolve name conflicts, or fix decorator ordering, chain
 `.result.<attr>` onto the wrapped method and pass the method itself as the
