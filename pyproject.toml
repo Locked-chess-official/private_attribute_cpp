@@ -26,3 +26,12 @@ sdist.include = [
     "private_attribute.pyi",
     "LICENSE",
 ]
+sdist.exclude = [
+    ".github/",
+    ".update-bot/",
+    "ci/",
+    "docs/",
+    ".gitignore",
+    ".pre-commit-config.yaml",
+    "mkdocs.yml",
+]
