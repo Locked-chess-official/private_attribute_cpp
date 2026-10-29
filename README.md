@@ -1,172 +1,288 @@
-# Private Attribute (c++ implementation)
+# private_attribute_cpp
 
-## Introduction
+[![PyPI](https://img.shields.io/pypi/v/private-attribute-cpp)](https://pypi.org/project/private-attribute-cpp/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-This package provide a way to create the private attribute like "C++" does.
+True C++-style **private attributes** for Python, enforced at the C level.
 
-## All Base API
+A C++ extension module (`private_attribute`) that lets you declare attributes
+that are only accessible from *inside* the class that owns them — genuinely
+hidden from the outside world, from subclasses, and from `hasattr()`, `dir()`,
+and `obj.__dict__`. Unlike Python's name-mangling (`_Class__name`) and the
+leading-underscore convention, these attributes cannot be reached at all from
+outside the declaring class's own code.
 
-```python
-from private_attribute import (PrivateAttrBase, PrivateWrapProxy)      # 1 Import public API
+> **Note:** CPython only. Requires Python ≥ 3.10.
 
-def my_generate_func(obj_id, attr_name):                           # 2 Optional: custom name generator
-    return f"_hidden_{obj_id}_{attr_name}"
+---
 
-class MyClass(PrivateAttrBase, private_func=my_generate_func):     # 3 Inherit + optional custom generator
-    __private_attrs__ = ['a', 'b', 'c', 'result', 'conflicted_name']  # 4 Must declare all private attrs
+## Table of contents
 
-    def __init__(self):
-        self.a = 1
-        self.b = 2
-        self.c = 3
-        self.result = 42                    # deliberately conflicts with internal names
+- [Why?](#why)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Core concepts](#core-concepts)
+  - [Declaring private attributes](#declaring-private-attributes)
+  - [Custom name generation (`private_func`)](#custom-name-generation-private_func)
+  - [Decorated methods (`PrivateWrapProxy`)](#decorated-methods-privatewrapproxy)
+  - [Inheritance and `use_parents`](#inheritance-and-use_parents)
+- [API reference](#api-reference)
+- [Custom metaclasses](#custom-metaclasses)
+- [Behavioral notes & limitations](#behavioral-notes--limitations)
+- [Building from source](#building-from-source)
+- [Running the tests](#running-the-tests)
+- [License](#license)
 
-    # Normal methods can freely access private attributes
-    def public_way(self):
-        print(self.a, self.b, self.c)
+---
 
-    # Real-world case: method wrapped by multiple decorators
-    @PrivateWrapProxy(memoize())                                   # 5 Apply any decorator safely
-    @PrivateWrapProxy(login_required())                            # 5 Stack as many as needed
-    @PrivateWrapProxy(rate_limit(calls=10))                        # 5
-    def expensive_api_call(self, x):                               # First definition (will be wrapped)
-        def inner(...):
-            return some_implementation(self.a, self.b, self.c, x)
-        inner(...)
-        return heavy_computation(self.a, self.b, self.c, x)
+## Why?
 
-    # Fix decorator order + resolve name conflicts
-    @PrivateWrapProxy(expensive_api_call.result.name2, expensive_api_call)    # 6 Chain .result to push decorators down
-    @PrivateWrapProxy(expensive_api_call.result.name1, expensive_api_call)    # 6 Resolve conflict with internal names
-    def expensive_api_call(self, x):         # Final real implementation
-        return heavy_computation(self.a, self.b, self.c, x)
+Python gives you a *convention* (`_private`) and a *name-mangling trick*
+(`__name` → `_ClassName__name`), but neither is an actual access barrier. Any
+code that knows (or can guess) the mangled name can still read and mutate your
+"private" state.
 
+`private_attribute` implements the real thing in C++:
 
-# ====================== Usage ======================
-obj = MyClass()
-obj.public_way()                    # prints: 1 2 3
+- Private attributes are **not stored in `__dict__`**.
+- They are **unreachable from outside** the class that declares them — including
+  from subclasses and from `getattr`/`hasattr`/`dir`.
+- Inside the declaring class, they look and behave like ordinary attributes.
 
-print(hasattr(obj, 'a'))            # False – truly hidden from outside
-print(obj.expensive_api_call(10))   # works with all decorators applied
+It does this by rewriting attribute access in `tp_getattro` / `tp_setattro` and
+storing private values under generated, collision-resistant names (a tuple of
+two SHA-256 hashes).
+
+---
+
+## Installation
+
+```bash
+pip install private-attribute-cpp
 ```
 
-| # | API | Purpose | Required? |
-| --- | ---------------------------------------- | ------------------------------------------------------- | ----------- |
-| 1 | PrivateAttrBase | Base class – must inherit | Yes |
-| 1 | PrivateWrapProxy | Decorator wrapper for arbitrary decorators | When needed |
-| 2 | private_func=callable | Custom hidden-name generator | Optional |
-| 3 | Pass private_func in class definition | Same as above | Optional |
-| 4 | \_\_private_attrs\_\_ list | Declare which attributes are private | Optional (changed in 2.1.4) |
-| 5 | @PrivateWrapProxy(...) | Make any decorator compatible with private attributes | When needed |
-| 6 | method.result.xxx chain + dummy wrap | Fix decorator order and name conflicts | When needed |
+Prebuilt wheels are published for CPython 3.10–3.15 (including free-threaded
+`t` builds) across Linux, macOS, and Windows. Android wheels (Termux and
+Pydroid3) are attached to the corresponding GitHub releases.
 
-## Usage
+---
 
-This is a simple usage about the module:
+## Quick start
+
+```python
+from private_attribute import PrivateAttrBase
+
+class BankAccount(PrivateAttrBase):
+    __private_attrs__ = ["_balance"]
+
+    def __init__(self, balance):
+        self._balance = balance
+
+    def deposit(self, amount):
+        self._balance += amount      # ✅ accessible inside the class
+
+    @property
+    def balance(self):
+        return self._balance
+
+acct = BankAccount(100)
+print(acct.balance)     # 100
+acct.deposit(50)
+print(acct.balance)     # 150
+
+print(hasattr(acct, "_balance"))   # False — truly hidden
+print(acct._balance)               # AttributeError: private attribute
+```
+
+---
+
+## Core concepts
+
+### Declaring private attributes
+
+List the private names in the `__private_attrs__` class attribute:
 
 ```python
 from private_attribute import PrivateAttrBase
 
 class MyClass(PrivateAttrBase):
-    __private_attrs__ = ['a', 'b', 'c']
+    __private_attrs__ = ["a", "b", "c"]   # string, or a sequence of strings
+
     def __init__(self):
         self.a = 1
         self.b = 2
         self.c = 3
 
-    def public_way(self):
-        print(self.a, self.b, self.c)
+    def show(self):
+        print(self.a, self.b, self.c)     # (1, 2, 3) — visible inside
 
 obj = MyClass()
-obj.public_way()  # (1, 2, 3)
-
-print(hasattr(obj, 'a'))  # False
-print(hasattr(obj, 'b'))  # False
-print(hasattr(obj, 'c'))  # False
+obj.show()                                # 1 2 3
+print(hasattr(obj, "a"))                  # False
+print(hasattr(obj, "b"))                  # False
+print(hasattr(obj, "c"))                  # False
 ```
 
-All of the attributes in `__private_attrs__` will be hidden from the outside world, and stored by another name.
+- Private attributes may be set on **instances** *or* on the **class itself**
+  (class-level private state, e.g. for `@classmethod`).
+- They also cover **private methods**: declare a method name in
+  `__private_attrs__` and it becomes callable only from the class's own code.
+- They work alongside `__slots__` (see notes below).
 
-You can use your function to generate the name. It needs the id of the obj and the name of the attribute:
+### Custom name generation (`private_func`)
+
+By default private values are stored under generated hash names. You can
+control how the storage name is derived with a `private_func` callable, which
+receives the object id and the attribute name:
 
 ```python
+from private_attribute import PrivateAttrBase
+
 def my_generate_func(obj_id, attr_name):
-    return some_string
+    return f"_hidden_{obj_id}_{attr_name}"
 
 class MyClass(PrivateAttrBase, private_func=my_generate_func):
-    __private_attrs__ = ['a', 'b', 'c']
+    __private_attrs__ = ["secret"]
+
     def __init__(self):
-        self.a = 1
-        self.b = 2
-        self.c = 3
+        self.secret = 42
 
-    def public_way(self):
-        print(self.a, self.b, self.c)
-
-obj = MyClass()
-obj.public_way()  # (1, 2, 3)
-
+    def read(self):
+        return self.secret
 ```
 
-If the method will be decorated, the `property`, `classmethod` and `staticmethod` will be supported.
-For the other, you can use the `PrivateWrapProxy` to wrap the function:
+`private_func` may be passed either as a keyword in the class definition (shown
+above) or on `PrivateAttrBase` itself. It is optional; the default generates a
+tuple of two SHA-256 hashes.
+
+### Decorated methods (`PrivateWrapProxy`)
+
+Decorators that return a plain wrapper object (anything other than
+`property` / `classmethod` / `staticmethod`) would normally break private
+attribute access, because the wrapper's bytecode is not recognized as
+belonging to the class. `PrivateWrapProxy` makes arbitrary decorators
+compatible:
 
 ```python
 from private_attribute import PrivateAttrBase, PrivateWrapProxy
 
+def deco(func):
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
 class MyClass(PrivateAttrBase):
-    __private_attrs__ = ['a', 'b', 'c']
-    @PrivateWrapProxy(decorator1())
-    @PrivateWrapProxy(decorator2())
+    __private_attrs__ = ["a", "b"]
+
+    @PrivateWrapProxy(deco)
     def method1(self):
-        ...
+        return self.a
 
-    @PrivateWrapProxy(method1.attr_name, method1) # Use the argument "method1" to save old func
-    def method1(self):
-        ...
-
-    @PrivateWrapProxy(decorator3())
+    @PrivateWrapProxy(deco)
+    @PrivateWrapProxy(deco)
     def method2(self):
-        ...
-
-    @PrivateWrapProxy(method2.attr_name, method2) # Use the argument "method2" to save old func
-    def method2(self):
-        ...
-
-
+        return self.b
 ```
 
-The `PrivateWrapProxy` is a decorator, and it will wrap the function with the decorator. When it decorates the method, it returns a `_PrivateWrap` object.
+`PrivateWrapProxy(decorator)` returns a `_PrivateWrap` object that wraps the
+decorator application. It exposes two public attributes:
 
-The `_PrivateWrap` has the public api `result` and `funcs`. `result` returns the original decoratored result and `funcs` returns the tuple of the original functions.
+- **`.result`** — the final decorated result.
+- **`.funcs`** — the tuple of original (pre-decoration) functions.
+
+To stack decorators, resolve name conflicts, or fix decorator ordering, chain
+`.result.<attr>` onto the wrapped method and pass the method itself as the
+second argument (which saves the previous functions):
 
 ```python
-from private_attribute import PrivateAttrBase, PrivateWrapProxy
-
 class MyClass(PrivateAttrBase):
-    __private_attrs__ = ['a', 'b', 'c']
-    @PrivateWrapProxy(decorator1())
-    @PrivateWrapProxy(decorator2())
-    def method1(self):
-        ...
+    __private_attrs__ = ["a", "b", "c"]
 
-    @PrivateWrapProxy(method1.result.conflict_attr_name1, method1) # Use the argument "method1" to save old func
+    @PrivateWrapProxy(deco1)
     def method1(self):
-        ...
+        return self.a
 
-    @PrivateWrapProxy(method1.result.conflict_attr_name2, method1)
-    def method1(self):
-        ...
+    @PrivateWrapProxy(method1.result.name1, method1)
+    @PrivateWrapProxy(method1.result.name2, method1)
+    def method1(self):        # final implementation; earlier ones are kept
+        return self.b
 
-    @PrivateWrapProxy(decorator3())
+    @PrivateWrapProxy(deco2)
     def method2(self):
+        return self.c
 ```
 
-## Advanced API
+The `_PrivateWrap` object is transparent in normal use: it forwards
+`__getattr__`, `__call__`, and descriptor `__get__` to its `.result`, so callers
+interact with the wrapped method as usual.
 
-### define your metaclass based on one metaclass
+### Inheritance and `use_parents`
 
-You can define your metaclass based on one metaclass:
+Since v2.1.0, **a subclass's code cannot access its parent's private
+attributes** — a parent's private attribute is reachable only from the parent's
+own code, or from a class that re-declares the same name in its own
+`__private_attrs__`. When a subclass re-declares the same name, the two are
+stored **separately** (instance attributes per declaring class, class-level
+attributes per class).
+
+Since v2.2.0, you can opt in to inheriting all ancestors' private names with
+`use_parents=True`:
+
+```python
+class Parent(PrivateAttrBase):
+    __private_attrs__ = ["_secret"]
+    def __init__(self):
+        self._secret = 1
+    def get_secret(self):
+        return self._secret
+
+class Child(Parent, use_parents=True):
+    __private_attrs__ = []
+    def __init__(self):
+        super().__init__()
+        self._secret = 99        # stored in Child's own storage
+    def read_own(self):
+        return self._secret
+
+obj = Child()
+obj.get_secret()   # 1  — parent code sees the parent's value
+obj.read_own()     # 99 — child code sees its own value
+```
+
+The merged names live in the subclass's **own** storage — they never overwrite
+the parent's values. The Python-level `__private_attrs__` tuple is left
+unchanged; only the internal name set is merged. Default is `False`.
+
+---
+
+## API reference
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `PrivateAttrBase` | class (metaclass `PrivateAttrType`) | Inherit from this to make a class with private attributes. |
+| `PrivateAttrType` | metaclass | The metaclass that implements the private-attribute machinery. |
+| `PrivateWrapProxy(decorator, orig=None)` | decorator | Wrap an arbitrary decorator so it stays private-attribute-aware. |
+| `_PrivateWrap` | class | Returned by `PrivateWrapProxy`; exposes `.result` and `.funcs`. |
+| `prepare(name, bases, attrs, **kwds)` | function | Context manager for building private-attribute classes in a custom metaclass. |
+| `postprocess(typ, temp)` | function | Finalize a class created via `prepare`. |
+| `register_metaclass(metaclass)` | function | Register a custom metaclass so it can produce private-attribute classes. |
+| `ensure_type(typ)` | function | Reset `tp_getattro`/`tp_setattro`/`tp_finalizer` slots on a type. |
+| `ensure_metaclass(metaclass)` | function | Reset the corresponding slots on a metaclass. |
+
+Class-definition options:
+
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `__private_attrs__` | `str` \| `Sequence[str]` | `()` | The private attribute names. |
+| `private_func` | `(obj_id: int, attr_name: str) -> str` | `None` | Custom hidden-name generator. |
+| `use_parents` | `bool` | `False` | Merge ancestors' private names into this class's own set. |
+
+---
+
+## Custom metaclasses
+
+To combine private attributes with another metaclass (e.g. `ABCMeta`), use the
+`prepare` / `postprocess` pair and register the metaclass:
 
 ```python
 from abc import ABCMeta, abstractmethod
@@ -174,19 +290,15 @@ import private_attribute
 
 class PrivateAbcMeta(ABCMeta):
     def __new__(cls, name, bases, attrs, **kwargs):
-        with private_attribute.prepare(name, bases, attrs, **kwargs) as tmp: # In 2.2.3 it support using "with"
+        with private_attribute.prepare(name, bases, attrs, **kwargs) as temp:
             typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp) # or tmp.postprocess(typ)
+            private_attribute.postprocess(typ, temp)   # or temp.postprocess(typ)
             return typ
 
 private_attribute.register_metaclass(PrivateAbcMeta)
-```
 
-By this way you create a metaclass both can behave as ABC and private attribute:
-
-```python
 class MyClass(metaclass=PrivateAbcMeta):
-    __private_attrs__ = ()
+    __private_attrs__ = ("_a",)
     __slots__ = ()
 
     @abstractmethod
@@ -196,59 +308,100 @@ class MyImplement(MyClass):
     __private_attrs__ = ("_a",)
     def __init__(self, value=1):
         self._a = value
-
     def my_function(self):
         return self._a
+
+a = MyImplement(1)
+a.my_function()          # 1
+a._a                     # AttributeError: private attribute
+MyClass()                # TypeError: Can't instantiate abstract class ...
 ```
 
-Finally:
+`prepare(...)` returns a temporary object exposing `.name`, `.bases`, `.attrs`,
+and `.kwds` (and, since v2.1.17, a `.postprocess(typ)` shortcut). Since v2.2.3
+it is a context manager (`with`), which guarantees the internal creation lock is
+released even if construction fails.
 
-```python
->>> a = MyImplement(1)
->>> a.my_function()
-1
->>> a._a
-Traceback (most recent call last):
-  File "<pyshell#2>", line 1, in <module>
-    a._a
-AttributeError: private attribute
->>> MyClass()
-Traceback (most recent call last):
-  File "<pyshell#3>", line 1, in <module>
-    MyClass()
-TypeError: Can't instantiate abstract class MyClass without an implementation for abstract method 'my_function'
+---
+
+## Behavioral notes & limitations
+
+- `__private_attrs__` must be a string or a sequence of strings.
+- Names declared in `__slots__` cannot also be in `__private_attrs__`; however,
+  private attributes may still be *set* in methods even when `__slots__` is
+  defined (they live in the private-attribute storage, not `__dict__`).
+- Instances of `PrivateAttrBase` (and subclasses) are **not picklable** by
+  default.
+- Private names are ultimately rewritten to a tuple of two hashes (unless a
+  custom `private_func` is supplied).
+- `_PrivateWrap` objects are transparently unwrapped back to the original
+  object during class creation.
+- Do **not** pass `PrivateWrapProxy` a decorator that itself returns a
+  `_PrivateWrap` — this raises `TypeError`.
+- A class nested inside another class cannot use the outer class's private
+  attributes.
+- If a parent class defines an attribute that is *not* in its
+  `__private_attrs__` (nor a `PrivateAttrType` instance), a child class must not
+  list that name in its own `__private_attrs__`.
+- **v2.1.0** — subclass code can no longer read/write a parent's private
+  attributes; re-declaring the name stores it separately.
+- **v2.2.0** — a subclass must not define, in its own class body, a name that is
+  private to a parent, unless it declares the name in its own
+  `__private_attrs__` or opts in with `use_parents=True`.
+- **v2.2.1** — `prepare` locks private-attribute-type creation so only one type
+  is being built (`type.__new__`) at a time; `postprocess` unlocks it. The lock
+  is released automatically on failure.
+- **v2.2.3** — prefer the `with` form of `prepare`/`postprocess` to guarantee
+  the lock is released.
+- CPython may change `tp_getattro` / `tp_setattro` when you assign
+  `__getattribute__` / `__setattr__`. Use `ensure_type` (or `ensure_metaclass`)
+  to reset those slots, and avoid setting those methods on private-attribute
+  classes directly.
+- `register_metaclass` requires a metaclass that supports weak references.
+- Do **not** set `__static_attributes__` on a private-attribute class; it is
+  removed automatically.
+
+---
+
+## Building from source
+
+The module is built with [scikit-build-core](https://scikit-build-core.readthedocs.io/)
+and CMake (C++17). It vendors the header-only
+[PicoSHA2](https://github.com/okdshin/PicoSHA2) library for SHA-256 hashing.
+
+```bash
+git clone https://github.com/Locked-chess-official/private_attribute_cpp.git
+cd private_attribute_cpp
+pip install .
 ```
 
-## Notes
+To build a wheel instead:
 
-- ~~All of the private attributes class must contain the `__private_attrs__` attribute.~~(changed in 2.1.4)
-- The `__private_attrs__` attribute must be a sequence of strings or just one string.
-- You cannot define the name which in `__slots__` to `__private_attrs__`.
-- When you define `__slots__` and `__private_attrs__` in one class, the attributes in `__private_attrs__` can also be defined in the methods, even though they are not in `__slots__`.
-- All of the object that is the instance of the class "PrivateAttrBase" or its subclass are default to be unable to be pickled.
-- Finally the attributes' names in `__private_attrs__` will be change to a tuple with two hash.
-- Finally the `_PrivateWrap` object will be recoveried to the original object.
-- Don't use a decorator which will return the `_PrivateWrap` in `PrivateWrapProxy` which will raise `TypeError`.
-- One class defined in another class cannot use another class's private attribute.
-- One parent class defined an attribute which not in `__private_attrs__` or not a `PrivateAttrType` instance, the child class shouldn't contain the attribute in its `__private_attrs__`.
-- Since 2.1.0: the code of a subclass can no longer access the private attributes of its parent classes - a parent's private attribute is only reachable from the parent's own code, or from a class that declares the same name in its own `__private_attrs__`.
-- Since 2.1.0: if a subclass declares a name in its own `__private_attrs__` that is also private to a parent, the two are stored separately (instance attributes per declaring class, class-level attributes per class). Class-level resolution is per-subject through the parent's code: reading the name on a subclass subject returns the subclass's own value, and the parent's own value is untouched.
-- Since 2.2.0: a subclass must NOT define an attribute in its namespace (class body) whose name is private to a parent class, unless that name is declared in its own `__private_attrs__` or the class opts in with `use_parents=True`.
-- Since 2.2.0: pass `use_parents=True` in the class definition to inherit all parent classes' private attribute names into the subclass's own private-attribute set. The subclass's code can then read/write those names, but the values are stored in the subclass's own storage (they never overwrite the parent's own values). The Python-level `__private_attrs__` tuple is left unchanged; only the internal private-attribute name set is merged. Default is `False`.
-- CPython may change "tp_getattro", "tp_setattro" and so on when you change the attribute "\_\_getattribute\_\_", "\_\_setattr\_\_" and so on. If you are fear about it, you can use `ensure_type` to reset those tp slots. For the other metaclasses, you can use `ensure_metaclass` to reset those tp slots. Also, don't set those methods on these classes in your code.
-- `private_attribute.register_metaclass` must be called with the metaclass which supports weakref.
-- Don't set `__static_attributes__` in private attribute class, or it will be removed.
-- After 2.2.1, when `prepare` was called, it will lock the creation of new private attribute type. There will be only one private attribute type in building (type.\_\_new\_\_) at the same time. Call `postprocess` to unlock it. If build failed, the lock will be released automatically.
-- After 2.2.3, it is recommend to use "with" on `private_attribute.prepare` and `private_attribute.postprocess` to ensure the lock is released.
+```bash
+pip install build
+python -m build
+```
+
+Set `PRIVATE_ATTR_KEEP_DEBUG=1` to retain debug symbols in a Linux build
+(otherwise `-g0` is applied).
+
+---
+
+## Running the tests
+
+```bash
+pip install pytest
+python -m pytest tests/ -v
+```
+
+The test suite covers attribute hiding, private methods, class-level private
+state, decorator wrapping, inheritance semantics (`use_parents`), ABC/metaclass
+integration, `__slots__`, and GC/cycle-collection regressions.
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Locked-chess-official.
 
-## Requirement
-
-This package require the c++ module "[picosha2](https://github.com/okdshin/PicoSHA2)" to compute the sha256 hash.
-
-## Support
-
-Now it only support Cpython.
+PicoSHA2 is distributed under the MIT License (© 2017 okdshin).

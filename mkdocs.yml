@@ -1,0 +1,74 @@
+site_name: private_attribute_cpp
+site_description: True C++-style private attributes for Python, enforced at the C level.
+site_author: Locked-chess-official
+repo_name: Locked-chess-official/private_attribute_cpp
+repo_url: https://github.com/Locked-chess-official/private_attribute_cpp
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.critic
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quick Start: quickstart.md
+  - Guide:
+      - guide/index.md
+      - Declaring private attributes: guide/declaring.md
+      - Custom name generation: guide/custom-names.md
+      - Decorated methods: guide/decorators.md
+      - Inheritance & use_parents: guide/inheritance.md
+  - API Reference: api.md
+  - Custom Metaclasses: custom-metaclasses.md
+  - Behavioral Notes & Limitations: notes.md
+  - Contributing: contributing.md
+  - License: license.md
