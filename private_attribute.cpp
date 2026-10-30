@@ -269,7 +269,6 @@ namespace {
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
         static std::unordered_map<uintptr_t, uintptr_t> weakref_type;
-        static std::unordered_set<uintptr_t> all_register_type;
         // Single dict-backed strong-ref cache shared by the module itself (keyed by
         // kModuleSelfKey) and by PrivateAttrBase (keyed by kPrivateAttrBaseKey),
         // so clean_all_storages can release everything at interpreter shutdown.
@@ -528,7 +527,6 @@ clean_all_storages() noexcept
     AllData::all_type_clear.clear();
     AllData::all_type_del.clear();
     AllData::all_register_type_weak_ref.clear();
-    AllData::all_register_type.clear();
     AllData::store_module_self.clear();
 }
 
@@ -3547,7 +3545,7 @@ static bool
 is_registed_type(PyObject* type) noexcept
 {
     uintptr_t typ_id = (uintptr_t)type;
-    return (AllData::all_register_type.find(typ_id) != AllData::all_register_type.end());
+    return (AllData::all_register_type_weak_ref.find(typ_id) != AllData::all_register_type_weak_ref.end());
 }
 
 static PyObject* ensure_metaclass_tp(PyObject* /*self*/, PyObject* metaclass) noexcept;
@@ -4259,7 +4257,6 @@ metaclass_weakref_callback(PyObject* /*self*/, PyObject* weakref) noexcept
     if (::AllData::weakref_type.find(weakref_id) == ::AllData::weakref_type.end()) Py_RETURN_NONE;
     uintptr_t id = ::AllData::weakref_type[weakref_id];
     ::AllData::weakref_type.erase(weakref_id);
-    ::AllData::all_register_type.erase(id);
 
     auto it = ::AllData::all_register_type_weak_ref.find(id);
     if (it != ::AllData::all_register_type_weak_ref.end()) {
