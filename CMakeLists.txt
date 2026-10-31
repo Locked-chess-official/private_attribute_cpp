@@ -8,6 +8,10 @@ find_package(
   COMPONENTS Interpreter Development.Module
   REQUIRED)
 
+if(SKBUILD_SOABI)
+  set(Python_SOABI ${SKBUILD_SOABI})
+endif()
+
 # Build the `private_attribute` extension module with a proper SOABI suffix
 # (private_attribute.cpython-3XX[-t]-<plat>.so), importable from site-packages.
 # Detect whether the running Python was built with --enable-shared.
