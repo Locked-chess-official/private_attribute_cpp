@@ -222,18 +222,14 @@ namespace {
             static std::unordered_map<uintptr_t, std::unordered_map<std::string, PyObjectStorage>> type_attr_dict;
         };
         static std::unordered_map<uintptr_t, std::unordered_map<uintptr_t, PyObjectStorage>> type_allowed_code_map;
-        // 2.2.1: public temporary storage used while a type is still being
-        // created (its id is not yet written into all_type_attr_set). It holds
-        // the not-yet-registered type's full private-attribute set and its full
-        // code-object map, keyed by the type being created. Accesses that happen
-        // inside type.tp_new (e.g. a parent's __init_subclass__) read from here
-        // until postprocess promotes the data into the real AllData tables.
+        // 2.2.1: while a type is still being created (its id is not yet written
+        // into all_type_attr_set), tmp_creation_data points at the in-flight
+        // PrivateAttrCreationData. Accesses that happen inside type.tp_new (e.g.
+        // a parent's __init_subclass__) read the private-attribute set and the
+        // code-object map directly from tmp_creation_data until postprocess
+        // promotes the data into the real AllData tables.
         static std::mutex type_creation_lock_mutex;
         static bool type_creation_locked = false;
-        static std::unordered_set<TwoStringTuple> tmp_type_attr_set;
-        static std::unordered_map<uintptr_t, PyObjectStorage> tmp_type_allowed_code_map;
-        static std::vector<PyObjectStorage> tmp_type_need_call; // use vector to avoid of the dealloc after python end
-        static std::unordered_map<std::string, PyObjectStorage> tmp_type_attr_dict;
         static PrivateAttrCreationData *tmp_creation_data = nullptr;
 
         static std::unordered_map<uintptr_t, std::unique_ptr<std::shared_mutex>> all_type_mutex;
@@ -303,22 +299,12 @@ struct PrivateAttrCreationData
             lock_.lock();
             AllData::type_creation_locked = true;
             locked = true;
-            AllData::tmp_type_allowed_code_map = code_map;
-            AllData::tmp_type_attr_set = private_attrs_set;
-            AllData::tmp_type_attr_dict = need_remove_itself;
             AllData::tmp_creation_data = this;
-            if (private_func) {
-                ::AllData::tmp_type_need_call.push_back(private_func);
-            }
         }
     }
 
     void unlock() noexcept {
         if (locked) {
-            AllData::tmp_type_allowed_code_map.clear();
-            AllData::tmp_type_attr_set.clear();
-            ::AllData::tmp_type_need_call.clear();
-            AllData::tmp_type_attr_dict.clear();
             AllData::tmp_creation_data = nullptr;
             AllData::type_creation_locked = false;
             locked = false;
@@ -506,10 +492,6 @@ clean_all_storages() noexcept
     AllData::obj_attr_keys.clear();
     AllData::type_attr_dict.clear();
     AllData::type_allowed_code_map.clear();
-    AllData::tmp_type_attr_set.clear();
-    AllData::tmp_type_allowed_code_map.clear();
-    AllData::tmp_type_need_call.clear();
-    AllData::tmp_type_attr_dict.clear();
     AllData::type_creation_locked = false;
     AllData::tmp_creation_data = nullptr;
     AllData::all_type_mutex.clear();
@@ -569,12 +551,13 @@ is_class_code(uintptr_t typ_id, PyCodeObject* code) noexcept
             return true;
         }
     }
-    // 2.2.1: fall back to the temporary (in-creation) code-object map while a
-    // type has not been fully registered yet (e.g. inside type.tp_new / a
-    // parent's __init_subclass__).
+    // 2.2.1: fall back to the in-creation code-object map while a type has not
+    // been fully registered yet (e.g. inside type.tp_new / a parent's
+    // __init_subclass__).
     if (::AllData::type_creation_locked && ::AllData::all_type_attr_set.find(typ_id) == ::AllData::all_type_attr_set.end()){
         uintptr_t code_id = (uintptr_t)code;
-        if (::AllData::tmp_type_allowed_code_map.find(code_id) != ::AllData::tmp_type_allowed_code_map.end()) {
+        if (::AllData::tmp_creation_data &&
+            ::AllData::tmp_creation_data->code_map.find(code_id) != ::AllData::tmp_creation_data->code_map.end()) {
             return true;
         }
     }
@@ -588,8 +571,8 @@ get_type_need_call(uintptr_t typ_id) noexcept
         return ::AllData::type_need_call[typ_id];
     }
     if (::AllData::type_creation_locked && ::AllData::all_type_attr_set.find(typ_id) == ::AllData::all_type_attr_set.end()) {
-        if (!::AllData::tmp_type_need_call.empty()) {
-            return ::AllData::tmp_type_need_call.back();
+        if (::AllData::tmp_creation_data && ::AllData::tmp_creation_data->private_func) {
+            return ::AllData::tmp_creation_data->private_func;
         }
     }
     return nullptr;
@@ -606,11 +589,11 @@ is_type_private(uintptr_t typ_id, const std::string& name) noexcept
         }
     }
     // 2.2.1: if a type has not been registered yet (its id is absent from
-    // all_type_attr_set), read from the temporary in-creation storage instead.
+    // all_type_attr_set), read from the in-creation storage instead.
     else if (::AllData::type_creation_locked  && ::AllData::all_type_attr_set.find(typ_id) == ::AllData::all_type_attr_set.end()) {
-        auto& attr_set = ::AllData::tmp_type_attr_set;
         TwoStringTuple key = get_string_hash_tuple2(name);
-        if (attr_set.find(key) != attr_set.end()){
+        if (::AllData::tmp_creation_data &&
+            ::AllData::tmp_creation_data->private_attrs_set.find(key) != ::AllData::tmp_creation_data->private_attrs_set.end()){
             return true;
         }
     }
@@ -2708,9 +2691,10 @@ type_get_final_attr(uintptr_t main_type, uintptr_t target_type, const std::strin
                 PyObject* obj = item_set[key];
                 return obj;
             } else if (::AllData::type_creation_locked && ::AllData::all_type_attr_set.find(main_type) == ::AllData::all_type_attr_set.end()) {
-                // now we can only use name instead of key on ::AllData::tmp_type_attr_dict[name]
-                if (::AllData::tmp_type_attr_dict.find(name) != ::AllData::tmp_type_attr_dict.end()) {
-                    PyObject* obj = ::AllData::tmp_type_attr_dict[name];
+                // now we can only use name instead of key on tmp_creation_data->need_remove_itself[name]
+                if (::AllData::tmp_creation_data &&
+                    ::AllData::tmp_creation_data->need_remove_itself.find(name) != ::AllData::tmp_creation_data->need_remove_itself.end()) {
+                    PyObject* obj = ::AllData::tmp_creation_data->need_remove_itself[name];
                     return obj;
                 }
             }
@@ -2769,7 +2753,8 @@ type_private_attr(uintptr_t type_id, const std::string& name) noexcept
             return true;
         }
     } else if (::AllData::type_creation_locked && ::AllData::all_type_attr_set.find(type_id) == ::AllData::all_type_attr_set.end()) {
-        if (::AllData::tmp_type_attr_set.find(hash_tuple) != ::AllData::tmp_type_attr_set.end()) {
+        if (::AllData::tmp_creation_data &&
+            ::AllData::tmp_creation_data->private_attrs_set.find(hash_tuple) != ::AllData::tmp_creation_data->private_attrs_set.end()) {
             return true;
         }
     }
