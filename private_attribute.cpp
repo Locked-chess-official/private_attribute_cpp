@@ -2130,6 +2130,19 @@ static PyTypeObject PrivateClassSuperType = {
     (newfunc)PrivateSuper_New,              // tp_new
 };
 
+// Index of `id` in `mro` (a private-attribute ancestor list in MRO order,
+// nearest first), or -1 if absent.
+static int
+mro_index_of(const std::vector<uintptr_t>& mro, uintptr_t id) noexcept
+{
+    for (size_t i = 0; i < mro.size(); ++i) {
+        if (mro[i] == id) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 static bool
 private_super_validate(PrivateSuperObject* self, bool is_class) noexcept
 {
@@ -2151,31 +2164,39 @@ private_super_validate(PrivateSuperObject* self, bool is_class) noexcept
             return false;
         }
     }
-    // B must be a parent of A.
+    // B must be a parent of A. Instead of PyObject_IsSubclass(A, B), use A's
+    // stored private-attribute ancestor MRO (all_type_parent_id[A], nearest
+    // first) and check membership by id.
     if (self->A == self->B) {
         PyErr_SetString(PyExc_ValueError, "B must be a parent type of A, not A itself");
         return false;
     }
-    int a_sub_b = PyObject_IsSubclass(self->A, self->B);
-    if (a_sub_b < 0) {
+    uintptr_t a_id = (uintptr_t)self->A;
+    uintptr_t b_id = (uintptr_t)self->B;
+    uintptr_t c_id = (uintptr_t)self->C;
+    ParentIdsResult a_parents = type_get_parent_ids(a_id);
+    if (!a_parents.ok) {
         return false;
     }
-    if (!a_sub_b) {
+    int b_idx = mro_index_of(*a_parents.ids, b_id);
+    if (b_idx < 0) {
         PyErr_SetString(PyExc_ValueError, "B must be a parent type of A");
         return false;
     }
-    // C must be B, A, or both a subclass of B and a parent of A.
-    bool c_ok = (self->C == self->B) || (self->C == self->A);
+    // C must be B, A, or both a subclass of B and a parent of A. Both
+    // relationships are answered from the stored MRO id lists (no
+    // PyObject_IsSubclass): C is a parent of A iff C is in A's ancestor list,
+    // and C is a subclass of B iff B is in C's ancestor list (B sits after C
+    // on C's inheritance chain).
+    bool c_ok = (c_id == b_id) || (c_id == a_id);
     if (!c_ok) {
-        int c_sub_b = PyObject_IsSubclass(self->C, self->B);
-        if (c_sub_b < 0) {
-            return false;
+        if (mro_index_of(*a_parents.ids, c_id) >= 0) {
+            ParentIdsResult c_parents = type_get_parent_ids(c_id);
+            if (!c_parents.ok) {
+                return false;
+            }
+            c_ok = (mro_index_of(*c_parents.ids, b_id) >= 0);
         }
-        int a_sub_c = PyObject_IsSubclass(self->A, self->C);
-        if (a_sub_c < 0) {
-            return false;
-        }
-        c_ok = (c_sub_b && a_sub_c);
     }
     if (!c_ok) {
         PyErr_SetString(PyExc_ValueError,
@@ -2188,13 +2209,18 @@ private_super_validate(PrivateSuperObject* self, bool is_class) noexcept
             PyErr_SetString(PyExc_TypeError, "cls must be a type");
             return false;
         }
-        int ok = PyObject_IsSubclass(self->obj, self->A);
-        if (ok < 0) {
-            return false;
-        }
-        if (!ok) {
-            PyErr_SetString(PyExc_TypeError, "cls must be a subclass of A");
-            return false;
+        uintptr_t obj_id = (uintptr_t)self->obj;
+        // A type is a subclass of itself; otherwise cls is a subclass of A iff
+        // A appears in cls's private-attribute ancestor MRO.
+        if (obj_id != a_id) {
+            ParentIdsResult obj_parents = type_get_parent_ids(obj_id);
+            if (!obj_parents.ok) {
+                return false;
+            }
+            if (mro_index_of(*obj_parents.ids, a_id) < 0) {
+                PyErr_SetString(PyExc_TypeError, "cls must be a subclass of A");
+                return false;
+            }
         }
     } else {
         int ok = PyObject_IsInstance(self->obj, self->A);
@@ -2231,6 +2257,22 @@ private_super_getattro(PyObject* self, PyObject* name, bool is_class) noexcept
     }
     if (!is_class_code((uintptr_t)s->A, (PyCodeObject*)now_code.get())) {
         PyErr_SetString(PyExc_AttributeError, "private attribute");
+        return NULL;
+    }
+
+    // Only private attributes of B (the second type) can be read through
+    // PrivateSuper/PrivateClassSuper; reject any other name early, before any
+    // storage-key work.
+    TypePrivateAttrResult pa = type_private_attr((uintptr_t)s->B, attr_name);
+    if (!pa.ok) {
+        return NULL;
+    }
+    if (!pa.is_private) {
+        const char* tn = get_name_from_tp_name((PyTypeObject*)s->B);
+        if (tn == NULL) {
+            return NULL;
+        }
+        PyErr_Format(PyExc_AttributeError, "'%s' has no private attribute '%s'", tn, attr_name.c_str());
         return NULL;
     }
 

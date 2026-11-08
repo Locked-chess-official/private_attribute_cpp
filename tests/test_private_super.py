@@ -174,6 +174,98 @@ class TestOwnership(unittest.TestCase):
         with self.assertRaises(AttributeError):
             read_missing()
 
+    def test_non_private_attribute_of_b_rejected_early(self):
+        # Only private attributes of B (the second type) are reachable through
+        # PrivateSuper. A public attribute on B must be rejected before any
+        # storage lookup.
+        class Owner(private_attribute.PrivateAttrBase):
+            __private_attrs__ = ["_p"]
+            _p = "private"
+            public = "PUBLIC"
+
+        class Child(Owner, use_parents=True):
+            __private_attrs__ = []
+
+            def read_public(self):
+                return private_attribute.PrivateSuper(Child, Owner, Owner, self).public
+
+        with self.assertRaises(AttributeError):
+            Child().read_public()
+
+    def test_non_private_attribute_of_b_rejected_early_class_super(self):
+        # Same early rejection through the classmethod flavour.
+        class Owner(private_attribute.PrivateAttrBase):
+            __private_attrs__ = ["_p"]
+            _p = "private"
+            public = "PUBLIC"
+
+        class Child(Owner, use_parents=True):
+            __private_attrs__ = []
+
+            @classmethod
+            def read_public(cls):
+                return private_attribute.PrivateClassSuper(Child, Owner, Owner, cls).public
+
+        with self.assertRaises(AttributeError):
+            Child.read_public()
+
+
+class TestMultipleInheritance(unittest.TestCase):
+    """
+    The MRO-id-list subclass checks must not mistake a multiple-inheritance
+    sibling (which may appear before B in A's MRO) for a subclass of B.
+    """
+
+    def test_sibling_before_b_is_not_a_subclass_of_b(self):
+        class Root(private_attribute.PrivateAttrBase):
+            __private_attrs__ = []
+
+        class Sibling(Root):
+            __private_attrs__ = []
+
+        class B(Root):
+            __private_attrs__ = ["_g"]
+            _g = "g"
+
+        # A inherits Sibling before B, so Sibling appears before B in A's MRO,
+        # yet Sibling is not a subclass of B.
+        class A(Sibling, B):
+            __private_attrs__ = []
+
+            def read(self):
+                return private_attribute.PrivateSuper(A, B, Sibling, self)._g
+
+        self.assertEqual(A.__mro__, (A, Sibling, B, Root,
+                                     private_attribute.PrivateAttrBase, object))
+        with self.assertRaises(ValueError):
+            A().read()
+
+    def test_true_subclass_of_b_accepted_in_multiple_inheritance(self):
+        class Root(private_attribute.PrivateAttrBase):
+            __private_attrs__ = []
+
+        class B(Root):
+            __private_attrs__ = ["_g"]
+            _g = "g"
+
+            @classmethod
+            def set_g(cls, v):
+                cls._g = v
+
+        class Mid(B):
+            __private_attrs__ = []
+
+        class A(Mid, Root):
+            __private_attrs__ = []
+
+            def read(self):
+                return private_attribute.PrivateSuper(A, B, Mid, self)._g
+
+        # Mid is a genuine subclass of B; the MRO-id check must accept it and
+        # read B's shadow for Mid.
+        Mid.set_g("written-on-mid")
+        self.assertEqual(A().read(), "written-on-mid")
+
 
 if __name__ == "__main__":
     unittest.main()
