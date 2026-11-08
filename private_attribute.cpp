@@ -209,7 +209,16 @@ struct RestorePythonExceptionResult {
     bool ok = true;
 };
 static RestorePythonExceptionResult custom_random_string(uintptr_t obj_id, const std::string& attr_name, PyObject* func) noexcept;
-static bool need_analyse_type(PyObject* type) noexcept;
+
+// Result of need_analyse_type(). A Python exception may be pending when the
+// result is Error. Every caller MUST propagate an Error result up the call
+// chain (do not silently swallow the pending exception with PyErr_Clear).
+enum class AnalyseStatus {
+    No = 0,     // the type does not need private-attribute analysis
+    Yes = 1,    // the type needs private-attribute analysis
+    Error = -1  // a Python exception is pending
+};
+static AnalyseStatus need_analyse_type(PyObject* type) noexcept;
 static void ensure_tp(PyTypeObject* type_instance) noexcept;
 
 // v3: special-method slot structs (descriptors installed as __getattribute__ /
@@ -231,6 +240,11 @@ static bool update_slot_callback(PyTypeObject* owner, const char* name, PyObject
 static bool is_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept;
 static void mark_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept;
 static void clear_public_obj(uintptr_t obj_id) noexcept;
+
+struct is_private_class_control {
+    PyObjectStorage weakref; // weakref to the type object
+    bool result; // cached need_analyse_type() answer (true == needs analysis)
+};
 
 namespace {
     namespace AllData {
@@ -297,8 +311,71 @@ namespace {
         static std::unordered_map<uintptr_t, PyObjectStorage> store_module_self;
         static constexpr uintptr_t kModuleSelfKey = 0;
         static constexpr uintptr_t kPrivateAttrBaseKey = 1;
+        static std::shared_mutex is_private_mutex;
+        static std::unordered_map<uintptr_t, is_private_class_control> is_private_cache;
+        static std::unordered_map<uintptr_t, uintptr_t> is_private_cache_weakref_dict;
     };
 };
+
+static PyObject*
+is_private_class_weakref_callback(PyObject* /*self*/, PyObject* weakref)
+{
+    std::unique_lock<std::shared_mutex> lock(AllData::is_private_mutex);
+    uintptr_t weakref_id = reinterpret_cast<uintptr_t>(weakref);
+    auto it = AllData::is_private_cache_weakref_dict.find(weakref_id);
+    if (it == AllData::is_private_cache_weakref_dict.end()) {
+        // Already evicted (e.g. by clean_all_storages during interpreter
+        // shutdown). Treat as a no-op rather than raising a spurious error.
+        Py_RETURN_NONE;
+    }
+    uintptr_t type_id = AllData::is_private_cache_weakref_dict.erase(weakref_id);
+    AllData::is_private_cache.erase(type_id);
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef is_private_class_methods = {
+    "is_private_class_weakref_callback",
+    (PyCFunction)is_private_class_weakref_callback,
+    METH_O,
+    NULL
+};
+
+static int
+store_cache_for_is_private_class(PyObject* type, bool result)
+{
+    if (!PyType_Check(type)) {
+        PyErr_SetString(PyExc_TypeError, "type must be a type object");
+        return -1;
+    }
+    PyObjectStorage func = PyObjectStorage::from_new_ref(PyCFunction_New(&is_private_class_methods, NULL));
+    if (!func) {
+        return -1;
+    }
+    PyObjectStorage weakref = PyObjectStorage::from_new_ref(PyWeakref_NewRef((PyObject*)type, (PyObject*)func));
+    if (!weakref) {
+        return -1;
+    }
+    std::unique_lock<std::shared_mutex> lock(AllData::is_private_mutex);
+    AllData::is_private_cache[reinterpret_cast<uintptr_t>(type)] = {weakref, result};
+    AllData::is_private_cache_weakref_dict[reinterpret_cast<uintptr_t>(weakref.get())] = reinterpret_cast<uintptr_t>(type);
+    return 0;
+}
+
+struct analyse_cache_lookup_result {
+    bool found;
+    bool result;
+};
+
+static analyse_cache_lookup_result
+find_is_private_class(PyObject* type)
+{
+    std::shared_lock<std::shared_mutex> lock(AllData::is_private_mutex);
+    auto it = AllData::is_private_cache.find(reinterpret_cast<uintptr_t>(type));
+    if (it == AllData::is_private_cache.end()) {
+        return {false, false};
+    }
+    return {true, it->second.result};
+}
 
 struct PrivateAttrCreationData
 {
@@ -388,7 +465,14 @@ struct PrivateAttrCreationData
         std::vector<uintptr_t> mro_vector;
         for (Py_ssize_t i = 1; i < mro_size; i++) {
             PyObject* item = PyTuple_GET_ITEM(mro, i);
-            if (!item || !PyType_Check(item) || !need_analyse_type(item)) {
+            if (!item || !PyType_Check(item)) {
+                continue;
+            }
+            AnalyseStatus analyse_status = need_analyse_type(item);
+            if (analyse_status == AnalyseStatus::Error) {
+                return false;
+            }
+            if (analyse_status == AnalyseStatus::No) {
                 continue;
             }
             mro_vector.push_back((uintptr_t)item);
@@ -537,6 +621,8 @@ clean_all_storages() noexcept
     AllData::all_register_type_weak_ref.clear();
     AllData::store_module_self.clear();
     AllData::public_attr_cache.clear();
+    AllData::is_private_cache.clear();
+    AllData::is_private_cache_weakref_dict.clear();
 }
 
 struct FinalObject
@@ -551,9 +637,29 @@ struct FinalObject
 
 static TwoStringTuple get_string_hash_tuple2(const std::string& name) noexcept;
 static PyCodeObject* get_now_code() noexcept;
-static const std::vector<uintptr_t>& type_get_parent_ids(uintptr_t type_id) noexcept;
-static bool type_private_attr(uintptr_t type, const std::string& name) noexcept;
-static FinalObject type_get_final_attr(uintptr_t main_type, uintptr_t target_type, const std::string& name) noexcept;
+
+// --- error-aware result types for the need_analyse_type call chain ---------
+// Every function in this chain can trigger a Python exception (indirectly via
+// need_analyse_type -> PyObject_IsInstance / PyWeakref_GetRef). They all return
+// one of these result structs. When `ok == false`, a Python exception is
+// pending and the remaining fields are undefined. Callers MUST propagate an
+// `ok == false` result all the way up; they must not silently swallow the
+// pending exception (no PyErr_Clear on this path).
+struct ParentIdsResult {
+    bool ok = true;                            // false => Python exception pending
+    const std::vector<uintptr_t>* ids = nullptr;
+};
+
+struct TypePrivateAttrResult {
+    bool ok = true;                            // false => Python exception pending
+    bool is_private = false;
+};
+
+// Result of need_remove_to_subclass(): which base declares `name` as private.
+struct NeedRemoveResult {
+    bool ok = true;                            // false => Python exception pending
+    uintptr_t base_id = 0;                     // 0 => no base declares it private
+};
 
 // Result of classifying an attribute access.
 // - type_id: the node on the MRO chain (a class) whose code is currently running
@@ -562,10 +668,14 @@ static FinalObject type_get_final_attr(uintptr_t main_type, uintptr_t target_typ
 //   from outside its declaring class, or from a subclass of it).
 struct AttrClassifyResult
 {
+    bool ok = true;                            // false => Python exception pending
     uintptr_t type_id = 0;
     bool allowed = true;
 };
 
+static ParentIdsResult type_get_parent_ids(uintptr_t type_id) noexcept;
+static TypePrivateAttrResult type_private_attr(uintptr_t type, const std::string& name) noexcept;
+static FinalObject type_get_final_attr(uintptr_t main_type, uintptr_t target_type, const std::string& name) noexcept;
 static AttrClassifyResult attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noexcept;
 
 static bool
@@ -634,8 +744,13 @@ attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noe
     std::vector<uintptr_t> chain;
     chain.push_back(typ_id);
     {
-        auto& parent_ids = type_get_parent_ids(typ_id);
-        chain.insert(chain.end(), parent_ids.begin(), parent_ids.end());
+        ParentIdsResult parent_ids = type_get_parent_ids(typ_id);
+        if (!parent_ids.ok) {
+            return {false, 0, true};
+        }
+        if (parent_ids.ids) {
+            chain.insert(chain.end(), parent_ids.ids->begin(), parent_ids.ids->end());
+        }
     }
 
     // Find the class whose code is currently running (the code owner, parent first).
@@ -653,17 +768,17 @@ attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noe
         // to any class on the chain, deny the access.
         for (auto& node : chain) {
             if (is_type_private(node, name)) {
-                return {0, false};
+                return {true, 0, false};
             }
         }
-        return {0, true};
+        return {true, 0, true};
     }
 
     if (is_type_private(code_class, name)) {
         // Both conditions hold: the code is under this class AND the attribute
         // is private to this very class -> allowed, and this node of the chain
         // is the owner of the private attribute.
-        return {code_class, true};
+        return {true, code_class, true};
     }
 
     // The code belongs to code_class but the name is not private to it: look
@@ -681,13 +796,13 @@ attr_classify(uintptr_t typ_id, const std::string& name, PyCodeObject* code) noe
             continue;
         }
         if (is_type_private(node, name)) {
-            return {0, false};
+            return {true, 0, false};
         }
     }
 
     // Not private to the running class nor to any of its ancestors: treat it
     // as a normal (non-private) attribute access.
-    return {0, true};
+    return {true, 0, true};
 }
 
 static std::string
@@ -1117,8 +1232,9 @@ id_delattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyOb
                 PyTypeObject* type = (PyTypeObject*)obj;
                 type_name = get_name_from_tp_name(type);
                 use_self_name = true;
-            } else
-            type_name = get_name_from_tp_name((PyTypeObject*)typ);
+            } else {
+                type_name = get_name_from_tp_name((PyTypeObject*)typ);
+            }
             if (type_name == NULL) {
                 return -1;
             }
@@ -2022,12 +2138,12 @@ slot_classify(int is_metaclass, PyObject* obj, const std::string& name_str) noex
     uintptr_t type_id = slot_obj_type_id(obj, is_metaclass);
     PyObjectStorage code = PyObjectStorage::from_new_ref(get_now_code());
     if (!code) {
-        return {0, false};
+        return {true, 0, false};
     }
     return attr_classify(type_id, name_str, (PyCodeObject*)code.get());
 }
 
-static bool
+static TypePrivateAttrResult
 slot_is_private(int is_metaclass, PyObject* obj, const std::string& name_str) noexcept
 {
     uintptr_t type_id = slot_obj_type_id(obj, is_metaclass);
@@ -2071,8 +2187,15 @@ slot_getattribute_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noe
     }
 
     if (!is_confirmed_public(obj_id, name_str)) {
-        if (slot_is_private(self->is_metaclass, obj, name_str)) {
+        TypePrivateAttrResult is_private = slot_is_private(self->is_metaclass, obj, name_str);
+        if (!is_private.ok) {
+            return NULL;
+        }
+        if (is_private.is_private) {
             AttrClassifyResult classify = slot_classify(self->is_metaclass, obj, name_str);
+            if (!classify.ok) {
+                return NULL;
+            }
             if (!classify.allowed) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return NULL;
@@ -2105,29 +2228,38 @@ slot_getattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept
 
     // Decide the error message: if the name is private, __getattr__ must NOT
     // walk the subsequent flow (callback / super) — go straight to an error.
-    if (slot_is_private(self->is_metaclass, obj, name_str)) {
-        AttrClassifyResult classify = slot_classify(self->is_metaclass, obj, name_str);
-        if (!classify.allowed) {
-            PyErr_SetString(PyExc_AttributeError, "private attribute");
+    {
+        TypePrivateAttrResult is_private = slot_is_private(self->is_metaclass, obj, name_str);
+        if (!is_private.ok) {
             return NULL;
         }
-        // genuinely allowed but missing: standard missing-attribute error
-        PyTypeObject* typ;
-        bool use_self_name = false;
-        if (PyType_Check(obj)) {
-            typ = (PyTypeObject*)obj;
-            use_self_name = true;
-        } else {
-            typ = Py_TYPE(obj);
+        if (is_private.is_private) {
+            AttrClassifyResult classify = slot_classify(self->is_metaclass, obj, name_str);
+            if (!classify.ok) {
+                return NULL;
+            }
+            if (!classify.allowed) {
+                PyErr_SetString(PyExc_AttributeError, "private attribute");
+                return NULL;
+            }
+            // genuinely allowed but missing: standard missing-attribute error
+            PyTypeObject* typ;
+            bool use_self_name = false;
+            if (PyType_Check(obj)) {
+                typ = (PyTypeObject*)obj;
+                use_self_name = true;
+            } else {
+                typ = Py_TYPE(obj);
+            }
+            const char* type_name = get_name_from_tp_name(typ);
+            if (type_name == NULL) return NULL;
+            if (use_self_name) {
+                PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, name_str.c_str());
+            } else {
+                PyErr_Format(PyExc_AttributeError, "'%s' object has no attribute '%s'", type_name, name_str.c_str());
+            }
+            return NULL;
         }
-        const char* type_name = get_name_from_tp_name(typ);
-        if (type_name == NULL) return NULL;
-        if (use_self_name) {
-            PyErr_Format(PyExc_AttributeError, "type object '%s' has no attribute '%s'", type_name, name_str.c_str());
-        } else {
-            PyErr_Format(PyExc_AttributeError, "'%s' object has no attribute '%s'", type_name, name_str.c_str());
-        }
-        return NULL;
     }
 
     if (self->callback) {
@@ -2177,8 +2309,15 @@ slot_setattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name, PyObject
     }
 
     if (!is_confirmed_public(obj_id, name_str)) {
-        if (slot_is_private(self->is_metaclass, obj, name_str)) {
+        TypePrivateAttrResult is_private = slot_is_private(self->is_metaclass, obj, name_str);
+        if (!is_private.ok) {
+            return NULL;
+        }
+        if (is_private.is_private) {
             AttrClassifyResult classify = slot_classify(self->is_metaclass, obj, name_str);
+            if (!classify.ok) {
+                return NULL;
+            }
             if (!classify.allowed) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return NULL;
@@ -2223,8 +2362,15 @@ slot_delattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept
     }
 
     if (!is_confirmed_public(obj_id, name_str)) {
-        if (slot_is_private(self->is_metaclass, obj, name_str)) {
+        TypePrivateAttrResult is_private = slot_is_private(self->is_metaclass, obj, name_str);
+        if (!is_private.ok) {
+            return NULL;
+        }
+        if (is_private.is_private) {
             AttrClassifyResult classify = slot_classify(self->is_metaclass, obj, name_str);
+            if (!classify.ok) {
+                return NULL;
+            }
             if (!classify.allowed) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return NULL;
@@ -3286,15 +3432,15 @@ type_get_final_attr(uintptr_t main_type, uintptr_t target_type, const std::strin
     return -1; // -1 means not found
 }
 
-static bool
+static AnalyseStatus
 need_analyse_type(PyObject* type) noexcept;
 
-static const std::vector<uintptr_t>&
+static ParentIdsResult
 type_get_parent_ids(uintptr_t type_id) noexcept
 {
     auto it = ::AllData::all_type_parent_id.find(type_id);
     if (it != ::AllData::all_type_parent_id.end()) {
-        return it->second;
+        return {true, &it->second};
     }
     // The type has not been fully registered yet (e.g. inside __init_subclass__):
     // build the MRO chain on the fly from tp_mro.
@@ -3304,41 +3450,53 @@ type_get_parent_ids(uintptr_t type_id) noexcept
         Py_ssize_t mro_size = PyTuple_GET_SIZE(tp->tp_mro);
         for (Py_ssize_t i = 1; i < mro_size; i++) {
             PyObject* item = PyTuple_GET_ITEM(tp->tp_mro, i);
-            if (!item || !PyType_Check(item) || !need_analyse_type(item)) {
+            if (!item || !PyType_Check(item)) {
+                continue;
+            }
+            AnalyseStatus analyse_status = need_analyse_type(item);
+            if (analyse_status == AnalyseStatus::Error) {
+                return {false, nullptr};
+            }
+            if (analyse_status == AnalyseStatus::No) {
                 continue;
             }
             mro_vector.push_back((uintptr_t)item);
         }
     }
     ::AllData::all_type_parent_id[type_id] = mro_vector;
-    return ::AllData::all_type_parent_id[type_id];
+    return {true, &::AllData::all_type_parent_id[type_id]};
 }
 
-static bool
+static TypePrivateAttrResult
 type_private_attr(uintptr_t type_id, const std::string& name) noexcept
 {
     TwoStringTuple hash_tuple = get_string_hash_tuple2(name);
     if (::AllData::all_type_attr_set.find(type_id) != ::AllData::all_type_attr_set.end()) {
         auto& item_set = ::AllData::all_type_attr_set[type_id];
         if (item_set.find(hash_tuple) != item_set.end()) {
-            return true;
+            return {true, true};
         }
     } else if (::AllData::type_creation_locked && ::AllData::all_type_attr_set.find(type_id) == ::AllData::all_type_attr_set.end()) {
         if (::AllData::tmp_creation_data &&
             ::AllData::tmp_creation_data->private_attrs_set.find(hash_tuple) != ::AllData::tmp_creation_data->private_attrs_set.end()) {
-            return true;
+            return {true, true};
         }
     }
-    auto& parent_id_list = type_get_parent_ids(type_id);
-    for (auto& parent_id: parent_id_list) {
-        if (::AllData::all_type_attr_set.find(parent_id) != ::AllData::all_type_attr_set.end()) {
-            auto& item_set = ::AllData::all_type_attr_set[parent_id];
-            if (item_set.find(hash_tuple) != item_set.end()) {
-                return true;
+    ParentIdsResult parent_ids = type_get_parent_ids(type_id);
+    if (!parent_ids.ok) {
+        return {false, false};
+    }
+    if (parent_ids.ids) {
+        for (auto& parent_id: *parent_ids.ids) {
+            if (::AllData::all_type_attr_set.find(parent_id) != ::AllData::all_type_attr_set.end()) {
+                auto& item_set = ::AllData::all_type_attr_set[parent_id];
+                if (item_set.find(hash_tuple) != item_set.end()) {
+                    return {true, true};
+                }
             }
         }
     }
-    return false;
+    return {true, false};
 }
 
 static PyCodeObject*
@@ -3467,36 +3625,71 @@ real_class_name(const std::string& name, const std::string& class_name) noexcept
     return name;
 }
 
-static bool
+static AnalyseStatus
 need_analyse_type(PyObject* type) noexcept
 {
-    if (PyObject_IsInstance(type, (PyObject*)&PrivateAttrType)) {
-        return true;
+    // Fast path: reuse a previously computed, still-valid answer. The entry is
+    // kept alive (and removed) together with the type object via a weakref, so
+    // a cached result can never be served for a type that has been collected.
+    analyse_cache_lookup_result cached = find_is_private_class(type);
+    if (cached.found) {
+        return cached.result ? AnalyseStatus::Yes : AnalyseStatus::No;
     }
-    std::shared_lock lock(::AllData::all_register_new_metaclass_mutex);
-    for (auto& [id, metaclassref]: ::AllData::all_register_type_weak_ref){
-        if (!PyWeakref_CheckRef((PyObject*)metaclassref)) {
-            continue;
-        }
-#if PY_VERSION_HEX < 0x030D0000
-        PyObjectStorage metaclass = PyWeakref_GET_OBJECT((PyObject*)metaclassref);
-        if (type == metaclass.get()) continue;
-        if (PyObject_IsInstance(type, metaclass.get())) {
-            return true;
-        }
-#else
-        PyObjectStorage metaclass;
-        if (PyWeakref_GetRef(metaclassref, (metaclass.getpointer())) == 1) {
-            if (type == metaclass.get()) {
+
+    bool result = false;
+
+    // (1) Types created through PrivateAttrType always need analysis.
+    int is_private_attr = PyObject_IsInstance(type, (PyObject*)&PrivateAttrType);
+    if (is_private_attr < 0) {
+        return AnalyseStatus::Error;
+    }
+    if (is_private_attr) {
+        result = true;
+    } else {
+        // (2) Types whose metaclass is a registered metaclass need analysis.
+        std::shared_lock lock(::AllData::all_register_new_metaclass_mutex);
+        for (auto& [id, metaclassref]: ::AllData::all_register_type_weak_ref){
+            if (!PyWeakref_CheckRef((PyObject*)metaclassref)) {
                 continue;
             }
-            if (PyObject_IsInstance(type, metaclass.get())) {
-                return true;
+#if PY_VERSION_HEX < 0x030D0000
+            PyObjectStorage metaclass = PyWeakref_GET_OBJECT((PyObject*)metaclassref);
+            // A cleared weakref reports Py_None as its referent.
+            if (!metaclass.get() || metaclass.get() == Py_None || type == metaclass.get()) {
+                continue;
             }
-        }
+            int is_instance = PyObject_IsInstance(type, metaclass.get());
+            if (is_instance < 0) {
+                return AnalyseStatus::Error;
+            }
+            if (is_instance) {
+                result = true;
+                break;
+            }
+#else
+            PyObjectStorage metaclass;
+            if (PyWeakref_GetRef(metaclassref, (metaclass.getpointer())) == 1) {
+                if (type == metaclass.get()) {
+                    continue;
+                }
+                int is_instance = PyObject_IsInstance(type, metaclass.get());
+                if (is_instance < 0) {
+                    return AnalyseStatus::Error;
+                }
+                if (is_instance) {
+                    result = true;
+                    break;
+                }
+            }
 #endif
+        }
     }
-    return false;
+
+    if (store_cache_for_is_private_class(type, result) < 0) {
+        return AnalyseStatus::Error;
+    }
+
+    return result ? AnalyseStatus::Yes : AnalyseStatus::No;
 }
 
 static bool
@@ -3686,7 +3879,14 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     Py_ssize_t bases_len = PyTuple_GET_SIZE(data.bases.get());
     for (Py_ssize_t i = 0; i < bases_len; i++) {
         PyObject* base = PyTuple_GET_ITEM(data.bases.get(), i);
-        if (!base || !PyType_Check(base) || !need_analyse_type(base)) {
+        if (!base || !PyType_Check(base)) {
+            continue;
+        }
+        AnalyseStatus analyse_status = need_analyse_type(base);
+        if (analyse_status == AnalyseStatus::Error) {
+            return false;
+        }
+        if (analyse_status == AnalyseStatus::No) {
             continue;
         }
         data.all_need_analyse_base.push_back((uintptr_t)base);
@@ -3713,13 +3913,17 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         }
     }
 
-    std::function<uintptr_t(const std::string&)> need_remove_to_subclass = [&data](const std::string& attr_name){
+    std::function<NeedRemoveResult(const std::string&)> need_remove_to_subclass = [&data](const std::string& attr_name){
         for (auto& base: data.all_need_analyse_base) {
-            if (type_private_attr(base, attr_name)) {
-                return base;
+            TypePrivateAttrResult private_result = type_private_attr(base, attr_name);
+            if (!private_result.ok) {
+                return NeedRemoveResult{false, 0};
+            }
+            if (private_result.is_private) {
+                return NeedRemoveResult{true, base};
             }
         }
-        return (uintptr_t)0;
+        return NeedRemoveResult{true, 0};
     };
 
     // forbidden to have "__static_attributes__" in attrs, because it exposes the private attributes name.
@@ -3756,8 +3960,11 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
                 if (PyDict_DelItem(data.attrs_copy, key)) return false;
                 continue;
             }
-            uintptr_t need_remove_subclass_id = need_remove_to_subclass(attr_name);
-            if (need_remove_subclass_id) {
+            NeedRemoveResult need_remove_subclass = need_remove_to_subclass(attr_name);
+            if (!need_remove_subclass.ok) {
+                return false;
+            }
+            if (need_remove_subclass.base_id) {
                 // The class body defines an attribute whose name is private to a
                 // parent class and is not declared in this class's own
                 // '__private_attrs__'.
@@ -4030,12 +4237,19 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
     std::string name_str = PyUnicode_AsUTF8(name);
     {
         PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
-        if (type_private_attr(typ_id, name_str)) {
+        TypePrivateAttrResult private_result = type_private_attr(typ_id, name_str);
+        if (!private_result.ok) {
+            return NULL;
+        }
+        if (private_result.is_private) {
             if (!now_code) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return NULL;
             }
             AttrClassifyResult classify = attr_classify(typ_id, name_str, (PyCodeObject*)(now_code.get()));
+            if (!classify.ok) {
+                return NULL;
+            }
             if (!classify.allowed) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return NULL;
@@ -4088,8 +4302,14 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
             const char** slot_names = NULL;
             if (is_registed_type(self)) {
                 slot_names = metaclass_slot_names;
-            } else if (need_analyse_type(self)) {
-                slot_names = type_slot_names;
+            } else {
+                AnalyseStatus analyse_status = need_analyse_type(self);
+                if (analyse_status == AnalyseStatus::Error) {
+                    return -1;
+                }
+                if (analyse_status == AnalyseStatus::Yes) {
+                    slot_names = type_slot_names;
+                }
             }
             // Only rewrite into the callback field for a *user* value. If the
             // value is already one of our slot structs (the initial install
@@ -4288,12 +4508,19 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
     }
     {
         PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
-        if (type_private_attr(typ_id, name_str)) {
+        TypePrivateAttrResult private_result = type_private_attr(typ_id, name_str);
+        if (!private_result.ok) {
+            return -1;
+        }
+        if (private_result.is_private) {
             if (!now_code) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return -1;
             }
             AttrClassifyResult classify = attr_classify(typ_id, name_str, (PyCodeObject*)(now_code.get()));
+            if (!classify.ok) {
+                return -1;
+            }
             if (!classify.allowed) {
                 PyErr_SetString(PyExc_AttributeError, "private attribute");
                 return -1;
@@ -4739,7 +4966,11 @@ register_metaclass_head(PyObject* metaclass) noexcept
         PyErr_SetString(PyExc_TypeError, "cannot register a static (non-heap) type");
         return NULL;
     }
-    if (need_analyse_type(metaclass)) {
+    AnalyseStatus analyse_status = need_analyse_type(metaclass);
+    if (analyse_status == AnalyseStatus::Error) {
+        return NULL;
+    }
+    if (analyse_status == AnalyseStatus::Yes) {
         PyErr_SetString(PyExc_ValueError, "cannot register type that is the instance of 'PrivateAttrType' or registed type");
         return NULL;
     }
@@ -4767,6 +4998,16 @@ register_metaclass_head(PyObject* metaclass) noexcept
         // without an extra INCREF (which the plain assignment operator would add).
         ::AllData::all_register_type_weak_ref[id] = ref;
         ::AllData::weakref_type[(uintptr_t)(ref.get())] = id;
+    }
+
+    // A newly registered metaclass can turn previously-created classes into
+    // private-attribute types (any type whose metaclass is, or derives from,
+    // this metaclass now needs analysis). Drop the cached need_analyse_type
+    // results so they are recomputed against the updated metaclass set.
+    {
+        std::unique_lock cache_lock(::AllData::is_private_mutex);
+        ::AllData::is_private_cache.clear();
+        ::AllData::is_private_cache_weakref_dict.clear();
     }
     PyTypeObject* mt = (PyTypeObject*)metaclass;
     // v3: explicitly install the metaclass special-method structs
@@ -4812,7 +5053,11 @@ ensure_type_tp(PyObject* /*self*/, PyObject* type) noexcept
         PyErr_SetString(PyExc_TypeError, "type must be a type");
         return NULL;
     }
-    if (!need_analyse_type(type)) {
+    AnalyseStatus analyse_status = need_analyse_type(type);
+    if (analyse_status == AnalyseStatus::Error) {
+        return NULL;
+    }
+    if (analyse_status == AnalyseStatus::No) {
         Py_RETURN_NONE;
     }
     ensure_tp((PyTypeObject*)type);

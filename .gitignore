@@ -19,3 +19,10 @@ __pycache__/*
 *.manifest
 *.spec
 site/
+*.vcxproj
+*.vcxproj.filters
+CMakeCache.txt
+*.slnx
+*.cmake
+CMakeFiles/
+.clangd
