@@ -262,6 +262,8 @@ unchanged; only the internal name set is merged. Default is `False`.
 | `PrivateAttrType` | metaclass | The metaclass that implements the private-attribute machinery. |
 | `PrivateWrapProxy(decorator, orig=None)` | decorator | Wrap an arbitrary decorator so it stays private-attribute-aware. |
 | `_PrivateWrap` | class | Returned by `PrivateWrapProxy`; exposes `.result` and `.funcs`. |
+| `PrivateSuper(A, B, C, obj)` | class | Read a parent class's class-level private attribute defined for another class; calls `__get__(obj, A)`. |
+| `PrivateClassSuper(A, B, C, cls)` | class | Classmethod flavour of `PrivateSuper`; calls `__get__(None, cls)`. |
 | `prepare(name, bases, attrs, **kwds)` | function | Context manager for building private-attribute classes in a custom metaclass. |
 | `postprocess(typ, temp)` | function | Finalize a class created via `prepare`. |
 | `register_metaclass(metaclass)` | function | Register a custom metaclass so it can produce private-attribute classes. |

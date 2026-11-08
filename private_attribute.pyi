@@ -107,6 +107,39 @@ class PrivateAttrBase(metaclass=PrivateAttrType):
     __slots__ = ()
     __private_attrs__ = ()
 
+class PrivateSuper:
+    """
+    Explicit cross-class access to a parent class's class-level private attribute.
+
+    Usage: ``PrivateSuper(A, B, C, obj).name``
+
+    - A: the type whose code is currently running (the code owner).
+    - B: a parent type of A whose class-level private attribute is accessed.
+    - C: the class the private variable was defined for; it must be B, A, or a
+      class that is both a subclass of B and a parent of A.
+    - obj: an instance of A.
+
+    A, B and C must all be private-attribute types (instances of
+    ``PrivateAttrType`` or a registered metaclass). The attribute is resolved
+    from B's class-level storage for C and its ``__get__(obj, A)`` is called.
+    Not for instance attribute cross-type access.
+    """
+    def __init__(self, A: type, B: type, C: type, obj: Any, /) -> None: ...
+    def __getattr__(self, name: str) -> Any: ...
+
+class PrivateClassSuper:
+    """
+    Classmethod flavour of :class:`PrivateSuper`.
+
+    Usage: ``PrivateClassSuper(A, B, C, cls).name``
+
+    A, B and C are as in :class:`PrivateSuper`; ``cls`` is a subclass of A. The
+    attribute is resolved from B's class-level storage for C and its
+    ``__get__(None, cls)`` is called.
+    """
+    def __init__(self, A: type, B: type, C: type, cls: type, /) -> None: ...
+    def __getattr__(self, name: str) -> Any: ...
+
 
 class _PrivateTemp:
     @property

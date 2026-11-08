@@ -65,6 +65,40 @@ A read-only proxy over a list. It is returned by `_PrivateWrap.funcs` and
 supports the common read-side list interface (`len`, iteration, indexing,
 `in`, `copy`, `count`, `index`) but has no mutating methods.
 
+### `PrivateSuper`
+
+```python
+class PrivateSuper:
+    def __init__(self, A, B, C, obj, /): ...
+```
+
+Explicit cross-class access to a parent class's class-level private attribute.
+
+- `A`: the type whose code is currently running (the code owner).
+- `B`: a parent type of `A` whose class-level private attribute is accessed.
+- `C`: the class the private variable was defined for; it must be `B`, `A`, or
+  a class that is both a subclass of `B` and a parent of `A`.
+- `obj`: an instance of `A`.
+
+`A`, `B` and `C` must all be private-attribute types (instances of
+`PrivateAttrType` or a registered metaclass). At attribute access, the running
+code must belong to `A`; the attribute is then resolved from `B`'s class-level
+storage for `C` (i.e. `all_type_subclass_attr[B][C]`, or `B`'s own body storage
+when `C is B`) and its `__get__(obj, A)` is invoked.
+
+> This is **not** for instance-attribute cross-type access.
+
+### `PrivateClassSuper`
+
+```python
+class PrivateClassSuper:
+    def __init__(self, A, B, C, cls, /): ...
+```
+
+The classmethod flavour of `PrivateSuper`. `A`, `B` and `C` are as above;
+`cls` is a subclass of `A`. The attribute is resolved from the same storage and
+its `__get__(None, cls)` is invoked.
+
 ## Functions
 
 ### `prepare`
