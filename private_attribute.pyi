@@ -223,12 +223,14 @@ def register_metaclass(typ: type, /) -> None:
 def ensure_type(typ: type, /) -> None:
     """function for custom metaclass to ensure the type is a private attributes class.
     def ensure_type(type: type) -> None:
-        the function to ensure the type is a private attributes class `tp_getattro`, `tp_setattro` and `tp_finalizer`.
+        the function to re-inject the special-method slot descriptors and the
+        tp_traverse/tp_clear wrappers after CPython has reset them.
     """
     ...
 def ensure_metaclass(typ: type, /) -> None:
     """function for custom metaclass to ensure the metaclass is working.
     def ensure_metaclass(metaclass: type) -> None:
-        the function to ensure the metaclass `tp_getattro`, `tp_setattro` and `tp_finalizer`.
+        the function to re-inject the metaclass slot descriptors and the
+        tp_traverse/tp_clear wrappers.
     """
     ...

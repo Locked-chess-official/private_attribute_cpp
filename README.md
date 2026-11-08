@@ -356,6 +356,14 @@ released even if construction fails.
   `__getattribute__` / `__setattr__`. Use `ensure_type` (or `ensure_metaclass`)
   to reset those slots, and avoid setting those methods on private-attribute
   classes directly.
+- **v3** — private attribute interception is implemented through C-struct
+  descriptors installed as `__getattribute__` / `__getattr__` / `__setattr__` /
+  `__delattr__` / `__del__` (and `__call__` on registered metaclasses), rather
+  than by directly setting `tp_getattro` / `tp_setattro` / `tp_finalize`. Only
+  `tp_traverse` / `tp_clear` are set directly. A public cache keyed by object
+  id records attribute names already confirmed non-private, so they go
+  straight to the user callback without re-classification. Registered types and
+  created types must be heap types (static types are rejected).
 - `register_metaclass` requires a metaclass that supports weak references.
 - Do **not** set `__static_attributes__` on a private-attribute class; it is
   removed automatically.
