@@ -4631,7 +4631,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
     }
     uintptr_t typ_id = (uintptr_t)(cls);
     std::string name_str = PyUnicode_AsUTF8(name);
-    {
+    if (!is_confirmed_public(typ_id, name_str)) {
         PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
         TypePrivateAttrResult private_result = type_private_attr(typ_id, name_str);
         if (!private_result.ok) {
@@ -4654,6 +4654,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
                 return type_getattr(classify.type_id, cls, name_str);
             }
         }
+        mark_confirmed_public(typ_id, name_str);
     }
     return PyType_Type.tp_getattro(cls, name);
 }
@@ -4888,7 +4889,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
         PyErr_Format(PyExc_TypeError, "cannot set '%s' attribute of immutable type '%s'", name_str.c_str(), ((PyTypeObject*)cls)->tp_name);
         return -1;
     }
-    {
+    if (!is_confirmed_public(typ_id, name_str)) {
         PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
         TypePrivateAttrResult private_result = type_private_attr(typ_id, name_str);
         if (!private_result.ok) {
@@ -4912,6 +4913,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
             }
             // owner is 0: not private for this access context -> normal attribute
         }
+        mark_confirmed_public(typ_id, name_str);
     }
     return new_type_tp_setattro(cls, name, value);
 }
@@ -4966,6 +4968,7 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
     if (::AllData::all_object_mutex.find(typ_id) != ::AllData::all_object_mutex.end()) {
         ::AllData::all_object_mutex.erase(typ_id);
     }
+    clear_public_obj(typ_id);
     clear_obj(typ_id);
 }
 
