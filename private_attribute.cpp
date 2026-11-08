@@ -235,7 +235,7 @@ static bool inject_type_slots(PyObject* attrs) noexcept;
 // install the six special-method structs into a registered (heap) metaclass dict
 static bool install_metaclass_slots(PyTypeObject* metaclass) noexcept;
 // write a new user callback into an installed slot struct's callback field
-static bool update_slot_callback(PyTypeObject* owner, const char* name, PyObject* callback) noexcept;
+static bool update_slot_callback(PyTypeObject* owner, const char* name, PyObject* callback, int is_metaclass) noexcept;
 // public non-private-name cache helpers
 static bool is_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept;
 static void mark_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept;
@@ -277,12 +277,6 @@ namespace {
             all_object_mutex, all_type_subclass_mutex;
         static std::mutex object_creatmutex_mutex, type_createmutex_mutex, type_parenttype_createmutex_mutex;
         static std::unordered_map<uintptr_t, std::vector<uintptr_t>> all_type_parent_id;
-        // all type tp_getattro map
-        static std::unordered_map<uintptr_t, getattrofunc> all_type_getattro;
-        // all type tp_setattro map
-        static std::unordered_map<uintptr_t, setattrofunc> all_type_setattro;
-        // all type tp_call map
-        static std::unordered_map<uintptr_t, ternaryfunc> all_type_call;
         // all type tp_traverse map
         static std::unordered_map<uintptr_t, traverseproc> all_type_traverse;
         // all type tp_clear map
@@ -294,7 +288,6 @@ namespace {
         // defaults as "not a real original" and keep walking upward.
         static traverseproc captured_subtype_traverse = NULL;
         static inquiry captured_subtype_clear = NULL;
-        static std::unordered_map<uintptr_t, destructor> all_type_del;
 
         static std::shared_mutex all_register_new_metaclass_mutex;
         static std::unordered_map<uintptr_t, PyObjectStorage> all_register_type_weak_ref;
@@ -612,12 +605,8 @@ clean_all_storages() noexcept
     AllData::all_object_mutex.clear();
     AllData::all_type_subclass_mutex.clear();
     AllData::all_type_parent_id.clear();
-    AllData::all_type_getattro.clear();
-    AllData::all_type_setattro.clear();
-    AllData::all_type_call.clear();
     AllData::all_type_traverse.clear();
     AllData::all_type_clear.clear();
-    AllData::all_type_del.clear();
     AllData::all_register_type_weak_ref.clear();
     AllData::store_module_self.clear();
     AllData::public_attr_cache.clear();
@@ -1009,8 +998,6 @@ id_getattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyOb
     }
     if (get && has_set) {
         PyObject* final_result = get(result, obj, typ);
-        ensure_tp((PyTypeObject*)typ);
-        ensure_subclass_tp((PyTypeObject*)typ);
         return final_result;
     }
 
@@ -1038,8 +1025,6 @@ id_getattr(uintptr_t final_id, const std::string& attr_name, PyObject* obj, PyOb
 
     if (get) {
         PyObject* final_result = get(result, obj, typ);
-        ensure_tp((PyTypeObject*)typ);
-        ensure_subclass_tp((PyTypeObject*)typ);
         return final_result;
     }
     if (result) {
@@ -1071,8 +1056,6 @@ type_getattr(uintptr_t main_type, PyObject* typ, const std::string& attr_name) n
         auto funcptr = type->tp_descr_get;
         if (funcptr) {
             PyObject* final_result = funcptr(result, Py_None, (PyObject*)type);
-            ensure_tp((PyTypeObject*)type);
-            ensure_subclass_tp((PyTypeObject*)type);
             return final_result;
         } else {
             Py_INCREF(result);
@@ -2831,12 +2814,16 @@ static PyObject*
 slot_call_impl(PrivateAttrSlot* self, PyObject* args, PyObject* kwds) noexcept
 {
     // metaclass __call__: args = (cls, *call_args)
+    Py_ssize_t n = PyTuple_GET_SIZE(args);
+    if (n == 0) {
+        PyErr_SetString(PyExc_TypeError, "metaclass __call__ requires the type itself");
+        return NULL;
+    }
     PyObject* cls = PyTuple_GET_ITEM(args, 0);
     if (!try_install_pending_creation(cls)) return NULL;
     if (self->callback) {
         return PyObject_Call(self->callback, args, kwds);
     }
-    Py_ssize_t n = PyTuple_GET_SIZE(args);
     PyObjectStorage rest = PyObjectStorage::from_new_ref(PyTuple_GetSlice(args, 1, n));
     if (!rest) return NULL;
     return super_slot_call(self->owner_type, cls, "__call__", rest, kwds);
@@ -3069,20 +3056,57 @@ install_metaclass_slots(PyTypeObject* metaclass) noexcept
 }
 
 // Write a new user callback into an installed slot struct's callback field.
+//
+// If the slot name already exists and is one of our structs, we try to reuse it
+// in place: for a PrivateAttrMetaSlotType struct whose owner_type still matches
+// `owner`, only the callback field is rewritten (no re-creation). Otherwise we
+// fall through and rebuild the struct in place. If the existing value is NOT one
+// of our slot structs at all, we also rebuild in place instead of giving up, so
+// the original attribute is preserved as the new callback.
 static bool
-update_slot_callback(PyTypeObject* owner, const char* name, PyObject* callback) noexcept
+update_slot_callback(PyTypeObject* owner, const char* name, PyObject* callback, int is_metaclass) noexcept
 {
     PyObject* dict = owner->tp_dict;
     if (!dict) return false;
     PyObject* slot = PyDict_GetItemString(dict, name);
-    if (!slot) return false;
-    if (!PyObject_IsInstance(slot, (PyObject*)&PrivateAttrMetaSlotType)
-        && !PyObject_IsInstance(slot, (PyObject*)&PrivateAttrSlotType)) {
+
+    // Fast path: reuse an existing struct when possible.
+    if (slot && PyObject_IsInstance(slot, (PyObject*)&PrivateAttrMetaSlotType)) {
+        PrivateAttrSlot* s = (PrivateAttrSlot*)slot;
+        if (s->owner_type == (PyObject*)owner) {
+            // Same owner: treat this as a pure callback-field update.
+            Py_XSETREF(s->callback, callback ? (PyObject*)Py_NewRef(callback) : NULL);
+            return true;
+        }
+        // Owner differs: fall through to re-create in place.
+    } else if (slot && PyObject_IsInstance(slot, (PyObject*)&PrivateAttrSlotType)) {
+        PrivateAttrSlot* s = (PrivateAttrSlot*)slot;
+        if (!is_metaclass && s->owner_type == (PyObject*)owner) {
+            Py_XSETREF(s->callback, callback ? (PyObject*)Py_NewRef(callback) : NULL);
+            return true;
+        }
+        // Otherwise fall through to re-create in place.
+    }
+
+    // Rebuild the slot struct in place, preserving the original value (if any)
+    // as the new callback. This covers:
+    //   - no existing slot at all,
+    //   - an existing struct with a mismatched owner_type,
+    //   - an existing value that is not one of our slot structs.
+    PyObject* new_slot = is_metaclass
+        ? make_metaclass_slot(name, (PyObject*)owner, callback)
+        : make_type_slot(name, callback);
+    if (!new_slot) return false;
+
+    setattrofunc real_setattro = original_type_tp_setattro ? original_type_tp_setattro : PyType_Type.tp_setattro;
+    PyObjectStorage name_obj = PyObjectStorage::from_new_ref(PyUnicode_FromString(name));
+    if (!name_obj) {
+        Py_DECREF(new_slot);
         return false;
     }
-    PrivateAttrSlot* s = (PrivateAttrSlot*)slot;
-    Py_XSETREF(s->callback, callback ? (PyObject*)Py_NewRef(callback) : NULL);
-    return true;
+    int r = real_setattro((PyObject*)owner, name_obj, new_slot);
+    Py_DECREF(new_slot);
+    return r >= 0;
 }
 
 // ===============================================================
@@ -4594,20 +4618,7 @@ PrivateAttrType_call(PyObject* cls, PyObject* args, PyObject* kwds) noexcept
     // Finish any pending private-attribute creation before instantiating the
     // class (the creation may have been interrupted before install() ran).
     if (!try_install_pending_creation(cls)) return NULL;
-    auto it = ::AllData::all_type_call.find((uintptr_t)Py_TYPE(cls));
-    if (it != ::AllData::all_type_call.end()) {
-        if (it->second && it->second != PrivateAttrType_call) {
-            return it->second(cls, args, kwds);
-        }
-    }
-    PyTypeObject* base = Py_TYPE(cls)->tp_base;
-    while (base && base->tp_base && base->tp_call == PrivateAttrType_call) {
-        base = base->tp_base;
-    }
-    if (!base) {
-        return PyType_Type.tp_call(cls, args, kwds);
-    }
-    return base->tp_call(cls, args, kwds);
+    return PyType_Type.tp_call(cls, args, kwds);
 }
 
 static PyObject*
@@ -4644,22 +4655,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
             }
         }
     }
-    auto it = ::AllData::all_type_getattro.find((uintptr_t)Py_TYPE(cls));
-    if (it != ::AllData::all_type_getattro.end()) {
-        if (it->second && it->second != PrivateAttrType_getattr) {
-            return it->second(cls, name);
-        }
-    }
-    PyTypeObject* base = Py_TYPE(cls)->tp_base;
-    while (base && base->tp_base && base->tp_getattro == PrivateAttrType_getattr) {
-        base = base->tp_base;
-    }
-    if (!base) {
-        PyObject* result = PyType_Type.tp_getattro(cls, name);
-        return result;
-    }
-    PyObject* result = base->tp_getattro(cls, name);
-    return result;
+    return PyType_Type.tp_getattro(cls, name);
 }
 
 static bool
@@ -4685,8 +4681,10 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
         const char* name_cstr = PyUnicode_AsUTF8(name);
         if (name_cstr) {
             const char** slot_names = NULL;
+            int is_metaclass = 0;
             if (is_registed_type(self)) {
                 slot_names = metaclass_slot_names;
+                is_metaclass = 1;
             } else {
                 AnalyseStatus analyse_status = need_analyse_type(self);
                 if (analyse_status == AnalyseStatus::Error) {
@@ -4706,7 +4704,7 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
             if (slot_names && !is_our_struct) {
                 for (int i = 0; slot_names[i]; i++) {
                     if (strcmp(name_cstr, slot_names[i]) == 0) {
-                        if (!update_slot_callback((PyTypeObject*)self, name_cstr, value)) {
+                        if (!update_slot_callback((PyTypeObject*)self, name_cstr, value, is_metaclass)) {
                             return -1;
                         }
                         return 0;
@@ -4887,8 +4885,7 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
     uintptr_t typ_id = (uintptr_t)(cls);
     std::string name_str = PyUnicode_AsUTF8(name);
     if (((PyTypeObject*)cls)->tp_flags & Py_TPFLAGS_IMMUTABLETYPE) {
-        std::string error_message = "cannot set '" + name_str + "' attribute of immutable type '" + ((PyTypeObject*)cls)->tp_name + "'";
-        PyErr_SetString(PyExc_TypeError, error_message.c_str());
+        PyErr_Format(PyExc_TypeError, "cannot set '%s' attribute of immutable type '%s'", name_str.c_str(), ((PyTypeObject*)cls)->tp_name);
         return -1;
     }
     {
@@ -4916,36 +4913,13 @@ PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept
             // owner is 0: not private for this access context -> normal attribute
         }
     }
-    auto it = ::AllData::all_type_setattro.find((uintptr_t)Py_TYPE(cls));
-    if (it != ::AllData::all_type_setattro.end()) {
-        if (it->second && it->second != PrivateAttrType_setattr) {
-            return it->second(cls, name, value);
-        }
-    }
-    PyTypeObject* base = Py_TYPE(cls)->tp_base;
-    while (base && base->tp_base && base->tp_setattro == PrivateAttrType_setattr) {
-        base = base->tp_base;
-    }
-    if (!base) {
-        return new_type_tp_setattro(cls, name, value);
-    }
-    int result = base->tp_setattro(cls, name, value);
-    ensure_tp((PyTypeObject*)cls);
-    ensure_subclass_tp((PyTypeObject*)cls);
-    return result;
+    return new_type_tp_setattro(cls, name, value);
 }
 
 static void
 PrivateAttrType_finalize(PyObject* cls) noexcept
 {
     uintptr_t typ_id = (uintptr_t) cls;
-    if (::AllData::all_type_del.find((uintptr_t)Py_TYPE(cls)) != ::AllData::all_type_del.end()) {
-        destructor orig = ::AllData::all_type_del[(uintptr_t)Py_TYPE(cls)];
-        if (orig && orig != PrivateAttrType_finalize) {
-            orig(cls);
-            return;
-        }
-    }
     if (::AllData::all_type_attr_set.find(typ_id) != ::AllData::all_type_attr_set.end()) {
         ::AllData::all_type_attr_set.erase(typ_id);
     }
@@ -4980,12 +4954,6 @@ PrivateAttrType_finalize(PyObject* cls) noexcept
                 ::AllData::all_type_subclass_mutex[parent_id].erase(typ_id);
             }
         }
-    }
-    if (::AllData::all_type_getattro.find(typ_id) != ::AllData::all_type_getattro.end()) {
-        ::AllData::all_type_getattro.erase(typ_id);
-    }
-    if (::AllData::all_type_setattro.find(typ_id) != ::AllData::all_type_setattro.end()) {
-        ::AllData::all_type_setattro.erase(typ_id);
     }
     ::AllData::all_type_mutex.erase(typ_id);
     // Clear the per-type buckets of the object-attr tables (created in
@@ -5283,12 +5251,8 @@ metaclass_weakref_callback(PyObject* /*self*/, PyObject* weakref) noexcept
         // erase; do not DECREF here (double-DECREF).
         ::AllData::all_register_type_weak_ref.erase(it);
     }
-    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(getattro);
-    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(setattro);
     METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(traverse);
     METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(clear);
-    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(del);
-    METACLASS_WEAKREF_CALLBACK_REMOVE_ITEM(call);
 
     Py_RETURN_NONE;
 }
