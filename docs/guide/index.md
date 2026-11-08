@@ -6,3 +6,4 @@ This section explains the core concepts of `private_attribute` in depth.
 - [Custom name generation](custom-names.md) — control how private values are stored with `private_func`.
 - [Decorated methods](decorators.md) — make arbitrary decorators work with `PrivateWrapProxy`.
 - [Inheritance & `use_parents`](inheritance.md) — how privacy interacts with subclassing.
+- [Cross-class access](cross-class-access.md) — `PrivateSuper` / `PrivateClassSuper` for reaching a parent's class-level private attribute.

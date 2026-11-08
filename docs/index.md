@@ -15,8 +15,8 @@ class's own code.
 
 - :material-lock: **Enforced at the C level**
 
-    Attribute access is rewritten in `tp_getattro` / `tp_setattro`, not emulated
-    in Python.
+    Attribute access is intercepted by C-level slot descriptors
+    (`__getattribute__` / `__setattr__` and friends), not emulated in Python.
 
 - :material-eye-off: **Truly hidden**
 

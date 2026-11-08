@@ -64,9 +64,12 @@ MyClass()                # TypeError: Can't instantiate abstract class MyClass
 
 ## `ensure_type` / `ensure_metaclass`
 
-CPython may change `tp_getattro` / `tp_setattro` when you assign
-`__getattribute__` / `__setattr__`. Use `ensure_type` (for types) or
-`ensure_metaclass` (for metaclasses) to reset those slots, and avoid setting
+In v3 the interception lives in C-struct slot descriptors installed as
+`__getattribute__` / `__getattr__` / `__setattr__` / `__delattr__` / `__del__`
+(plus `__call__` on metaclasses); only `tp_traverse` / `tp_clear` are set
+directly. CPython may reset these descriptors when you assign
+`__getattribute__` / `__setattr__` (and friends). Use `ensure_type` (for types)
+or `ensure_metaclass` (for metaclasses) to re-inject them, and avoid setting
 those dunder methods on private-attribute classes directly.
 
 ```python

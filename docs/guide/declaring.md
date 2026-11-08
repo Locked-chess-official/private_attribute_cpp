@@ -32,9 +32,10 @@ When a name is declared private:
 1. Its value is **not** stored in the instance's `__dict__`.
 2. It is stored under a generated, collision-resistant name — by default a tuple
    of two SHA-256 hashes.
-3. Reads and writes are intercepted by `tp_getattro` / `tp_setattro` and routed
-   to the private storage *only* when the accessing code belongs to the
-   declaring class.
+3. Reads and writes are intercepted by the C-struct slot descriptors installed
+   as `__getattribute__` / `__getattr__` / `__setattr__` / `__delattr__` /
+   `__del__` and routed to the private storage *only* when the accessing code
+   belongs to the declaring class.
 
 This is why the attribute is invisible to `hasattr()`, `getattr()`, and `dir()`
 from outside — the value simply isn't under the public name.

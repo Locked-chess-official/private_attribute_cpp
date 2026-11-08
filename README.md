@@ -26,6 +26,7 @@ outside the declaring class's own code.
   - [Custom name generation (`private_func`)](#custom-name-generation-private_func)
   - [Decorated methods (`PrivateWrapProxy`)](#decorated-methods-privatewrapproxy)
   - [Inheritance and `use_parents`](#inheritance-and-use_parents)
+  - [Cross-class access (`PrivateSuper` and `PrivateClassSuper`)](#cross-class-access-privatesuper-and-privateclasssuper)
 - [API reference](#api-reference)
 - [Custom metaclasses](#custom-metaclasses)
 - [Behavioral notes & limitations](#behavioral-notes--limitations)
@@ -49,9 +50,10 @@ code that knows (or can guess) the mangled name can still read and mutate your
   from subclasses and from `getattr`/`hasattr`/`dir`.
 - Inside the declaring class, they look and behave like ordinary attributes.
 
-It does this by rewriting attribute access in `tp_getattro` / `tp_setattro` and
-storing private values under generated, collision-resistant names (a tuple of
-two SHA-256 hashes).
+It does this by installing C-struct descriptors for `__getattribute__` /
+`__getattr__` / `__setattr__` / `__delattr__` / `__del__` (and `__call__` on
+registered metaclasses) and storing private values under generated,
+collision-resistant names (a tuple of two SHA-256 hashes).
 
 ---
 
@@ -254,6 +256,57 @@ unchanged; only the internal name set is merged. Default is `False`.
 
 ---
 
+### Cross-class access (`PrivateSuper` and `PrivateClassSuper`)
+
+Since v3.0.0 you can explicitly reach a parent class's class-level private
+attribute — including the value it stored "for" an intermediate class — with
+`PrivateSuper` (instance flavour) or `PrivateClassSuper` (`@classmethod`
+flavour):
+
+```python
+import private_attribute
+
+class Grand(private_attribute.PrivateAttrBase):
+    __private_attrs__ = ["_g"]
+    _g = "grand"
+
+    @classmethod
+    def set_g(cls, value):
+        cls._g = value
+
+class Mid(Grand):
+    __private_attrs__ = ["_m"]
+    _m = "mid"
+
+class Leaf(Mid, use_parents=True):
+    __private_attrs__ = []
+
+    def read_grand_shadow(self):
+        # A=Leaf (running code), B=Grand (owning class), C=Mid (defined-for class)
+        return private_attribute.PrivateSuper(Leaf, Grand, Mid, self)._g
+
+    @classmethod
+    def read_grand_shadow_cls(cls):
+        return private_attribute.PrivateClassSuper(Leaf, Grand, Mid, cls)._g
+
+Mid.set_g("written-on-mid")
+Leaf().read_grand_shadow()      # "written-on-mid"
+Leaf.read_grand_shadow_cls()    # "written-on-mid"
+```
+
+- `A` — the type whose code is currently running.
+- `B` — a parent type of `A` whose class-level private attribute is accessed.
+- `C` — the class the private value was defined for; it must be `B`, `A`, or a
+  class that is both a subclass of `B` and a parent of `A`.
+- the final argument is an instance of `A` (for `PrivateSuper`) or a subclass of
+  `A` (for `PrivateClassSuper`).
+
+The attribute is resolved from `B`'s class-level storage for `C` and its
+`__get__(obj, A)` (or `__get__(None, cls)`) is invoked. This is for **class-level
+private attributes only** — it is not for instance-attribute cross-type access.
+
+---
+
 ## API reference
 
 | Name | Kind | Purpose |
@@ -267,8 +320,8 @@ unchanged; only the internal name set is merged. Default is `False`.
 | `prepare(name, bases, attrs, **kwds)` | function | Context manager for building private-attribute classes in a custom metaclass. |
 | `postprocess(typ, temp)` | function | Finalize a class created via `prepare`. |
 | `register_metaclass(metaclass)` | function | Register a custom metaclass so it can produce private-attribute classes. |
-| `ensure_type(typ)` | function | Reset `tp_getattro`/`tp_setattro`/`tp_finalizer` slots on a type. |
-| `ensure_metaclass(metaclass)` | function | Reset the corresponding slots on a metaclass. |
+| `ensure_type(typ)` | function | Re-inject the special-method slot descriptors and `tp_traverse`/`tp_clear` wrappers on a type. |
+| `ensure_metaclass(metaclass)` | function | Re-inject the corresponding slot descriptors and wrappers on a metaclass. |
 
 Class-definition options:
 
@@ -354,10 +407,10 @@ released even if construction fails.
   is released automatically on failure.
 - **v2.2.3** — prefer the `with` form of `prepare`/`postprocess` to guarantee
   the lock is released.
-- CPython may change `tp_getattro` / `tp_setattro` when you assign
-  `__getattribute__` / `__setattr__`. Use `ensure_type` (or `ensure_metaclass`)
-  to reset those slots, and avoid setting those methods on private-attribute
-  classes directly.
+- CPython may reset the special-method slot descriptors (e.g. when you assign
+  `__getattribute__` / `__setattr__`). Use `ensure_type` (or
+  `ensure_metaclass`) to re-inject them, and avoid setting those methods on
+  private-attribute classes directly.
 - **v3** — private attribute interception is implemented through C-struct
   descriptors installed as `__getattribute__` / `__getattr__` / `__setattr__` /
   `__delattr__` / `__del__` (and `__call__` on registered metaclasses), rather

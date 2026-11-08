@@ -67,6 +67,7 @@ nav:
       - Custom name generation: guide/custom-names.md
       - Decorated methods: guide/decorators.md
       - Inheritance & use_parents: guide/inheritance.md
+      - Cross-class access: guide/cross-class-access.md
   - API Reference: api.md
   - Custom Metaclasses: custom-metaclasses.md
   - Behavioral Notes & Limitations: notes.md

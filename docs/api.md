@@ -135,7 +135,9 @@ called before creating any such class; the metaclass must support weakrefs.
 def ensure_type(typ, /) -> None: ...
 ```
 
-Resets `tp_getattro` / `tp_setattro` / `tp_finalizer` slots on a type.
+Re-injects the special-method slot descriptors (`__getattribute__` /
+`__getattr__` / `__setattr__` / `__delattr__` / `__del__`) and the
+`tp_traverse` / `tp_clear` wrappers after CPython has reset them.
 
 ### `ensure_metaclass`
 
@@ -143,7 +145,8 @@ Resets `tp_getattro` / `tp_setattro` / `tp_finalizer` slots on a type.
 def ensure_metaclass(typ, /) -> None: ...
 ```
 
-Resets the corresponding slots on a metaclass.
+Re-injects the metaclass slot descriptors (plus `__call__`) and the
+`tp_traverse` / `tp_clear` wrappers.
 
 ## Class-definition options
 

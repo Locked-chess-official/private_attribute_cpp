@@ -30,12 +30,16 @@
 | 2.2.0 | Subclass must not define a parent-private name in its own body unless declared in its own `__private_attrs__` or `use_parents=True`. `use_parents` added. |
 | 2.2.1 | `prepare` takes an internal creation lock; `postprocess` releases it. Auto-released on failure. |
 | 2.2.3 | `prepare`/`postprocess` support the `with` statement. |
+| 3.0.0 | Interception moved from the `tp_getattro`/`tp_setattro`/`tp_finalize` slots to C-struct slot descriptors; added `PrivateSuper`/`PrivateClassSuper`. |
 
 ## CPython slot caveats
 
-- CPython may change `tp_getattro`, `tp_setattro`, and related slots when you
-  change `__getattribute__`, `__setattr__`, etc. If you are concerned, use
-  `ensure_type` (or `ensure_metaclass`) to reset those slots, and avoid setting
+- In v3 the interception lives in C-struct slot descriptors installed as
+  `__getattribute__` / `__getattr__` / `__setattr__` / `__delattr__` /
+  `__del__` (plus `__call__` on metaclasses); only `tp_traverse` / `tp_clear`
+  are set directly. CPython may reset these descriptors when you change
+  `__getattribute__`, `__setattr__`, etc. If you are concerned, use
+  `ensure_type` (or `ensure_metaclass`) to re-inject them, and avoid setting
   those dunder methods on private-attribute classes directly.
 - `register_metaclass` must be called with a metaclass that supports weakrefs.
 - Do **not** set `__static_attributes__` on a private-attribute class — it will
