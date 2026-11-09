@@ -2559,7 +2559,7 @@ PrivateAttrSlot_get_annotate(PrivateAttrSlot* self, void * /*closure*/) noexcept
         if (result) {return result;}
         else PyErr_Clear();
     }
-    return Py_None;
+    Py_RETURN_NONE;
 }
 
 static PyObject*
@@ -2570,7 +2570,7 @@ PrivateAttrSlot_get_type_params(PrivateAttrSlot* self, void * /*closure*/) noexc
         if (result) {return result;}
         else PyErr_Clear();
     }
-    return Py_None;
+    Py_RETURN_NONE;
 }
 
 static PyObject*
@@ -2581,7 +2581,7 @@ PrivateAttrSlot_get_isabstractmethod(PrivateAttrSlot* self, void * /*closure*/) 
         if (result) {return result;}
         else PyErr_Clear();
     }
-    return Py_False;
+    Py_RETURN_FALSE;
 }
 
 static int
