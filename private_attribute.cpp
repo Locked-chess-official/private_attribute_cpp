@@ -4492,7 +4492,7 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
             if (wrap == obj) {
                 if (PyObject_TypeCheck(obj, &PyFunction_Type)) {
                     PyObjectStorage code = PyFunction_GetCode(obj);
-                        if (code) {
+                    if (code) {
                         analyse_all_code(code, map, _seen);
                     }
                     return;
@@ -4506,7 +4506,7 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
         PyObjectStorage code = PyFunction_GetCode(obj);
         if (code) {
             analyse_all_code(code, map, _seen);
-            }
+        }
         return;
     }
 }
