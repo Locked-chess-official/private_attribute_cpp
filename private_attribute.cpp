@@ -2548,11 +2548,40 @@ slot_descr_get(PrivateAttrSlot* self, PyObject* obj, PyObject* /*type*/) noexcep
 static PyObject*
 slot_set_name(PrivateAttrSlot* self, PyObject* args) noexcept
 {
+    if (self->owner_type != NULL) {
+        Py_RETURN_NONE;
+    }
     PyObject *owner, *name;
     if (!PyArg_ParseTuple(args, "OO:__set_name__", &owner, &name)) return NULL;
+    if (!PyUnicode_Check(name)) {
+        PyErr_SetString(PyExc_TypeError, "name must be a string");
+        return NULL;
+    }
+    if (self->slot_name && PyUnicode_Check(self->slot_name)) {
+        const char *name_str, *old_name_str;
+        name_str = PyUnicode_AsUTF8(name);
+        old_name_str = PyUnicode_AsUTF8(self->slot_name);
+        if (strcmp(name_str, old_name_str) != 0) {
+            PyErr_Format(PyExc_RuntimeError, "the real attribute name '%s' is different from the original name '%s'", name_str, old_name_str);
+            return NULL;
+        }
+    }
+    if (!PyType_Check(owner)) {
+        PyErr_SetString(PyExc_TypeError, "owner must be a type");
+        return NULL;
+    }
     if (self->is_metaclass) {
         if (!register_metaclass_head(owner)) {return NULL;}
-    } else if (!try_install_pending_creation(owner)) return NULL;
+    } else {
+        auto check_need = need_analyse_type(owner);
+        if (check_need == AnalyseStatus::Error) return NULL;
+        if (check_need == AnalyseStatus::Yes) {
+            if (!try_install_pending_creation(owner)) return NULL;
+        } else {
+            PyErr_SetString(PyExc_TypeError, "owner is not a private type. You may put it in a wrong place");
+            return NULL;
+        }
+    }
     Py_XSETREF(self->owner_type, Py_NewRef(owner));
     Py_XSETREF(self->slot_name, Py_NewRef(name));
     Py_RETURN_NONE;
