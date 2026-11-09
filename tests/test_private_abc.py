@@ -4,14 +4,9 @@ import unittest
 
 
 class PrivateAbcMeta(ABCMeta):
-    def __new__(cls, *args, **kwargs):
-        with private_attribute.prepare(*args, **kwargs) as temp:
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)
-            return typ
+    __new__ = private_attribute.create_new()
+    __setattr__ = private_attribute.create_meta_slot("__setattr__")()
 
-
-private_attribute.register_metaclass(PrivateAbcMeta)
 
 class MyClass(ABC, metaclass=PrivateAbcMeta):
     __private_attrs__ = ["_secret1"]
@@ -25,6 +20,8 @@ class MyClass(ABC, metaclass=PrivateAbcMeta):
     def public_method(self):
         pass
 
+    __setattr__ = private_attribute.create_slot("__setattr__")()
+
 class ConcreteClass(MyClass):
     # 2.1.0: a subclass can no longer access a parent's private attribute.
     # If it needs the same name, it declares its own -> stored separately.
@@ -36,6 +33,8 @@ class ConcreteClass(MyClass):
 
     def public_method(self): # type: ignore
         return self._secret1, self._secret2
+
+    __setattr__ = private_attribute.create_slot("__setattr__")()
 
 
 class TestPrivateAbc(unittest.TestCase):

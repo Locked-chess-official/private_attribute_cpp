@@ -267,3 +267,86 @@ def ensure_metaclass(typ: type, /) -> None:
         tp_traverse/tp_clear wrappers.
     """
     ...
+
+def create_new(func: Callable[..., Any] | None = None, /) -> Callable[..., Any]:
+    """
+    function to register the type with new automatically:
+
+    ```
+    from abc import ABCMeta
+    import private_attribute
+
+    class PrivateAbcMeta(ABCMeta):
+        __new__ = private_attribute.create_new()
+    ```
+
+    also as a decorator:
+
+    ```
+    from abc import ABCMeta
+    import private_attribute
+
+    class PrivateAbcMeta(ABCMeta):
+        @private_attribute.create_new
+        def __new__(cls, *args, **kwargs):
+            ...
+    ```
+    """
+    ...
+
+def create_meta_slot(name: str, /):
+    """
+    function to create the final slot for metaclass:
+
+    ```
+    from abc import ABCMeta
+    import private_attribute
+
+    class PrivateAbcMeta(ABCMeta):
+        __new__ = private_attribute.create_new()
+
+        __setattr__ = private_attribute.create_meta_slot("__setattr__")()
+    ```
+
+    As a decorator:
+
+    ```
+    from abc import ABCMeta
+    import private_attribute
+
+    class PrivateAbcMeta(ABCMeta):
+        __new__ = private_attribute.create_new()
+
+        @private_attribute.create_meta_slot("__setattr__")
+        def __setattr__(self, name, value):
+            ...
+    ```
+    """
+    def create_register_type_slot_wrapper(callback: Callable[..., Any] | None = None) -> Callable[..., Any]: ...
+    return create_register_type_slot_wrapper
+
+def create_slot(name: str, /):
+    """
+    function to create the final slot for private class:
+
+    ```
+    import private_attribute
+
+    class MyClass(private_attribute.PrivateAttrBase):
+        __setattr__ = private_attribute.create_slot("__setattr__")()
+
+    ```
+    As a decorator:
+
+    ```
+    import private_attribute
+
+    class MyClass(private_attribute.PrivateAttrBase):
+        @private_attribute.create_slot("__setattr__")
+        def __setattr__(self, name, value):
+            ...
+
+    ```
+    """
+    def create_private_type_slot_wrapper(func: Callable[..., Any] | None = None) -> Callable[..., Any]: ...
+    return create_private_type_slot_wrapper
