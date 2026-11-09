@@ -1675,6 +1675,29 @@ PrivateWrap_type_params(PyObject* obj, void* /*closure*/) noexcept
     return type_params;
 }
 
+static PyObject*
+PrivateWrap_isabstractmethod(PyObject* obj, void* /*closure*/) noexcept
+{
+    if (!obj) {
+        Py_RETURN_FALSE;
+    }
+    PyObject* isabstractmethod = PyObject_GetAttrString(((PrivateWrapObject*)obj)->result, "__isabstractmethod__");
+    if (!isabstractmethod) {
+        PyErr_Clear();
+        Py_RETURN_FALSE;
+    }
+    return isabstractmethod;
+}
+
+static int
+PrivateWrap_set_isabstractmethod(PyObject* obj, PyObject* value, void* /*closure*/) noexcept
+{
+    if (!obj) {
+        return 0;
+    }
+    return PyObject_SetAttrString(((PrivateWrapObject*)obj)->result, "__isabstractmethod__", value);
+}
+
 static const char* PrivateWrap_funcs_doc = "the original functions";
 
 static PyGetSetDef PrivateWrap_getset[] = {
@@ -1685,6 +1708,7 @@ static PyGetSetDef PrivateWrap_getset[] = {
     {"__qualname__", (getter)PrivateWrap_qualname, NULL, NULL, NULL},
     {"__annotate__", (getter)PrivateWrap_annotate, NULL, NULL, NULL},
     {"__type_params__", (getter)PrivateWrap_type_params, NULL, NULL, NULL},
+    {"__isabstractmethod__", (getter)PrivateWrap_isabstractmethod, (setter)PrivateWrap_set_isabstractmethod, NULL, NULL},
     {NULL}
 };
 
@@ -1720,6 +1744,7 @@ PrivateWrap_getattro(PyObject *obj, PyObject *name) noexcept
     PrivateWrap_getattro_dunder(qualname);
     PrivateWrap_getattro_dunder(annotate);
     PrivateWrap_getattro_dunder(type_params);
+    PrivateWrap_getattro_dunder(isabstractmethod);
     return PyObject_GetAttr(self->result, name);
 }
 
@@ -2481,6 +2506,104 @@ static PyMemberDef PrivateAttrSlot_members[] = {
     {NULL}
 };
 
+// all: __doc__, __module__, __name__, __qualname__, __annotate__, __type_params__, __isabstractmethod__
+static PyObject*
+PrivateAttrSlot_get_doc(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__doc__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return PyUnicode_FromString("");
+}
+
+static PyObject*
+PrivateAttrSlot_get_name(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__name__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return PyUnicode_FromString("");
+}
+
+static PyObject*
+PrivateAttrSlot_get_qualname(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__qualname__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return PyUnicode_FromString("");
+}
+
+static PyObject*
+PrivateAttrSlot_get_module(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__module__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return PyUnicode_FromString("private_attribute");
+}
+
+static PyObject*
+PrivateAttrSlot_get_annotate(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__annotate__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return Py_None;
+}
+
+static PyObject*
+PrivateAttrSlot_get_type_params(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__type_params__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return Py_None;
+}
+
+static PyObject*
+PrivateAttrSlot_get_isabstractmethod(PrivateAttrSlot* self, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__isabstractmethod__");
+        if (result) {return result;}
+        else PyErr_Clear();
+    }
+    return Py_False;
+}
+
+static int
+PrivateAttrSlot_set_isabstractmethod(PrivateAttrSlot* self, PyObject* value, void * /*closure*/) noexcept
+{
+    if (self->callback) {
+        return PyObject_SetAttrString((PyObject*)self->callback, "__isabstractmethod__", value);
+    }
+    return 0;
+}
+
+static PyGetSetDef PrivateAttrSlot_getsetters[] = {
+    {"__doc__", (getter)PrivateAttrSlot_get_doc, NULL, NULL, NULL},
+    {"__name__", (getter)PrivateAttrSlot_get_name, NULL, NULL, NULL},
+    {"__qualname__", (getter)PrivateAttrSlot_get_qualname, NULL, NULL, NULL},
+    {"__module__", (getter)PrivateAttrSlot_get_module, NULL, NULL, NULL},
+    {"__annotate__", (getter)PrivateAttrSlot_get_annotate, NULL, NULL, NULL},
+    {"__type_params__", (getter)PrivateAttrSlot_get_type_params, NULL, NULL, NULL},
+    {"__isabstractmethod__", (getter)PrivateAttrSlot_get_isabstractmethod, (setter)PrivateAttrSlot_set_isabstractmethod, NULL, NULL},
+    {NULL}
+};
+
 // --- public non-private-name cache ---
 static bool
 is_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept
@@ -3079,7 +3202,7 @@ static PyTypeObject PrivateAttrSlotType = {
     0,                                         // tp_iternext
     PrivateAttrSlot_methods,                   // tp_methods
     PrivateAttrSlot_members,                   // tp_members
-    0,                                         // tp_getset
+    PrivateAttrSlot_getsetters,                // tp_getset
     0,                                         // tp_base
     0,                                         // tp_dict
     (descrgetfunc)slot_descr_get,              // tp_descr_get
@@ -3116,7 +3239,7 @@ static PyTypeObject PrivateAttrMetaSlotType = {
     0,                                         // tp_iternext
     PrivateAttrSlot_methods,                   // tp_methods
     PrivateAttrSlot_members,                   // tp_members
-    0,                                         // tp_getset
+    PrivateAttrSlot_getsetters,                // tp_getset
     0,                                         // tp_base
     0,                                         // tp_dict
     (descrgetfunc)slot_descr_get,              // tp_descr_get
@@ -3153,6 +3276,7 @@ static PyTypeObject PrivateAttrMetaNewSlotType = {
     0,                                         // tp_iternext
     PrivateAttrSlot_methods,                   // tp_methods
     PrivateAttrSlot_members,                   // tp_members
+    PrivateAttrSlot_getsetters,                // tp_getset
 };
 
 static const char* type_slot_names[] = {
