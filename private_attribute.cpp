@@ -2502,7 +2502,7 @@ static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t typ
 static bool try_install_pending_creation(PyObject* new_type) noexcept;
 
 static PyMemberDef PrivateAttrSlot_members[] = {
-    {"__wrapt__", T_OBJECT_EX, offsetof(PrivateAttrSlot, callback), 0, NULL},
+    {"__wrapped__", T_OBJECT_EX, offsetof(PrivateAttrSlot, callback), 0, NULL},
     {NULL}
 };
 
