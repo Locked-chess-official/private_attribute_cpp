@@ -2571,7 +2571,15 @@ slot_set_name(PrivateAttrSlot* self, PyObject* args) noexcept
         return NULL;
     }
     if (self->is_metaclass) {
-        if (!register_metaclass_head(owner)) {return NULL;}
+        auto check_need = need_analyse_type(owner);
+        if (check_need == AnalyseStatus::Error) return NULL;
+        if (check_need == AnalyseStatus::Yes) {
+            PyErr_SetString(PyExc_TypeError, "owner is a private type. You may put it in a wrong place");
+            return NULL;
+        }
+        if (!register_metaclass_head(owner)) {
+            return NULL;
+        }
     } else {
         auto check_need = need_analyse_type(owner);
         if (check_need == AnalyseStatus::Error) return NULL;
