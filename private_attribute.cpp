@@ -4456,6 +4456,14 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
         }
         return;
     }
+    if (PyObject_TypeCheck(obj, &PrivateAttrSlotType) ||
+        PyObject_TypeCheck(obj, &PrivateAttrMetaSlotType) ||
+        PyObject_TypeCheck(obj, &PrivateAttrMetaNewSlotType)) {
+            PrivateAttrSlot* obj = (PrivateAttrSlot*)obj;
+            if (obj->callback)
+                analyse_all_code(obj->callback, map, _seen);
+            return;
+        }
     if (PyObject_TypeCheck(obj, &PyProperty_Type)) {
         PyObjectStorage fget = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "fget"));
         if (fget) {
@@ -4904,7 +4912,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
             if (PyDict_DelItemString(data.base_kwds, "use_parents") < 0) return false;
         }
     }
-        {
+    {
         PyObject* original_key;
         Py_ssize_t original_pos = 0;
         PyObject* original_value;
