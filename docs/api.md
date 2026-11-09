@@ -101,33 +101,72 @@ its `__get__(None, cls)` is invoked.
 
 ## Functions
 
-### `prepare`
+### `create_new`
 
 ```python
-def prepare(name, bases, attrs, /, **kwds) -> _PrivateTemp: ...
+def create_new(func=None, /) -> Callable[..., Any]: ...
 ```
 
-Context manager for building a private-attribute class inside a custom metaclass.
-Returns a temporary object exposing `.name`, `.bases`, `.attrs`, and `.kwds`
-(plus, since v2.1.17, a `.postprocess(typ)` shortcut).
-
-### `postprocess`
+Registers and controls a custom metaclass automatically. Place it in the
+metaclass body (or use it as a decorator) and it replaces the old
+`prepare` / `postprocess` / `register_metaclass` flow:
 
 ```python
-def postprocess(typ, temp, /) -> None: ...
+from abc import ABCMeta
+import private_attribute
+
+class PrivateAbcMeta(ABCMeta):
+    __new__ = private_attribute.create_new()
+
+# or as a decorator:
+class PrivateAbcMeta2(ABCMeta):
+    @private_attribute.create_new
+    def __new__(cls, name, bases, attrs, **kwargs):
+        return super().__new__(cls, name, bases, attrs, **kwargs)
 ```
 
-Finalizes a class created via `prepare`. Call it after the metaclass's own
-`type.__new__`.
+With no argument the default `super().__new__` is used; with a callback, the
+callback is invoked in place of `type.__new__` and the resulting type is
+finalized as a private-attribute class.
 
-### `register_metaclass`
+### `create_meta_slot`
 
 ```python
-def register_metaclass(typ, /) -> None: ...
+def create_meta_slot(name: str, /): ...
 ```
 
-Registers a custom metaclass so it can produce private-attribute classes. Must be
-called before creating any such class; the metaclass must support weakrefs.
+Creates the final slot for a registered metaclass. The slot name must be one of
+`__getattribute__`, `__getattr__`, `__setattr__`, `__delattr__`, `__del__`, or
+`__call__`. Pass the name first, then either call the result with no arguments
+for an empty slot, or use it as a decorator with a callback:
+
+```python
+class PrivateAbcMeta(ABCMeta):
+    __new__ = private_attribute.create_new()
+    __setattr__ = private_attribute.create_meta_slot("__setattr__")()
+
+    @private_attribute.create_meta_slot("__getattr__")
+    def __getattr__(cls, name): ...
+```
+
+### `create_slot`
+
+```python
+def create_slot(name: str, /): ...
+```
+
+Creates the final slot for a private-attribute class. The slot name must be one
+of `__getattribute__`, `__getattr__`, `__setattr__`, `__delattr__`, or
+`__del__`. Pass the name first, then either call the result with no arguments
+for an empty slot, or use it as a decorator with a callback:
+
+```python
+class MyClass(private_attribute.PrivateAttrBase):
+    __setattr__ = private_attribute.create_slot("__setattr__")()
+
+    @private_attribute.create_slot("__delattr__")
+    def __delattr__(self, name): ...
+```
 
 ### `ensure_type`
 
@@ -147,6 +186,12 @@ def ensure_metaclass(typ, /) -> None: ...
 
 Re-injects the metaclass slot descriptors (plus `__call__`) and the
 `tp_traverse` / `tp_clear` wrappers.
+
+### Deprecated: `prepare` / `postprocess` / `register_metaclass`
+
+These three functions are deprecated and emit a warning when accessed. They are
+kept for backward compatibility; new code should use `create_new` (and, for
+custom slots, `create_meta_slot` / `create_slot`) instead.
 
 ## Class-definition options
 

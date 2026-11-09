@@ -317,9 +317,9 @@ private attributes only** — it is not for instance-attribute cross-type access
 | `_PrivateWrap` | class | Returned by `PrivateWrapProxy`; exposes `.result` and `.funcs`. |
 | `PrivateSuper(A, B, C, obj)` | class | Read a parent class's class-level private attribute defined for another class; calls `__get__(obj, A)`. |
 | `PrivateClassSuper(A, B, C, cls)` | class | Classmethod flavour of `PrivateSuper`; calls `__get__(None, cls)`. |
-| `prepare(name, bases, attrs, **kwds)` | function | Context manager for building private-attribute classes in a custom metaclass. |
-| `postprocess(typ, temp)` | function | Finalize a class created via `prepare`. |
-| `register_metaclass(metaclass)` | function | Register a custom metaclass so it can produce private-attribute classes. |
+| `create_new(func=None)` | function | Register and control a custom metaclass automatically; placed in the metaclass body (or used as a decorator). |
+| `create_meta_slot(name)` | function | Create the final slot (e.g. `__setattr__`) for a registered metaclass; empty slot or decorator. |
+| `create_slot(name)` | function | Create the final slot for a private-attribute class; empty slot or decorator. |
 | `ensure_type(typ)` | function | Re-inject the special-method slot descriptors and `tp_traverse`/`tp_clear` wrappers on a type. |
 | `ensure_metaclass(metaclass)` | function | Re-inject the corresponding slot descriptors and wrappers on a metaclass. |
 
@@ -335,21 +335,16 @@ Class-definition options:
 
 ## Custom metaclasses
 
-To combine private attributes with another metaclass (e.g. `ABCMeta`), use the
-`prepare` / `postprocess` pair and register the metaclass:
+To combine private attributes with another metaclass (e.g. `ABCMeta`), put a
+`create_new` slot directly in the metaclass. `create_new` takes care of
+registration and control automatically:
 
 ```python
 from abc import ABCMeta, abstractmethod
 import private_attribute
 
 class PrivateAbcMeta(ABCMeta):
-    def __new__(cls, name, bases, attrs, **kwargs):
-        with private_attribute.prepare(name, bases, attrs, **kwargs) as temp:
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)   # or temp.postprocess(typ)
-            return typ
-
-private_attribute.register_metaclass(PrivateAbcMeta)
+    __new__ = private_attribute.create_new()
 
 class MyClass(metaclass=PrivateAbcMeta):
     __private_attrs__ = ("_a",)
@@ -371,10 +366,31 @@ a._a                     # AttributeError: private attribute
 MyClass()                # TypeError: Can't instantiate abstract class ...
 ```
 
-`prepare(...)` returns a temporary object exposing `.name`, `.bases`, `.attrs`,
-and `.kwds` (and, since v2.1.17, a `.postprocess(typ)` shortcut). Since v2.2.3
-it is a context manager (`with`), which guarantees the internal creation lock is
-released even if construction fails.
+`create_new` also works as a decorator:
+
+```python
+class PrivateAbcMeta(ABCMeta):
+    @private_attribute.create_new
+    def __new__(cls, name, bases, attrs, **kwargs):
+        return super().__new__(cls, name, bases, attrs, **kwargs)
+```
+
+Custom special-method slots on the metaclass use `create_meta_slot`, and on a
+private-attribute class use `create_slot`. Both take the slot name first and
+work either as an empty slot or as a decorator:
+
+```python
+class PrivateAbcMeta(ABCMeta):
+    __new__ = private_attribute.create_new()
+    __setattr__ = private_attribute.create_meta_slot("__setattr__")()
+
+class MyClass(private_attribute.PrivateAttrBase):
+    __setattr__ = private_attribute.create_slot("__setattr__")()
+```
+
+> The old `prepare` / `postprocess` pair and `register_metaclass` are
+> deprecated (they emit a warning) and kept only for backward compatibility;
+> new code should use `create_new`.
 
 ---
 
@@ -404,9 +420,9 @@ released even if construction fails.
   `__private_attrs__` or opts in with `use_parents=True`.
 - **v2.2.1** — `prepare` locks private-attribute-type creation so only one type
   is being built (`type.__new__`) at a time; `postprocess` unlocks it. The lock
-  is released automatically on failure.
+  is released automatically on failure. (Deprecated; see `create_new`.)
 - **v2.2.3** — prefer the `with` form of `prepare`/`postprocess` to guarantee
-  the lock is released.
+  the lock is released. (Deprecated; see `create_new`.)
 - CPython may reset the special-method slot descriptors (e.g. when you assign
   `__getattribute__` / `__setattr__`). Use `ensure_type` (or
   `ensure_metaclass`) to re-inject them, and avoid setting those methods on
@@ -420,6 +436,7 @@ released even if construction fails.
   straight to the user callback without re-classification. Registered types and
   created types must be heap types (static types are rejected).
 - `register_metaclass` requires a metaclass that supports weak references.
+  (Deprecated; use `create_new`, which registers the metaclass automatically.)
 - Do **not** set `__static_attributes__` on a private-attribute class; it is
   removed automatically.
 

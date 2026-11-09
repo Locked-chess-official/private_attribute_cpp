@@ -40,7 +40,15 @@
   are set directly. CPython may reset these descriptors when you change
   `__getattribute__`, `__setattr__`, etc. If you are concerned, use
   `ensure_type` (or `ensure_metaclass`) to re-inject them, and avoid setting
-  those dunder methods on private-attribute classes directly.
+  those dunder methods on private-attribute classes directly. To install custom
+  slot behaviour, prefer `create_slot` (for classes) or `create_meta_slot` (for
+  metaclasses).
 - `register_metaclass` must be called with a metaclass that supports weakrefs.
 - Do **not** set `__static_attributes__` on a private-attribute class — it will
   be removed.
+
+## Deprecated API
+
+`prepare`, `postprocess`, and `register_metaclass` are deprecated and emit a
+warning when accessed. Use `create_new` in the metaclass body (or as a
+decorator) instead — it handles registration and control automatically.

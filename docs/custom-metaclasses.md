@@ -1,7 +1,9 @@
 # Custom Metaclasses
 
 To combine private attributes with another metaclass (for example `ABCMeta`),
-use the `prepare` / `postprocess` pair and register the metaclass.
+put a `create_new` slot directly in the metaclass. `create_new` takes care of
+registration and control automatically — there is no longer any need to call
+`prepare` / `postprocess` / `register_metaclass`.
 
 ## Example: private attributes + ABC
 
@@ -10,14 +12,14 @@ from abc import ABCMeta, abstractmethod
 import private_attribute
 
 class PrivateAbcMeta(ABCMeta):
-    def __new__(cls, name, bases, attrs, **kwargs):
-        with private_attribute.prepare(name, bases, attrs, **kwargs) as temp:
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)   # or temp.postprocess(typ)
-            return typ
-
-private_attribute.register_metaclass(PrivateAbcMeta)
+    __new__ = private_attribute.create_new()
 ```
+
+`create_new()` returns a `__new__` slot descriptor. When it is placed in the
+metaclass body, `__set_name__` registers the metaclass automatically, and every
+class built through this metaclass is finalized as a private-attribute class —
+the same work that previously required the `prepare` / `postprocess` pair plus
+`register_metaclass`.
 
 Now a class can behave as both an ABC and a private-attribute class:
 
@@ -45,22 +47,64 @@ MyClass()                # TypeError: Can't instantiate abstract class MyClass
                          # without an implementation for abstract method 'my_function'
 ```
 
-## How it works
+## `create_new` as a decorator
 
-- `prepare(name, bases, attrs, **kwds)` is a context manager (since v2.2.3)
-  that returns a temporary object holding `.name`, `.bases`, `.attrs`, and
-  `.kwds`.
-- Call your metaclass's `super().__new__` with those values, then finalize with
-  `postprocess(typ, temp)` (or `temp.postprocess(typ)`).
-- `register_metaclass` tells the module about your metaclass so the private
-  attribute machinery is installed correctly.
+`create_new` may also be used as a decorator. The wrapped function is called in
+place of the default `type.__new__`, and the resulting type is finalized
+afterwards:
 
-!!! tip "Locking"
+```python
+from abc import ABCMeta
+import private_attribute
 
-    Since v2.2.1, `prepare` takes an internal creation lock so only one
-    private-attribute type is being built (`type.__new__`) at a time.
-    `postprocess` releases it. The lock is released automatically if
-    construction fails. Prefer the `with` form (v2.2.3+) to guarantee release.
+class PrivateAbcMeta(ABCMeta):
+    @private_attribute.create_new
+    def __new__(cls, name, bases, attrs, **kwargs):
+        return super().__new__(cls, name, bases, attrs, **kwargs)
+```
+
+With no argument (`create_new()`), the default `super().__new__` is used and no
+customisation hook is applied.
+
+## Custom slots on the metaclass
+
+The special-method slots of a registered metaclass (its `__getattribute__`,
+`__getattr__`, `__setattr__`, `__delattr__`, `__del__`, and `__call__`) are
+installed with `create_meta_slot`. Like `create_new`, it works both as an empty
+slot and as a decorator:
+
+```python
+from abc import ABCMeta
+import private_attribute
+
+class PrivateAbcMeta(ABCMeta):
+    __new__ = private_attribute.create_new()
+
+    # empty slot — the default `super()` behaviour is used
+    __setattr__ = private_attribute.create_meta_slot("__setattr__")()
+
+    # decorator form — the callback replaces the default `super()` behaviour
+    @private_attribute.create_meta_slot("__getattr__")
+    def __getattr__(cls, name):
+        ...
+```
+
+## Custom slots on private-attribute classes
+
+The corresponding slots of a private-attribute *class* (`__getattribute__`,
+`__getattr__`, `__setattr__`, `__delattr__`, `__del__`) are installed with
+`create_slot`:
+
+```python
+import private_attribute
+
+class MyClass(private_attribute.PrivateAttrBase):
+    __setattr__ = private_attribute.create_slot("__setattr__")()
+
+    @private_attribute.create_slot("__delattr__")
+    def __delattr__(self, name):
+        ...
+```
 
 ## `ensure_type` / `ensure_metaclass`
 
@@ -75,4 +119,24 @@ those dunder methods on private-attribute classes directly.
 ```python
 private_attribute.ensure_type(SomeClass)
 private_attribute.ensure_metaclass(SomeMeta)
+```
+
+## Deprecated API
+
+The old `prepare` / `postprocess` pair and `register_metaclass` are deprecated
+and emit a warning when accessed. They are kept for backward compatibility but
+new code should use `create_new` instead:
+
+```python
+from abc import ABCMeta
+import private_attribute
+
+class PrivateAbcMeta(ABCMeta):
+    def __new__(cls, name, bases, attrs, **kwargs):
+        with private_attribute.prepare(name, bases, attrs, **kwargs) as temp:
+            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
+            private_attribute.postprocess(typ, temp)   # or temp.postprocess(typ)
+            return typ
+
+private_attribute.register_metaclass(PrivateAbcMeta)
 ```
