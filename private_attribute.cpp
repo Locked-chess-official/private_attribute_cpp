@@ -4459,11 +4459,12 @@ analyse_all_code(PyObject* obj, std::unordered_map<uintptr_t, PyObjectStorage>& 
     if (PyObject_TypeCheck(obj, &PrivateAttrSlotType) ||
         PyObject_TypeCheck(obj, &PrivateAttrMetaSlotType) ||
         PyObject_TypeCheck(obj, &PrivateAttrMetaNewSlotType)) {
-            PrivateAttrSlot* obj = (PrivateAttrSlot*)obj;
-            if (obj->callback)
-                analyse_all_code(obj->callback, map, _seen);
-            return;
+        PrivateAttrSlot* slot = (PrivateAttrSlot*)obj;
+        if (slot->callback != NULL) {
+            analyse_all_code(slot->callback, map, _seen);
         }
+        return;
+    }
     if (PyObject_TypeCheck(obj, &PyProperty_Type)) {
         PyObjectStorage fget = PyObjectStorage::from_new_ref(try_get_attr_string(obj, "fget"));
         if (fget) {
