@@ -241,6 +241,8 @@ static bool update_slot_callback(PyTypeObject* owner, const char* name, PyObject
 static bool is_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept;
 static void mark_confirmed_public(uintptr_t obj_id, const std::string& name) noexcept;
 static void clear_public_obj(uintptr_t obj_id) noexcept;
+static bool is_registered_type(PyObject* type) noexcept;
+static bool is_private_meta_type(PyObject* typ) noexcept;
 
 struct is_private_class_control {
     PyObjectStorage weakref; // weakref to the type object
@@ -2186,12 +2188,12 @@ static PyTypeObject PrivateClassSuperType = {
 
 // Index of `id` in `mro` (a private-attribute ancestor list in MRO order,
 // nearest first), or -1 if absent.
-static int
+static Py_ssize_t
 mro_index_of(const std::vector<uintptr_t>& mro, uintptr_t id) noexcept
 {
-    for (size_t i = 0; i < mro.size(); ++i) {
+    for (Py_ssize_t i = 0; i < mro.size(); ++i) {
         if (mro[i] == id) {
-            return static_cast<int>(i);
+            return i;
         }
     }
     return -1;
@@ -2232,7 +2234,7 @@ private_super_validate(PrivateSuperObject* self, bool is_class) noexcept
     if (!a_parents.ok) {
         return false;
     }
-    int b_idx = mro_index_of(*a_parents.ids, b_id);
+    Py_ssize_t b_idx = mro_index_of(*a_parents.ids, b_id);
     if (b_idx < 0) {
         PyErr_SetString(PyExc_ValueError, "B must be a parent type of A");
         return false;
@@ -2526,6 +2528,10 @@ PrivateAttrSlot_get_name(PrivateAttrSlot* self, void * /*closure*/) noexcept
         if (result) {return result;}
         else PyErr_Clear();
     }
+    if (self->slot_name) {
+        Py_INCREF(self->slot_name);
+        return self->slot_name;
+    }
     return PyUnicode_FromString("");
 }
 
@@ -2536,6 +2542,14 @@ PrivateAttrSlot_get_qualname(PrivateAttrSlot* self, void * /*closure*/) noexcept
         PyObject* result = PyObject_GetAttrString((PyObject*)self->callback, "__qualname__");
         if (result) {return result;}
         else PyErr_Clear();
+    }
+    if (self->slot_name) {
+        const char* func_name = PyUnicode_AsUTF8(self->slot_name);
+        const char* type_name = "<unknown>";
+        if (self->owner_type && PyType_Check(self->owner_type)) {
+            type_name = get_name_from_tp_name((PyTypeObject*)self->owner_type);
+        }
+        return PyUnicode_FromFormat("%s.%s", type_name, func_name);
     }
     return PyUnicode_FromString("");
 }
@@ -2603,6 +2617,19 @@ static PyGetSetDef PrivateAttrSlot_getsetters[] = {
     {"__isabstractmethod__", (getter)PrivateAttrSlot_get_isabstractmethod, (setter)PrivateAttrSlot_set_isabstractmethod, NULL, NULL},
     {NULL}
 };
+
+static PyObject*
+PrivateAttrSlot_getattro(PyObject* obj, PyObject* name) noexcept
+{
+    PrivateAttrSlot* self = (PrivateAttrSlot*)obj;
+    PyObject* first_result = PyObject_GenericGetAttr(obj, name);
+    if (first_result) return first_result;
+    else if (self->callback) {
+        PyErr_Clear();
+        return PyObject_GetAttr((PyObject*)self->callback, name);
+    }
+    return NULL;
+}
 
 // --- public non-private-name cache ---
 static bool
@@ -2803,7 +2830,7 @@ slot_new_impl(PrivateAttrSlot* self, PyObject* cls, PyObject* args, PyObject* kw
     if (!final_result) return NULL;
     if (!PyType_Check(final_result)) {
         Py_DECREF(final_result);
-        PyErr_SetString(PyExc_TypeError, "__new__ must return a type");
+        PyErr_SetString(PyExc_TypeError, "metaclass.__new__ must return a type");
         return NULL;
     }
     if (!data.install(final_result)) {
@@ -2823,8 +2850,20 @@ slot_getattribute_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noe
     uintptr_t type_id = slot_obj_type_id(obj, self->is_metaclass);
 
     if (self->is_metaclass) {
+        if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
+            PyErr_SetString(PyExc_TypeError,
+                "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
         if (!try_install_pending_creation(obj)) return NULL;
     } else {
+        auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
+        if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
+        if (check_need_analyse == AnalyseStatus::No) {
+            PyErr_SetString(PyExc_TypeError,
+                "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
         PrivateAttr_object_init_private_dict(obj_id, type_id);
     }
 
@@ -2867,6 +2906,22 @@ slot_getattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept
     const char* c = PyUnicode_AsUTF8(name);
     if (!c) return NULL;
     std::string name_str(c);
+
+    if (self->is_metaclass) {
+        if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
+            PyErr_SetString(PyExc_TypeError,
+                "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
+    } else {
+        auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
+        if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
+        if (check_need_analyse == AnalyseStatus::No) {
+            PyErr_SetString(PyExc_TypeError,
+                "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
+    }
 
     // Decide the error message: if the name is private, __getattr__ must NOT
     // walk the subsequent flow (callback / super) — go straight to an error.
@@ -2945,8 +3000,20 @@ slot_setattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name, PyObject
     uintptr_t type_id = slot_obj_type_id(obj, self->is_metaclass);
 
     if (self->is_metaclass) {
+        if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
+            PyErr_SetString(PyExc_TypeError,
+                "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
         if (!try_install_pending_creation(obj)) return NULL;
     } else {
+        auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
+        if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
+        if (check_need_analyse == AnalyseStatus::No) {
+            PyErr_SetString(PyExc_TypeError,
+                "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
         PrivateAttr_object_init_private_dict(obj_id, type_id);
     }
 
@@ -2998,8 +3065,20 @@ slot_delattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept
     uintptr_t type_id = slot_obj_type_id(obj, self->is_metaclass);
 
     if (self->is_metaclass) {
+        if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
+            PyErr_SetString(PyExc_TypeError,
+                "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
         if (!try_install_pending_creation(obj)) return NULL;
     } else {
+        auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
+        if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
+        if (check_need_analyse == AnalyseStatus::No) {
+            PyErr_SetString(PyExc_TypeError,
+                "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
         PrivateAttr_object_init_private_dict(obj_id, type_id);
     }
 
@@ -3046,6 +3125,21 @@ slot_delattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept
 static PyObject*
 slot_del_impl(PrivateAttrSlot* self, PyObject* obj) noexcept
 {
+    if (self->is_metaclass) {
+        if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
+            PyErr_SetString(PyExc_TypeError,
+                "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
+    } else {
+        auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
+        if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
+        if (check_need_analyse == AnalyseStatus::No) {
+            PyErr_SetString(PyExc_TypeError,
+                "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
+            return NULL;
+        }
+    }
     bool should_return_null = false;
     auto original_refcnt = Py_REFCNT(obj);
     if (self->callback) {
@@ -3189,7 +3283,7 @@ static PyTypeObject PrivateAttrSlotType = {
     0,                                         // tp_hash
     (ternaryfunc)slot_call,                    // tp_call
     0,                                         // tp_str
-    0,                                         // tp_getattro
+    PrivateAttrSlot_getattro,                  // tp_getattro
     0,                                         // tp_setattro
     0,                                         // tp_as_buffer
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,   // tp_flags
@@ -3226,7 +3320,7 @@ static PyTypeObject PrivateAttrMetaSlotType = {
     0,                                         // tp_hash
     (ternaryfunc)slot_call,                    // tp_call
     0,                                         // tp_str
-    0,                                         // tp_getattro
+    PrivateAttrSlot_getattro,                  // tp_getattro
     0,                                         // tp_setattro
     0,                                         // tp_as_buffer
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,   // tp_flags
@@ -3263,7 +3357,7 @@ static PyTypeObject PrivateAttrMetaNewSlotType = {
     0,                                         // tp_hash
     (ternaryfunc)slot_new_call,                // tp_call
     0,                                         // tp_str
-    0,                                         // tp_getattro
+    PrivateAttrSlot_getattro,                  // tp_getattro
     0,                                         // tp_setattro
     0,                                         // tp_as_buffer
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,   // tp_flags
@@ -3721,6 +3815,20 @@ PrivateAttr_get_tp_members(PyTypeObject* type) noexcept
 #endif
 }
 
+static void *
+PrivateAttr_Member_GetOffset(PyObject *obj, PyMemberDef *mp) noexcept
+{
+    unsigned char *addr = (unsigned char *)obj + mp->offset;
+// only python >= 3.15 has _Py_AFTER_ITEMS
+#if PY_VERSION_HEX >= 0x030F0000
+    if (mp->flags & _Py_AFTER_ITEMS) {
+        PyTypeObject *type = Py_TYPE(obj);
+        addr += _Py_SIZE_ROUND_UP(Py_SIZE(obj) * type->tp_itemsize, SIZEOF_VOID_P);
+    }
+#endif
+    return addr;
+}
+
 static int
 PrivateAttr_traverse_slots(PyTypeObject* type, PyObject* self,
                            visitproc visit, void* arg) noexcept
@@ -3735,7 +3843,7 @@ PrivateAttr_traverse_slots(PyTypeObject* type, PyObject* self,
     Py_ssize_t n = Py_SIZE(type);
     for (Py_ssize_t i = 0; i < n; i++, mp++) {
         if (mp->type == T_OBJECT_EX) {
-            char* addr = (char*)self + mp->offset;
+            void* addr = PrivateAttr_Member_GetOffset(self, mp);
             PyObject* obj = *(PyObject**)addr;
             if (obj != NULL) {
                 int err = visit(obj, arg);
@@ -3761,7 +3869,7 @@ PrivateAttr_clear_slots(PyTypeObject* type, PyObject* self) noexcept
     Py_ssize_t n = Py_SIZE(type);
     for (Py_ssize_t i = 0; i < n; i++, mp++) {
         if (mp->type == T_OBJECT_EX && !(mp->flags & READONLY)) {
-            char* addr = (char*)self + mp->offset;
+            void* addr = PrivateAttr_Member_GetOffset(self, mp);
             PyObject* obj = *(PyObject**)addr;
             if (obj != NULL) {
                 *(PyObject**)addr = NULL;
@@ -4238,6 +4346,12 @@ static PyTypeObject PrivateAttrType = {
     0,                                          // tp_alloc
     (newfunc)PrivateAttrType_new,               // tp_new
 };
+
+static bool
+is_private_meta_type(PyObject* typ) noexcept
+{
+    return PyObject_IsSubclass(typ, (PyObject*)&PrivateAttrType) || is_registered_type(typ);
+}
 
 static PyObject*
 get_string_hash_tuple(const std::string& name) noexcept
@@ -5152,7 +5266,7 @@ PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
 }
 
 static bool
-is_registed_type(PyObject* type) noexcept
+is_registered_type(PyObject* type) noexcept
 {
     uintptr_t typ_id = (uintptr_t)type;
     return (AllData::all_register_type_weak_ref.find(typ_id) != AllData::all_register_type_weak_ref.end());
@@ -5182,7 +5296,7 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
         if (name_cstr) {
             const char** slot_names = NULL;
             int is_metaclass = 0;
-            if (is_registed_type(self)) {
+            if (is_registered_type(self)) {
                 // if name_cstr is __new__, call update_metaclass_new
                 if (strcmp(name_cstr, "__new__") == 0) {
                     PyObject* callback = value;
