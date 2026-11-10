@@ -3528,12 +3528,7 @@ inject_type_slots(PyObject* attrs) noexcept
 {
     for (int i = 0; type_slot_names[i]; i++) {
         const char* nm = type_slot_names[i];
-        int has = PyDict_ContainsString(attrs, nm);
-        if (has < 0) return false;
-        PyObject* callback = NULL;
-        if (has) {
-            callback = PyDict_GetItemString(attrs, nm);
-        }
+        PyObject* callback = PyDict_GetItemString(attrs, nm);
         while (callback && (
             PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaSlotType) ||
             PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaNewSlotType) ||
@@ -3566,12 +3561,9 @@ install_metaclass_slots(PyTypeObject* metaclass) noexcept
     setattrofunc real_setattro = original_type_tp_setattro ? original_type_tp_setattro : PyType_Type.tp_setattro;
     for (int i = 0; metaclass_slot_names[i]; i++) {
         const char* nm = metaclass_slot_names[i];
-        int has = PyDict_ContainsString(dict, nm);
-        if (has < 0) return false;
         PyObject* callback = NULL;
-        if (has) {
-            PyObject* existing = PyDict_GetItemString(dict, nm);
-            if (!existing) return false;
+        PyObject* existing = PyDict_GetItemString(dict, nm);
+        if (existing) {
             // skip over an already-installed struct of ours
             if (PyObject_IsInstance(existing, (PyObject*)&PrivateAttrMetaSlotType) &&
             (!((PrivateAttrSlot*)existing)->owner_type || ((PrivateAttrSlot*)existing)->owner_type == (PyObject*)metaclass)) {
@@ -3598,11 +3590,8 @@ install_metaclass_slots(PyTypeObject* metaclass) noexcept
         }
     }
     const char* new_name = "__new__";
-    int has = PyDict_ContainsString(dict, new_name);
-    if (has < 0) return false;
-    if (has) {
-        PyObject* existing = PyDict_GetItemString(dict, new_name);
-        if (!existing) {return false;}
+    PyObject* existing = PyDict_GetItemString(dict, new_name);
+    if (existing) {
         if (!(PyObject_IsInstance(existing, (PyObject*)&PrivateAttrMetaNewSlotType) && (
             ((PrivateAttrSlot*)existing)->owner_type == NULL || ((PrivateAttrSlot*)existing)->owner_type == (PyObject*)metaclass
         ))) {
@@ -4762,30 +4751,24 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
+    bool need_del_use_parent = false;
+    bool kwds_is_avaliable = false;
     if (kwds && PyDict_Check(kwds)) {
-        int has_use_parents = PyDict_ContainsString(kwds, "use_parents");
-        if (has_use_parents < 0) {
-            return false;
-        }
-        if (has_use_parents) {
-            PyObject* use_parents_obj = PyDict_GetItemString(kwds, "use_parents");
+        kwds_is_avaliable = true;
+        PyObject* use_parents_obj = PyDict_GetItemString(kwds, "use_parents");
+        if (use_parents_obj) {
             int truth = PyObject_IsTrue(use_parents_obj);
             if (truth < 0) {
                 return false;
             }
             data.use_parents = (truth == 1);
+            need_del_use_parent = true;
         }
     }
 
     PyObjectStorage __private_attrs__;
-    int contains_private_attrs = PyDict_ContainsString(attrs, "__private_attrs__");
-    if (contains_private_attrs < 0) {
-        return false;
-    }
-    if (contains_private_attrs) {
-        __private_attrs__ = PyDict_GetItemString(attrs, "__private_attrs__");
-    }
-    else {
+    __private_attrs__ = PyDict_GetItemString(attrs, "__private_attrs__");
+    if (!__private_attrs__) {
         __private_attrs__ = PyObjectStorage::from_new_ref(PyTuple_New(0));
     }
 
@@ -4860,14 +4843,8 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         return false;
     }
 
-    int has_slots = PyDict_ContainsString(data.attrs_copy, "__slots__");
-    if (has_slots < 0) {
-        return false;
-    }
-
-    if (has_slots) {
-        PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
-        if (!all_slots) {return false;}
+    PyObject* all_slots = PyDict_GetItemString(data.attrs_copy, "__slots__");
+    if (all_slots) {
         if (PyUnicode_Check(all_slots)) {
             const char* slot_cstr = PyUnicode_AsUTF8(all_slots);
             if (data.private_attrs_vector_string.find((std::string)slot_cstr) != data.private_attrs_vector_string.end()){
@@ -5019,26 +4996,16 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
     }
 
     // get "private_func" from kwds
-    if (kwds && PyDict_Check(kwds)) {
-        int has_private_func = PyDict_ContainsString(kwds, "private_func");
-        if (has_private_func < 0) {
-            return false;
-        }
-        if (has_private_func) {
-            data.private_func = PyDict_GetItemString(kwds, "private_func");
-        }
+    if (kwds_is_avaliable) {
+        data.private_func = PyDict_GetItemString(kwds, "private_func");
         data.base_kwds = PyObjectStorage::from_new_ref(PyDict_Copy(kwds));
         if (!data.base_kwds) {
             return false;
         }
-        if (has_private_func) {
+        if (data.private_func) {
             if (PyDict_DelItemString(data.base_kwds, "private_func") < 0) return false;
         }
-        int kwds_has_use_parents = PyDict_ContainsString(kwds, "use_parents");
-        if (kwds_has_use_parents < 0) {
-            return false;
-        }
-        if (kwds_has_use_parents) {
+        if (need_del_use_parent) {
             if (PyDict_DelItemString(data.base_kwds, "use_parents") < 0) return false;
         }
     }
