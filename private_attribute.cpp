@@ -2308,11 +2308,11 @@ private_super_getattro(PyObject* self, PyObject* name, bool is_class) noexcept
     // The running code must belong to A.
     PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
     if (!now_code) {
-        PyErr_SetString(PyExc_AttributeError, "private attribute");
+        PyErr_SetString(PyExc_AttributeError, "cannot use 'PrivateSuper' or 'PrivateClassSuper' outside the class");
         return NULL;
     }
     if (!is_class_code((uintptr_t)s->A, (PyCodeObject*)now_code.get())) {
-        PyErr_SetString(PyExc_AttributeError, "private attribute");
+        PyErr_SetString(PyExc_AttributeError, "cannot use 'PrivateSuper' or 'PrivateClassSuper' outside the class");
         return NULL;
     }
 
@@ -2349,7 +2349,7 @@ private_super_getattro(PyObject* self, PyObject* name, bool is_class) noexcept
         key = default_random_string(target_type, attr_name);
     }
 
-    PyObject* value = NULL;
+    PyObjectStorage value;
     if (main_type == target_type) {
         type_create_mutex(target_type);
         std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_mutex[target_type]);
@@ -2363,8 +2363,7 @@ private_super_getattro(PyObject* self, PyObject* name, bool is_class) noexcept
             PyErr_Format(PyExc_AttributeError, "'%s' has no class attribute '%s'", tn, attr_name.c_str());
             return NULL;
         }
-        value = it->second.get();
-        Py_XINCREF(value);
+        value = it->second;
     } else {
         type_parenttype_create_mutex(main_type, target_type);
         std::shared_lock<std::shared_mutex> lock(*::AllData::all_type_subclass_mutex[main_type][target_type]);
@@ -2378,8 +2377,11 @@ private_super_getattro(PyObject* self, PyObject* name, bool is_class) noexcept
             PyErr_Format(PyExc_AttributeError, "'%s' has no class attribute '%s'", tn, attr_name.c_str());
             return NULL;
         }
-        value = it->second.get();
-        Py_XINCREF(value);
+        value = it->second;
+    }
+    if (!value) {
+        PyErr_Format(PyExc_SystemError, "%s (%d): attribute is NULL", __FILE__, __LINE__);
+        return NULL;
     }
 
     // Invoke the descriptor's __get__: PrivateSuper -> __get__(obj, A);
@@ -2389,9 +2391,9 @@ private_super_getattro(PyObject* self, PyObject* name, bool is_class) noexcept
     descrgetfunc get = Py_TYPE(value)->tp_descr_get;
     if (get) {
         PyObject* r = get(value, inst, owner);
-        Py_DECREF(value);
         return r;
     }
+    Py_INCREF(value);
     return value;
 }
 
@@ -3534,11 +3536,12 @@ inject_type_slots(PyObject* attrs) noexcept
         }
         while (callback && (
             PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaSlotType) ||
-            PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaNewSlotType)
+            PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaNewSlotType) ||
+            (PyObject_IsInstance(callback, (PyObject*)&PrivateAttrSlotType) && ((PrivateAttrSlot*)callback)->owner_type != NULL)
         )) {
             callback = ((PrivateAttrSlot*)callback) -> callback;
         }
-        if (callback && PyObject_IsInstance(callback, (PyObject*)&PrivateAttrSlotType)) {
+        if (callback && PyObject_IsInstance(callback, (PyObject*)&PrivateAttrSlotType) && ((PrivateAttrSlot*)callback)->owner_type == NULL) {
             continue;
         }
         PyObject* slot = make_type_slot(nm, callback, NULL);
