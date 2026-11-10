@@ -3573,10 +3573,17 @@ install_metaclass_slots(PyTypeObject* metaclass) noexcept
             PyObject* existing = PyDict_GetItemString(dict, nm);
             if (!existing) return false;
             // skip over an already-installed struct of ours
-            if (PyObject_IsInstance(existing, (PyObject*)&PrivateAttrMetaSlotType)) {
+            if (PyObject_IsInstance(existing, (PyObject*)&PrivateAttrMetaSlotType) &&
+            (!((PrivateAttrSlot*)existing)->owner_type || ((PrivateAttrSlot*)existing)->owner_type == (PyObject*)metaclass)) {
                 continue;
             } else {
                 callback = existing;
+                while (callback && (
+                    PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaSlotType) ||
+                    PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaNewSlotType) ||
+                    PyObject_IsInstance(callback, (PyObject*)&PrivateAttrSlotType))) {
+                    callback = ((PrivateAttrSlot*)callback) -> callback;
+                }
             }
         }
         PyObjectStorage slot = PyObjectStorage::from_new_ref(make_metaclass_slot(nm, (PyObject*)metaclass, callback));
@@ -3596,20 +3603,25 @@ install_metaclass_slots(PyTypeObject* metaclass) noexcept
     if (has) {
         PyObject* existing = PyDict_GetItemString(dict, new_name);
         if (!existing) {return false;}
-        if (!PyObject_IsInstance(existing, (PyObject*)&PrivateAttrMetaNewSlotType)) {
-            auto* new_slot = create_type_new_slot((PyObject*)metaclass, NULL);
-            PyObjectStorage new_slot_storage = PyObjectStorage::from_new_ref((PyObject*)new_slot);
-            if (!new_slot_storage) {
-                return false;
-            }
-            PyObjectStorage name_obj = PyObjectStorage::from_new_ref(PyUnicode_FromString(new_name));
-            if (!name_obj) {
-                return false;
-            }
-            int r = real_setattro((PyObject*)metaclass, name_obj, new_slot_storage);
-            if (r < 0) {
-                return false;
-            }
+        if (!(PyObject_IsInstance(existing, (PyObject*)&PrivateAttrMetaNewSlotType) && (
+            ((PrivateAttrSlot*)existing)->owner_type == NULL || ((PrivateAttrSlot*)existing)->owner_type == (PyObject*)metaclass
+        ))) {
+            goto make_slot;
+        }
+    } else {
+make_slot:
+        PrivateAttrSlot* new_slot = create_type_new_slot((PyObject*)metaclass, NULL);
+        PyObjectStorage new_slot_storage = PyObjectStorage::from_new_ref((PyObject*)new_slot);
+        if (!new_slot_storage) {
+            return false;
+        }
+        PyObjectStorage name_obj = PyObjectStorage::from_new_ref(PyUnicode_FromString(new_name));
+        if (!name_obj) {
+            return false;
+        }
+        int r = real_setattro((PyObject*)metaclass, name_obj, new_slot_storage);
+        if (r < 0) {
+            return false;
         }
     }
     return true;
@@ -5303,12 +5315,12 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
                 // if name_cstr is __new__, call update_metaclass_new
                 if (strcmp(name_cstr, "__new__") == 0) {
                     PyObject* callback = value;
-                    if (value && (PyObject_IsInstance(value, (PyObject*)&PrivateAttrSlotType)
-                        || PyObject_IsInstance(value, (PyObject*)&PrivateAttrMetaSlotType)
-                        || PyObject_IsInstance(value, (PyObject*)&PrivateAttrMetaNewSlotType))) {
-                            callback = ((PrivateAttrSlot*)value) -> callback;
+                    while (callback && (PyObject_IsInstance(callback, (PyObject*)&PrivateAttrSlotType)
+                        || PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaSlotType)
+                        || PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaNewSlotType))) {
+                            callback = ((PrivateAttrSlot*)callback) -> callback;
                         }
-                    if (!update_metaclass_new((PyTypeObject*)self, value)) {
+                    if (!update_metaclass_new((PyTypeObject*)self, callback)) {
                         return -1;
                     }
                     return 0;
@@ -5332,10 +5344,10 @@ new_type_tp_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
                 for (int i = 0; slot_names[i]; i++) {
                     if (strcmp(name_cstr, slot_names[i]) == 0) {
                         PyObject* callback = value;
-                        if (value && (PyObject_IsInstance(value, (PyObject*)&PrivateAttrSlotType)
-                            || PyObject_IsInstance(value, (PyObject*)&PrivateAttrMetaSlotType)
-                            || PyObject_IsInstance(value, (PyObject*)&PrivateAttrMetaNewSlotType))) {
-                                callback = ((PrivateAttrSlot*)value) -> callback;
+                        while (callback && (PyObject_IsInstance(callback, (PyObject*)&PrivateAttrSlotType)
+                            || PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaSlotType)
+                            || PyObject_IsInstance(callback, (PyObject*)&PrivateAttrMetaNewSlotType))) {
+                                callback = ((PrivateAttrSlot*)callback) -> callback;
                             }
                         if (!update_slot_callback((PyTypeObject*)self, name_cstr, callback, is_metaclass)) {
                             return -1;
