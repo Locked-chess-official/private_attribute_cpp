@@ -2824,6 +2824,9 @@ static PyObject* slot_setattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObjec
 static PyObject* slot_delattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept;
 static PyObject* slot_del_impl(PrivateAttrSlot* self, PyObject* obj) noexcept;
 static PyObject* slot_call_impl(PrivateAttrSlot* self, PyObject* args, PyObject* kwds) noexcept;
+// true iff `obj` is a PrivateAttrMetaNewSlotType descriptor (i.e. a create_new
+// slot); defined after PrivateAttrMetaNewSlotType.
+static bool is_meta_new_slot(PyObject* obj) noexcept;
 
 // Resolve the type id for an access target. For a metaclass slot the target
 // (obj) IS the class object; for a type slot the target is an instance and its
@@ -2883,6 +2886,47 @@ slot_new_impl(PrivateAttrSlot* self, PyObject* cls, PyObject* args, PyObject* kw
     if (!PyType_Check(cls)) {
         PyErr_SetString(PyExc_TypeError, "__new__ must be called with a type");
         return NULL;
+    }
+    // A create_new slot must be bound to a metaclass via __set_name__ before it
+    // can be invoked. An unbound slot (owner_type == NULL) has no parent type to
+    // delegate to, so running the class-creation machinery would be unsafe.
+    if (self->owner_type == NULL) {
+        PyErr_SetString(PyExc_TypeError,
+            "create_new slot is not bound to a metaclass; assign it in a metaclass body (e.g. __new__ = private_attribute.create_new())");
+        return NULL;
+    }
+    // Resolve the parent metaclass's __new__ exactly once and hold a strong
+    // reference (free-threading safe: a concurrent reassignment of the parent's
+    // __new__ cannot change what we dispatch on). The metaclass MRO always ends
+    // at `type`, whose __new__ always exists, so a missing __new__ here is a
+    // genuine failure — propagate the error rather than guessing.
+    PyObjectStorage super_obj = PyObjectStorage::from_new_ref(
+        PyObject_CallFunction((PyObject*)&PySuper_Type, "OO", self->owner_type, self->owner_type));
+    if (!super_obj) return NULL;
+    PyObjectStorage parent_new = PyObjectStorage::from_new_ref(
+        PyObject_GetAttrString(super_obj, "__new__"));
+    if (!parent_new) return NULL;
+
+    // If the parent metaclass's __new__ is itself a create_new slot, do NOT
+    // preprocess here — the parent slot performs the single preprocess +
+    // install. Instead:
+    //   - if this slot has a callback, call it directly with the raw
+    //     (cls, name, bases, attrs) + kwds; the callback's own super().__new__
+    //     resolves to the parent slot, which preprocesses and installs exactly
+    //     once.
+    //   - otherwise forward the whole class-creation flow to the parent slot
+    //     (the same `parent_new` object we already resolved).
+    if (is_meta_new_slot(parent_new)) {
+        if (self->callback) {
+            PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(
+                4, cls,
+                PyTuple_GET_ITEM(args, 0),
+                PyTuple_GET_ITEM(args, 1),
+                PyTuple_GET_ITEM(args, 2)));
+            if (!type_args) return NULL;
+            return PyObject_Call(self->callback, type_args, kwds);
+        }
+        return slot_new_impl((PrivateAttrSlot*)parent_new.get(), cls, args, kwds);
     }
     PrivateAttrCreationData data;
     PyTypeObject* typ = (PyTypeObject*)cls;
@@ -3444,6 +3488,19 @@ static PyTypeObject PrivateAttrMetaNewSlotType = {
     PrivateAttrSlot_members,                   // tp_members
     PrivateAttrSlot_getsetters,                // tp_getset
 };
+
+// true iff `obj` is a PrivateAttrMetaNewSlotType descriptor (a create_new
+// slot). Pure type check — the caller resolves the object once and holds a
+// strong reference, so there is no re-resolution (and hence no TOCTOU window)
+// here.
+static bool
+is_meta_new_slot(PyObject* obj) noexcept
+{
+    if (!obj) {
+        return false;
+    }
+    return PyObject_IsInstance(obj, (PyObject*)&PrivateAttrMetaNewSlotType) == 1;
+}
 
 // v4: clear the pending-creation back-pointer on `count` slot objects. If
 // `expected` is non-NULL, only slots whose data equals `expected` are cleared.
