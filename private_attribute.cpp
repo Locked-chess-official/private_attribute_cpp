@@ -210,6 +210,15 @@ typedef struct PrivateAttrCreationData PrivateAttrCreationData;
 static void clear_slot_back_pointers(PyObjectStorage* slots, int count, PrivateAttrCreationData* expected) noexcept;
 static bool clear_creation_data_from_slots(PyTypeObject* tp, PrivateAttrCreationData* expected) noexcept;
 static PrivateAttrCreationData* get_creation_data(uintptr_t typ_id) noexcept;
+// Count the slot objects in a type's tp_dict that are instances of
+// PrivateAttrSlotType (the five structs injected by inject_type_slots),
+// regardless of whether they still carry a pending PrivateAttrCreationData
+// pointer. 0 means no per-type slot objects are present (the type either never
+// went through our machinery, or its slots were removed). Combined with
+// get_creation_data() returning NULL (no pending install) and the type being
+// absent from all_type_attr_set, a non-zero count identifies a half-installed
+// type whose install() never completed.
+static int count_type_slot_objects(PyTypeObject* tp) noexcept;
 static std::string default_random_string(uintptr_t obj_id, const std::string& attr_name) noexcept;
 
 struct RestorePythonExceptionResult {
@@ -552,9 +561,48 @@ try_install_pending_creation(PyObject* new_type) noexcept
     }
     PrivateAttrCreationData* data = get_creation_data((uintptr_t)new_type);
     if (!data) {
+        // No in-flight creation data is reachable from the type's slot
+        // objects. If the slot objects are nevertheless present (their data
+        // pointers have all been cleared) the type was left half-created:
+        // the slot structs were injected into its namespace but install()
+        // never completed, so it must NOT be allowed to proceed (no
+        // half-finished type may be created from or controlled). If there
+        // are no slot objects either, this is simply not one of our types.
+        if (count_type_slot_objects((PyTypeObject*)new_type) > 0) {
+            // Slot objects present but no pending pointer -> unrecoverable
+            // half-installed type.
+            PyErr_Format(PyExc_RuntimeError,
+                "private-attribute type '%s' is not fully installed and cannot be used",
+                ((PyTypeObject*)new_type)->tp_name);
+            return false;
+        }
         return true;
     }
     return data->install(new_type);
+}
+
+// Check whether a single base type is a half-installed, unusable private type:
+// it is NOT registered in all_type_attr_set (not truly installed), it has no
+// pending install left (get_creation_data returns NULL), yet its per-type slot
+// objects are still present in its tp_dict. Such a type can never be completed
+// (its creation data is gone), so it must not be subclassed. Returns true only
+// for that unrecoverable case; pending exceptions are left untouched.
+static bool
+is_uninstallable_private_type(PyObject* base) noexcept
+{
+    if (!base || !PyType_Check(base)) {
+        return false;
+    }
+    // Already truly installed -> fine.
+    if (::AllData::all_type_attr_set.find((uintptr_t)base) != ::AllData::all_type_attr_set.end()) {
+        return false;
+    }
+    // Still has a pending install -> recoverable, not uninstallable.
+    if (get_creation_data((uintptr_t)base)) {
+        return false;
+    }
+    // Slot objects present but no pending data -> half-installed, unrecoverable.
+    return count_type_slot_objects((PyTypeObject*)base) > 0;
 }
 
 static inline void
@@ -3657,6 +3705,32 @@ clear_creation_data_from_slots(PyTypeObject* tp, PrivateAttrCreationData* expect
     return found;
 }
 
+// Count the per-type slot objects in `tp`'s tp_dict (the five structs injected
+// by inject_type_slots(), each an instance of PrivateAttrSlotType), regardless
+// of whether they still carry a pending PrivateAttrCreationData pointer. A
+// non-zero count means the type went through our slot-injection machinery. When
+// combined with get_creation_data() returning NULL (no pending install left)
+// AND the type not being present in all_type_attr_set, this identifies a
+// half-installed type whose install() never completed.
+static int count_type_slot_objects(PyTypeObject* tp) noexcept
+{
+    if (!tp) {
+        return 0;
+    }
+    PyObject* dict = tp->tp_dict;
+    if (!dict) {
+        return 0;
+    }
+    int count = 0;
+    for (int i = 0; type_slot_names[i]; i++) {
+        PyObject* slot = PyDict_GetItemString(dict, type_slot_names[i]);
+        if (slot && PyObject_IsInstance(slot, (PyObject*)&PrivateAttrSlotType)) {
+            count++;
+        }
+    }
+    return count;
+}
+
 
 
 // Install the special-method structs into a registered metaclass's dict.
@@ -4419,6 +4493,47 @@ static PyObject* PrivateAttrType_getattr(PyObject* cls, PyObject* name) noexcept
 static int PrivateAttrType_setattr(PyObject* cls, PyObject* name, PyObject* value) noexcept;
 static PyObject* PrivateAttrType_call(PyObject* cls, PyObject* args, PyObject* kwds) noexcept;
 static void PrivateAttrType_del(PyObject* cls) noexcept;
+static PyObject* PrivateAttrType_init_subclass(PyObject* cls, PyObject* noargs) noexcept;
+
+// Requirement: subclasses of PrivateAttrType (i.e. metaclasses that derive from
+// it) must NOT override __getattribute__ / __getattr__ / __setattr__ /
+// __delattr__. Those names rewire tp_getattro / tp_setattro away from our
+// interception slots (PrivateAttrType_getattr / PrivateAttrType_setattr) via
+// CPython's fixup_slot_dispatchers, which would let a metaclass subclass bypass
+// the private-attribute machinery. This __init_subclass__ hook runs for every
+// subclass of PrivateAttrType and rejects any such override by comparing the
+// freshly-created subclass's live slots against the canonical ones.
+static PyObject*
+PrivateAttrType_init_subclass(PyObject* cls, PyObject* /*noargs*/) noexcept
+{
+    if (!PyType_Check(cls)) {
+        PyErr_SetString(PyExc_TypeError, "__init_subclass__ requires a type");
+        return NULL;
+    }
+    PyTypeObject* tp = (PyTypeObject*)cls;
+    // __getattribute__ / __getattr__ override -> tp_getattro is no longer our
+    // PrivateAttrType_getattr slot.
+    if (tp->tp_getattro != (getattrofunc)PrivateAttrType_getattr) {
+        PyErr_Format(PyExc_TypeError,
+            "cannot override '__getattribute__' or '__getattr__' in a subclass of PrivateAttrType ('%s')",
+            tp->tp_name);
+        return NULL;
+    }
+    // __setattr__ / __delattr__ override -> tp_setattro is no longer our
+    // PrivateAttrType_setattr slot.
+    if (tp->tp_setattro != (setattrofunc)PrivateAttrType_setattr) {
+        PyErr_Format(PyExc_TypeError,
+            "cannot override '__setattr__' or '__delattr__' in a subclass of PrivateAttrType ('%s')",
+            tp->tp_name);
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef PrivateAttrType_methods[] = {
+    {"__init_subclass__", (PyCFunction)PrivateAttrType_init_subclass, METH_CLASS | METH_NOARGS, NULL},
+    {NULL}
+};
 
 static PyTypeObject PrivateAttrType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -4449,7 +4564,7 @@ static PyTypeObject PrivateAttrType = {
     0,                                          // tp_weaklistoffset
     0,                                          // tp_iter
     0,                                          // tp_iternext
-    0,                                          // tp_methods
+    PrivateAttrType_methods,                    // tp_methods
     0,                                          // tp_members
     0,                                          // tp_getset
     &PyType_Type,                               // tp_base
@@ -5000,12 +5115,26 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         if (!base || !PyType_Check(base)) {
             continue;
         }
+        if (is_registered_type(base) || PyObject_IsSubclass(base, (PyObject*)&PrivateAttrType)) {
+            PyErr_SetString(PyExc_TypeError, "private-attribute type cannot inherit from a private-attribute metaclass");
+            return false;
+        }
         AnalyseStatus analyse_status = need_analyse_type(base);
         if (analyse_status == AnalyseStatus::Error) {
             return false;
         }
         if (analyse_status == AnalyseStatus::No) {
             continue;
+        }
+        // A private-attribute base that was left half-installed (its slot
+        // objects are present but its install never completed) can never be
+        // completed, so subclassing it must fail immediately rather than
+        // propagate a broken half-finished type.
+        if (is_uninstallable_private_type(base)) {
+            PyErr_Format(PyExc_RuntimeError,
+                "private-attribute base '%s' is not fully installed and cannot be used",
+                ((PyTypeObject*)base)->tp_name);
+            return false;
         }
         data.all_need_analyse_base.push_back((uintptr_t)base);
     }
@@ -6029,6 +6158,14 @@ register_metaclass_head(PyObject* metaclass) noexcept
     }
     if (!PyObject_IsSubclass(metaclass, (PyObject*)&PyType_Type)) {
         PyErr_SetString(PyExc_TypeError, "metaclass must be a metatype");
+        return NULL;
+    }
+    // Requirement: PrivateAttrType (and any metaclass subclassing it) must not
+    // be registered. PrivateAttrType already provides private-attribute
+    // creation; registering it (or a subclass of it) as a registered metaclass
+    // would double-interpret the same classes and corrupt the control tables.
+    if (PyObject_IsSubclass(metaclass, (PyObject*)&PrivateAttrType)) {
+        PyErr_SetString(PyExc_ValueError, "cannot register PrivateAttrType or a subclass of it");
         return NULL;
     }
     if (metaclass == (PyObject*)&PyType_Type) {
