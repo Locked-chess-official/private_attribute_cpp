@@ -217,7 +217,6 @@ static PrivateAttrCreationData* get_creation_data(uintptr_t typ_id) noexcept;
 // get_creation_data() returning NULL (no pending install) and the type being
 // absent from all_type_attr_set, a non-zero count identifies a half-installed
 // type whose install() never completed.
-static int count_type_slot_objects(PyTypeObject* tp) noexcept;
 static std::string default_random_string(uintptr_t obj_id, const std::string& attr_name) noexcept;
 
 struct RestorePythonExceptionResult {
@@ -411,8 +410,10 @@ struct PrivateAttrCreationData
     bool use_parents = false;
     bool cleared = false;
     bool installed = false;
+    std::mutex clear_lock, install_lock;
 
     void clear() noexcept {
+        std::unique_lock<std::mutex> lock(clear_lock);
         if (cleared) {
             return;
         }
@@ -435,6 +436,7 @@ struct PrivateAttrCreationData
     }
 
     bool install(PyObject* new_type) noexcept {
+        std::unique_lock<std::mutex> lock(install_lock);
         if (installed) return true;
         if (!new_type) {
             return false;
@@ -467,7 +469,6 @@ struct PrivateAttrCreationData
                 "%s (%d): '__static_attributes__' will expose private attribute names and cannot be used in private attribute types", __FILE__, __LINE__);
             return false;
         }
-        ::AllData::all_type_attr_set[type_id] = private_attrs_set;
         ensure_tp(type_instance);
         if (::AllData::type_attr_dict.find(type_id) == ::AllData::type_attr_dict.end()) {
             ::AllData::type_attr_dict[type_id] = {};
@@ -532,6 +533,7 @@ struct PrivateAttrCreationData
         if (private_func) {
             ::AllData::type_need_call[type_id] = private_func;
         }
+        ::AllData::all_type_attr_set[type_id] = private_attrs_set;
         installed = true;
         return true;
     }
@@ -560,16 +562,7 @@ try_install_pending_creation(PyObject* new_type) noexcept
     }
     PrivateAttrCreationData* data = get_creation_data((uintptr_t)new_type);
     if (!data) {
-        // No in-flight creation data is reachable from the type's slot
-        // objects. If the slot objects are nevertheless present (their data
-        // pointers have all been cleared) the type was left half-created:
-        // the slot structs were injected into its namespace but install()
-        // never completed, so it must NOT be allowed to proceed (no
-        // half-finished type may be created from or controlled). If there
-        // are no slot objects either, this is simply not one of our types.
-        if (count_type_slot_objects((PyTypeObject*)new_type) > 0) {
-            // Slot objects present but no pending pointer -> unrecoverable
-            // half-installed type.
+        if (::AllData::all_type_attr_set.find((uintptr_t)new_type) == ::AllData::all_type_attr_set.end()) {
             PyErr_Format(PyExc_RuntimeError,
                 "private-attribute type '%s' is not fully installed and cannot be used",
                 ((PyTypeObject*)new_type)->tp_name);
@@ -592,16 +585,14 @@ is_uninstallable_private_type(PyObject* base) noexcept
     if (!base || !PyType_Check(base)) {
         return false;
     }
+    if (get_creation_data((uintptr_t)base)) {
+        return false;
+    }
     // Already truly installed -> fine.
     if (::AllData::all_type_attr_set.find((uintptr_t)base) != ::AllData::all_type_attr_set.end()) {
         return false;
     }
-    // Still has a pending install -> recoverable, not uninstallable.
-    if (get_creation_data((uintptr_t)base)) {
-        return false;
-    }
-    // Slot objects present but no pending data -> half-installed, unrecoverable.
-    return count_type_slot_objects((PyTypeObject*)base) > 0;
+    return true;
 }
 
 static inline void
@@ -3760,34 +3751,6 @@ clear_creation_data_from_slots(PyTypeObject* tp, PrivateAttrCreationData* expect
     }
     return found;
 }
-
-// Count the per-type slot objects in `tp`'s tp_dict (the five structs injected
-// by inject_type_slots(), each an instance of PrivateAttrSlotType), regardless
-// of whether they still carry a pending PrivateAttrCreationData pointer. A
-// non-zero count means the type went through our slot-injection machinery. When
-// combined with get_creation_data() returning NULL (no pending install left)
-// AND the type not being present in all_type_attr_set, this identifies a
-// half-installed type whose install() never completed.
-static int count_type_slot_objects(PyTypeObject* tp) noexcept
-{
-    if (!tp) {
-        return 0;
-    }
-    PyObject* dict = tp->tp_dict;
-    if (!dict) {
-        return 0;
-    }
-    int count = 0;
-    for (int i = 0; type_slot_names[i]; i++) {
-        PyObject* slot = PyDict_GetItemString(dict, type_slot_names[i]);
-        if (slot && PyObject_IsInstance(slot, (PyObject*)&PrivateAttrSlotType)) {
-            count++;
-        }
-    }
-    return count;
-}
-
-
 
 // Install the special-method structs into a registered metaclass's dict.
 // The owner is passed explicitly. If the metaclass already defines one of the
