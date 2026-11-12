@@ -15,7 +15,7 @@ class MyClass(PrivateAttrBase):
         return self._private_attr1
 ```
 """
-from typing_extensions import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast, Iterator
+from typing_extensions import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast, Iterator, Protocol
 from types import FunctionType
 import sys
 
@@ -156,6 +156,10 @@ def ensure_metaclass(typ: type, /) -> None:
     """
     ...
 
+class _SlotWrapper(Protocol):
+    """Protocol for slot wrapper that allows 0 or 1 positional-only arguments."""
+    def __call__(self, callback: Callable[..., Any] | None = None, /) -> Callable[..., Any]: ...
+
 def create_new(func: Callable[..., Any] | None = None, /) -> Callable[..., Any]:
     """
     function to register the type with new automatically:
@@ -182,7 +186,7 @@ def create_new(func: Callable[..., Any] | None = None, /) -> Callable[..., Any]:
     """
     ...
 
-def create_meta_slot(name: str, /):
+def create_meta_slot(name: str, /) -> _SlotWrapper:
     """
     function to create the final slot for metaclass:
 
@@ -213,7 +217,7 @@ def create_meta_slot(name: str, /):
     def create_register_type_slot_wrapper(callback: Callable[..., Any] | None = None) -> Callable[..., Any]: ...
     return create_register_type_slot_wrapper
 
-def create_slot(name: str, /):
+def create_slot(name: str, /) -> _SlotWrapper:
     """
     function to create the final slot for private class:
 

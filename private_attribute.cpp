@@ -345,7 +345,7 @@ is_private_class_weakref_callback(PyObject* /*self*/, PyObject* weakref)
 static PyMethodDef is_private_class_methods = {
     "is_private_class_weakref_callback",
     (PyCFunction)is_private_class_weakref_callback,
-    METH_O,
+    METH_O | METH_STATIC,
     NULL
 };
 
@@ -5943,7 +5943,7 @@ metaclass_weakref_callback(PyObject* /*self*/, PyObject* weakref) noexcept
 static PyMethodDef weakref_callback_def = {
     "metaclass_weakref_callback",
     (PyCFunction)metaclass_weakref_callback,
-    METH_O,
+    METH_O | METH_STATIC,
     NULL
 };
 
@@ -6327,9 +6327,9 @@ class MyClass(private_attribute.PrivateAttrBase):
 static PyMethodDef PrivateModule_methods[] = {
     {"ensure_type", (PyCFunction)ensure_type_tp, METH_O | METH_STATIC, ensure_type_doc},
     {"ensure_metaclass", (PyCFunction)ensure_metaclass_tp, METH_O | METH_STATIC, ensure_metaclass_doc},
-    {"create_new", (PyCFunction)register_type_create_new, METH_VARARGS, create_new_doc},
-    {"create_meta_slot", (PyCFunction)register_type_create_slot, METH_O, create_meta_slot_doc},
-    {"create_slot", (PyCFunction)private_type_create_slot, METH_O, create_slot_doc},
+    {"create_new", (PyCFunction)register_type_create_new, METH_VARARGS | METH_STATIC, create_new_doc},
+    {"create_meta_slot", (PyCFunction)register_type_create_slot, METH_O | METH_STATIC, create_meta_slot_doc},
+    {"create_slot", (PyCFunction)private_type_create_slot, METH_O | METH_STATIC, create_slot_doc},
     {NULL}  // Sentinel
 };
 
@@ -6494,7 +6494,7 @@ AtExit_clean_storage(PyObject* /*self*/, PyObject* /*obj*/) noexcept
 static PyMethodDef clean_storage = {
     "clean_storage",
     (PyCFunction)AtExit_clean_storage,
-    METH_NOARGS,
+    METH_NOARGS | METH_STATIC,
     "Clean all storages"
 };
 
