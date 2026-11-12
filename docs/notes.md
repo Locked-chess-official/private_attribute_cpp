@@ -26,10 +26,7 @@
 | --- | --- |
 | 2.1.0 | Subclass code can no longer access a parent's private attributes; re-declaring the name stores it separately (instance attrs per declaring class, class attrs per class). |
 | 2.1.4 | `__private_attrs__` became optional. |
-| 2.1.17 | `_PrivateTemp` gained a `.postprocess(typ)` shortcut. |
 | 2.2.0 | Subclass must not define a parent-private name in its own body unless declared in its own `__private_attrs__` or `use_parents=True`. `use_parents` added. |
-| 2.2.1 | `prepare` takes an internal creation lock; `postprocess` releases it. Auto-released on failure. |
-| 2.2.3 | `prepare`/`postprocess` support the `with` statement. |
 | 3.0.0 | Interception moved from the `tp_getattro`/`tp_setattro`/`tp_finalize` slots to C-struct slot descriptors; added `PrivateSuper`/`PrivateClassSuper`. |
 
 ## CPython slot caveats
@@ -43,12 +40,5 @@
   those dunder methods on private-attribute classes directly. To install custom
   slot behaviour, prefer `create_slot` (for classes) or `create_meta_slot` (for
   metaclasses).
-- `register_metaclass` must be called with a metaclass that supports weakrefs.
 - Do **not** set `__static_attributes__` on a private-attribute class — it will
   be removed.
-
-## Deprecated API
-
-`prepare`, `postprocess`, and `register_metaclass` are deprecated and emit a
-warning when accessed. Use `create_new` in the metaclass body (or as a
-decorator) instead — it handles registration and control automatically.

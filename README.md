@@ -388,10 +388,6 @@ class MyClass(private_attribute.PrivateAttrBase):
     __setattr__ = private_attribute.create_slot("__setattr__")()
 ```
 
-> The old `prepare` / `postprocess` pair and `register_metaclass` are
-> deprecated (they emit a warning) and kept only for backward compatibility;
-> new code should use `create_new`.
-
 ---
 
 ## Behavioral notes & limitations
@@ -418,11 +414,6 @@ class MyClass(private_attribute.PrivateAttrBase):
 - **v2.2.0** — a subclass must not define, in its own class body, a name that is
   private to a parent, unless it declares the name in its own
   `__private_attrs__` or opts in with `use_parents=True`.
-- **v2.2.1** — `prepare` locks private-attribute-type creation so only one type
-  is being built (`type.__new__`) at a time; `postprocess` unlocks it. The lock
-  is released automatically on failure. (Deprecated; see `create_new`.)
-- **v2.2.3** — prefer the `with` form of `prepare`/`postprocess` to guarantee
-  the lock is released. (Deprecated; see `create_new`.)
 - CPython may reset the special-method slot descriptors (e.g. when you assign
   `__getattribute__` / `__setattr__`). Use `ensure_type` (or
   `ensure_metaclass`) to re-inject them, and avoid setting those methods on
@@ -435,8 +426,6 @@ class MyClass(private_attribute.PrivateAttrBase):
   id records attribute names already confirmed non-private, so they go
   straight to the user callback without re-classification. Registered types and
   created types must be heap types (static types are rejected).
-- `register_metaclass` requires a metaclass that supports weak references.
-  (Deprecated; use `create_new`, which registers the metaclass automatically.)
 - Do **not** set `__static_attributes__` on a private-attribute class; it is
   removed automatically.
 

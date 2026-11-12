@@ -2,8 +2,7 @@
 
 To combine private attributes with another metaclass (for example `ABCMeta`),
 put a `create_new` slot directly in the metaclass. `create_new` takes care of
-registration and control automatically — there is no longer any need to call
-`prepare` / `postprocess` / `register_metaclass`.
+registration and control automatically.
 
 ## Example: private attributes + ABC
 
@@ -17,9 +16,7 @@ class PrivateAbcMeta(ABCMeta):
 
 `create_new()` returns a `__new__` slot descriptor. When it is placed in the
 metaclass body, `__set_name__` registers the metaclass automatically, and every
-class built through this metaclass is finalized as a private-attribute class —
-the same work that previously required the `prepare` / `postprocess` pair plus
-`register_metaclass`.
+class built through this metaclass is finalized as a private-attribute class.
 
 Now a class can behave as both an ABC and a private-attribute class:
 
@@ -119,24 +116,4 @@ those dunder methods on private-attribute classes directly.
 ```python
 private_attribute.ensure_type(SomeClass)
 private_attribute.ensure_metaclass(SomeMeta)
-```
-
-## Deprecated API
-
-The old `prepare` / `postprocess` pair and `register_metaclass` are deprecated
-and emit a warning when accessed. They are kept for backward compatibility but
-new code should use `create_new` instead:
-
-```python
-from abc import ABCMeta
-import private_attribute
-
-class PrivateAbcMeta(ABCMeta):
-    def __new__(cls, name, bases, attrs, **kwargs):
-        with private_attribute.prepare(name, bases, attrs, **kwargs) as temp:
-            typ = super().__new__(cls, temp.name, temp.bases, temp.attrs, **temp.kwds)
-            private_attribute.postprocess(typ, temp)   # or temp.postprocess(typ)
-            return typ
-
-private_attribute.register_metaclass(PrivateAbcMeta)
 ```

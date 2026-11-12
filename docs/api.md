@@ -108,8 +108,7 @@ def create_new(func=None, /) -> Callable[..., Any]: ...
 ```
 
 Registers and controls a custom metaclass automatically. Place it in the
-metaclass body (or use it as a decorator) and it replaces the old
-`prepare` / `postprocess` / `register_metaclass` flow:
+metaclass body (or use it as a decorator):
 
 ```python
 from abc import ABCMeta
@@ -186,12 +185,6 @@ def ensure_metaclass(typ, /) -> None: ...
 
 Re-injects the metaclass slot descriptors (plus `__call__`) and the
 `tp_traverse` / `tp_clear` wrappers.
-
-### Deprecated: `prepare` / `postprocess` / `register_metaclass`
-
-These three functions are deprecated and emit a warning when accessed. They are
-kept for backward compatibility; new code should use `create_new` (and, for
-custom slots, `create_meta_slot` / `create_slot`) instead.
 
 ## Class-definition options
 

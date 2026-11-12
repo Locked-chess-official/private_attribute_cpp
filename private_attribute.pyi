@@ -15,7 +15,7 @@ class MyClass(PrivateAttrBase):
         return self._private_attr1
 ```
 """
-from typing_extensions import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast, Iterator, deprecated
+from typing_extensions import Any, TypeVar, Callable, TypedDict, Sequence, Generic, Optional, cast, Iterator
 from types import FunctionType
 import sys
 
@@ -140,29 +140,6 @@ class PrivateClassSuper:
     def __init__(self, A: type, B: type, C: type, cls: type, /) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
 
-
-class _PrivateTemp:
-    @property
-    def name(self) -> str: ...
-    @property
-    def bases(self) -> tuple[type]: ...
-    @property
-    def attrs(self) -> dict[str, Any]: ...
-    @property
-    def kwds(self) -> dict[str, Any]: ...
-    def postprocess(self, typ: type, /) -> None: ... # add in 2.1.17
-
-    def __enter__(self) -> "_PrivateTemp": ...
-    def __exit__(self, exc_type: type, exc_val: Exception, exc_tb: Any) -> None: ...
-
-@deprecated("Use `create_new` instead.")
-def prepare(name: str, bases: tuple, attrs: _PrivateAttrDict, /, **kwds) -> _PrivateTemp: ...
-
-@deprecated("Use `create_new` instead.")
-def postprocess(typ: type, temp: _PrivateTemp, /) -> None: ...
-
-@deprecated("Use `create_new` instead.")
-def register_metaclass(typ: type, /) -> None: ...
 
 def ensure_type(typ: type, /) -> None:
     """function for custom metaclass to ensure the type is a private attributes class.
