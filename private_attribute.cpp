@@ -24,12 +24,6 @@
 #define PyAnyDict_Check(op) PyDict_Check(op)
 #endif
 
-// python<=3.12 define Py_BEGIN_CRITICAL_SECTION(op) as "{" and Py_END_CRITICAL_SECTION() as "}"
-#if PY_VERSION_HEX < 0x030D0000
-#define Py_BEGIN_CRITICAL_SECTION(op) {
-#define Py_END_CRITICAL_SECTION() }
-#endif
-
 static const auto module_running_time = std::chrono::system_clock::now();
 
 static std::string
