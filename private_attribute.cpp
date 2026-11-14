@@ -24,6 +24,12 @@
 #define PyAnyDict_Check(op) PyDict_Check(op)
 #endif
 
+// python<=3.12 define Py_BEGIN_CRITICAL_SECTION(op) as "{" and Py_END_CRITICAL_SECTION() as "}"
+#if PY_VERSION_HEX < 0x030D0000
+#define Py_BEGIN_CRITICAL_SECTION(op) {
+#define Py_END_CRITICAL_SECTION() }
+#endif
+
 static const auto module_running_time = std::chrono::system_clock::now();
 
 static std::string
@@ -2870,6 +2876,8 @@ super_slot_call(PyObject* owner, PyObject* obj, const char* slot_name, PyObject*
     return PyObject_Call(method, args, kwds);
 }
 
+static bool is_handling_dict(PyObject* dict) noexcept;
+
 static PyObject*
 slot_new_impl(PrivateAttrSlot* self, PyObject* cls, PyObject* args, PyObject* kwds) noexcept
 {
@@ -2907,6 +2915,7 @@ slot_new_impl(PrivateAttrSlot* self, PyObject* cls, PyObject* args, PyObject* kw
     //   - otherwise forward the whole class-creation flow to the parent slot
     //     (the same `parent_new` object we already resolved).
     if (is_meta_new_slot(parent_new)) {
+call_straight:
         if (self->callback) {
             PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(
                 4, cls,
@@ -2917,6 +2926,10 @@ slot_new_impl(PrivateAttrSlot* self, PyObject* cls, PyObject* args, PyObject* kw
             return PyObject_Call(self->callback, type_args, kwds);
         }
         return slot_new_impl((PrivateAttrSlot*)parent_new.get(), cls, args, kwds);
+    }
+    PyObjectStorage now_dict = PyTuple_GET_ITEM(args, 2);
+    if (PyAnyDict_Check(now_dict) && is_handling_dict(now_dict)) {
+        goto call_straight;
     }
     PrivateAttrCreationData data;
     PyTypeObject* typ = (PyTypeObject*)cls;
@@ -3905,6 +3918,22 @@ update_metaclass_new(PyTypeObject* owner, PyObject* callback) noexcept
     }
     int r = real_setattro((PyObject*)owner, name_obj, new_slot_storage);
     return r >= 0;
+}
+
+static bool
+is_handling_dict(PyObject* dict) noexcept
+{
+    if (!dict) return false;
+    const char** name = type_slot_names;
+    for (int i=0; name[i]; i++) {
+        PyObject* obj = PyDict_GetItemString(dict, name[i]);
+        if (!obj) continue;
+        if (PyObject_IsInstance(obj, (PyObject*)&PrivateAttrSlotType)) {
+            PrivateAttrSlotHasData * s = (PrivateAttrSlotHasData*)obj;
+            if (s->data) {return true;}
+        }
+    }
+    return false;
 }
 
 // ===============================================================
@@ -4969,6 +4998,42 @@ need_analyse_type(PyObject* type) noexcept
     return result ? AnalyseStatus::Yes : AnalyseStatus::No;
 }
 
+class PyCriticalSectionHandler {
+private:
+#ifdef Py_GIL_DISABLED
+    PyCriticalSection _py_cs;
+#endif
+public:
+    PyCriticalSectionHandler(PyObject* op) noexcept {
+#ifdef Py_GIL_DISABLED
+        PyCriticalSection_Begin(&_py_cs, (PyObject*)(op));
+#endif
+    }
+    ~PyCriticalSectionHandler() noexcept {
+#ifdef Py_GIL_DISABLED
+        PyCriticalSection_End(&_py_cs);
+#endif
+    }
+};
+
+class PyCriticalSectionHandler2 {
+private:
+#ifdef Py_GIL_DISABLED
+    PyCriticalSection2 _py_cs;
+#endif
+public:
+    PyCriticalSectionHandler2(PyObject* op1, PyObject* op2) noexcept {
+#ifdef Py_GIL_DISABLED
+        PyCriticalSection2_Begin(&_py_cs, (PyObject*)(op1), (PyObject*)op2);
+#endif
+    }
+    ~PyCriticalSectionHandler2() noexcept {
+#ifdef Py_GIL_DISABLED
+        PyCriticalSection2_End(&_py_cs);
+#endif
+    }
+};
+
 static bool
 PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data, const std::string& func_name) noexcept
 {
@@ -5218,6 +5283,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         Py_ssize_t pos = 0;
         PyObject* key, *value;
         PyObjectStorage forward_analyse = PyObjectStorage::from_new_ref(PyDict_Copy(data.attrs_copy));
+        PyCriticalSectionHandler _(forward_analyse);
         while (PyDict_Next(forward_analyse, &pos, &key, &value)) {
             if (!key || !PyUnicode_Check(key)) {
                 PyErr_SetString(PyExc_TypeError, "all keys in 'attrs' must be strings");
@@ -5285,6 +5351,7 @@ PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationDa
         PyObject* original_key;
         Py_ssize_t original_pos = 0;
         PyObject* original_value;
+        PyCriticalSectionHandler _(attrs);
         while (PyDict_Next(attrs, &original_pos, &original_key, &original_value)) {
             std::unordered_set<uintptr_t> set;
             analyse_all_code(original_value, data.code_map, set);
