@@ -149,7 +149,28 @@ class PrivateClassSuper:
 
 
 class PrivateObjSuper:
-    def __init__(self, A: type, B: type, C: Any) -> None: ...
+    """
+    Read-only cross-class access to a parent class's per-instance private attribute.
+
+    Usage: ``PrivateObjSuper(now_class, parent_class, obj).name``
+
+    - now_class: the type whose code is currently running (the code owner).
+    - parent_class: a parent type of ``now_class`` (not ``now_class`` itself).
+      The value is read from this class's per-instance storage.
+    - obj: an instance of ``now_class``. A further subclass instance is fine.
+
+    Both classes must be private-attribute types (instances of
+    ``PrivateAttrType`` or a registered metaclass). The running code must belong
+    to ``now_class`` at attribute-access time. The stored object is returned
+    as-is for a normal instance. When ``obj`` itself is a class and the stored
+    value defines ``__get__``, that ``__get__(None, obj)`` is called.
+
+    This is the instance-storage counterpart of :class:`PrivateSuper`. It does
+    not read class-level attributes, does not fall back to an ancestor's
+    instance storage, and does not accept keyword arguments. Assignment and
+    deletion are not supported.
+    """
+    def __init__(self, now_class: type, parent_class: type, obj: Any, /) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
 
 

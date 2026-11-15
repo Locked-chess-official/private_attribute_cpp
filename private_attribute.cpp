@@ -337,7 +337,9 @@ is_private_class_weakref_callback(PyObject* /*self*/, PyObject* weakref)
         // shutdown). Treat as a no-op rather than raising a spurious error.
         Py_RETURN_NONE;
     }
-    uintptr_t type_id = AllData::is_private_cache_weakref_dict.erase(weakref_id);
+    // erase(key) returns the number of removed entries, not the mapped type id.
+    uintptr_t type_id = it->second;
+    AllData::is_private_cache_weakref_dict.erase(it);
     AllData::is_private_cache.erase(type_id);
     Py_RETURN_NONE;
 }
@@ -2528,7 +2530,26 @@ PrivateSuper_New(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
     return (PyObject*)self;
 }
 
+// ================================================================
 // PrivateObjSuper
+// ================================================================
+// Explicit, read-only access to a parent class's *per-instance* private
+// attribute (stored in all_object_attr[parent_class][obj]). This is the
+// instance-storage counterpart of PrivateSuper, which only reads class-level
+// storage.
+//
+//   PrivateObjSuper(now_class, parent_class, obj).name
+//       now_class    : the type whose code is currently running.
+//       parent_class : a private-attribute parent of now_class (not now_class
+//                      itself). The value is read from this class's instance
+//                      storage, using this class's private_func when it has one.
+//       obj          : an instance of now_class.
+//
+// The type relationship and the instance check are validated at construction.
+// The code-ownership check (the running code must belong to now_class) is
+// enforced at attribute access time. There is no class-level fallback and no
+// tp_setattro: missing slots and writes both fail.
+
 typedef struct {
     PyObject_HEAD
     PyObject* now_class;
@@ -2536,11 +2557,33 @@ typedef struct {
     PyObject* obj;
 } PrivateObjSuperObject;
 
+static const char* PrivateObjSuper_doc =
+"Read-only cross-class access to a parent class's per-instance private attribute.\n"
+"Usage: PrivateObjSuper(now_class, parent_class, obj).name\n"
+"now_class is the running code's private-attribute type, parent_class is a\n"
+"private-attribute parent of now_class (not now_class itself), and obj is an\n"
+"instance of now_class. The attribute is resolved from parent_class's instance\n"
+"storage for obj. No keyword arguments. Not a class-level lookup (see PrivateSuper).";
+
 static PyObject*
 PrivateObjSuper_New(PyTypeObject* cls, PyObject* args, PyObject* kwds) noexcept
 {
     PyObject *now_class, *parent_class, *obj;
-    if (!PyArg_ParseTuple(args, "OOO:private_attribute.PrivateObjClass", &now_class, &parent_class, &obj)) {
+    if (!PyArg_ParseTuple(args, "OOO:private_attribute.PrivateObjSuper", &now_class, &parent_class, &obj)) {
+        return NULL;
+    }
+    if (kwds && PyDict_Check(kwds) && PyDict_Size(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "PrivateObjSuper takes no keyword arguments");
+        return NULL;
+    }
+    // Reject non-types before need_analyse_type(), which would otherwise fail
+    // inside the private-class cache with "type must be a type object".
+    if (!PyType_Check(now_class)) {
+        PyErr_SetString(PyExc_TypeError, "now_class must be a type");
+        return NULL;
+    }
+    if (!PyType_Check(parent_class)) {
+        PyErr_SetString(PyExc_TypeError, "parent_class must be a type");
         return NULL;
     }
     // all class must be private class
@@ -2564,8 +2607,14 @@ PrivateObjSuper_New(PyTypeObject* cls, PyObject* args, PyObject* kwds) noexcept
         PyErr_SetString(PyExc_TypeError, "parent_class must be parent of now_class");
         return NULL;
     }
-    // obj must be an instance of now_class
-    if (!PyObject_IsInstance(obj, (PyObject*)now_class)) {
+    // obj must be an instance of now_class. A negative IsInstance result is an
+    // exception (for example a metaclass __instancecheck__ that raised); do not
+    // overwrite it or return an object while it is pending.
+    int is_inst = PyObject_IsInstance(obj, now_class);
+    if (is_inst < 0) {
+        return NULL;
+    }
+    if (!is_inst) {
         PyErr_SetString(PyExc_TypeError, "obj must be an instance of now_class");
         return NULL;
     }
@@ -2626,7 +2675,7 @@ PrivateObjSuper_getattro(PrivateObjSuperObject* self, PyObject* name) noexcept
     }
     std::string attr_name(name_cstr);
 
-    // The running code must belong to A.
+    // The running code must belong to now_class.
     PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
     if (!now_code) {
         PyErr_SetString(PyExc_AttributeError, "cannot use 'PrivateObjSuper' outside the class");
@@ -2668,10 +2717,22 @@ PrivateObjSuper_getattro(PrivateObjSuperObject* self, PyObject* name) noexcept
         auto it = ::AllData::all_object_attr[parent_class_id][target_id].find(key);
         if (it != ::AllData::all_object_attr[parent_class_id][target_id].end()) {
             PyObject* result = it->second.get();
+            if (!result) {
+                PyErr_Format(PyExc_SystemError, "%s (%d): attribute is NULL", __FILE__, __LINE__);
+                return NULL;
+            }
+            // A value stored on a class object (obj is itself a type) follows
+            // the same descriptor rule as id_getattr: call __get__(None, obj).
+            // Release the lock first. The mutex is not recursive, and __get__
+            // may re-enter this class's private storage.
             if (PyType_Check(self->obj)) {
                 descrgetfunc d = Py_TYPE(result)->tp_descr_get;
                 if (d) {
-                    return d(result, Py_None, (PyObject*)self->obj);
+                    Py_INCREF(result);
+                    lock.unlock();
+                    PyObject* bound = d(result, Py_None, (PyObject*)self->obj);
+                    Py_DECREF(result);
+                    return bound;
                 }
             }
             Py_INCREF(result);
@@ -2703,7 +2764,7 @@ static PyTypeObject PrivateObjSuperType = {
     0, // PyBaseObject_Type.tp_setattro
     0, // PyBaseObject_Type.tp_as_buffer
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
-    "PrivateObjSuper objects",
+    PrivateObjSuper_doc,
     (traverseproc)PrivateObjSuper_traverse,
     (inquiry)PrivateObjSuper_clear,
     0, // PyBaseObject_Type.tp_richcompare

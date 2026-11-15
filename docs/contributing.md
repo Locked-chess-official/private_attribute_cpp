@@ -21,6 +21,7 @@ The suite covers:
 - custom `private_func`
 - decorator wrapping (`PrivateWrapProxy`)
 - inheritance semantics (`use_parents`, parent/child storage separation)
+- cross-class access (`PrivateSuper`, `PrivateClassSuper`, `PrivateObjSuper`)
 - ABC / metaclass integration
 - `__slots__` and cyclic-GC collection regressions
 
