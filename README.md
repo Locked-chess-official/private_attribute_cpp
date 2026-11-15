@@ -26,7 +26,7 @@ outside the declaring class's own code.
   - [Custom name generation (`private_func`)](#custom-name-generation-private_func)
   - [Decorated methods (`PrivateWrapProxy`)](#decorated-methods-privatewrapproxy)
   - [Inheritance and `use_parents`](#inheritance-and-use_parents)
-  - [Cross-class access (`PrivateSuper` and `PrivateClassSuper`)](#cross-class-access-privatesuper-and-privateclasssuper)
+  - [Cross-class access (`PrivateSuper`, `PrivateClassSuper`, and `PrivateObjSuper`)](#cross-class-access-privatesuper-privateclasssuper-and-privateobjsuper)
 - [API reference](#api-reference)
 - [Custom metaclasses](#custom-metaclasses)
 - [Behavioral notes & limitations](#behavioral-notes--limitations)
@@ -256,12 +256,19 @@ unchanged; only the internal name set is merged. Default is `False`.
 
 ---
 
-### Cross-class access (`PrivateSuper` and `PrivateClassSuper`)
+### Cross-class access (`PrivateSuper`, `PrivateClassSuper`, and `PrivateObjSuper`)
 
-Since v3.0.0 you can explicitly reach a parent class's class-level private
-attribute — including the value it stored "for" an intermediate class — with
-`PrivateSuper` (instance flavour) or `PrivateClassSuper` (`@classmethod`
-flavour):
+Ordinary subclass code cannot see a parent's private attributes. Two explicit
+helpers cover the two places those values live:
+
+- **Class-level** storage — `PrivateSuper` and `PrivateClassSuper` (since v3.0.0).
+- **Per-instance** storage — `PrivateObjSuper`.
+
+#### Class-level (`PrivateSuper` and `PrivateClassSuper`)
+
+`PrivateSuper` (instance flavour) and `PrivateClassSuper` (`@classmethod`
+flavour) reach a parent class's class-level private attribute, including the
+value it stored "for" an intermediate class:
 
 ```python
 import private_attribute
@@ -302,8 +309,61 @@ Leaf.read_grand_shadow_cls()    # "written-on-mid"
   `A` (for `PrivateClassSuper`).
 
 The attribute is resolved from `B`'s class-level storage for `C` and its
-`__get__(obj, A)` (or `__get__(None, cls)`) is invoked. This is for **class-level
-private attributes only** — it is not for instance-attribute cross-type access.
+`__get__(obj, A)` (or `__get__(None, cls)`) is invoked. This pair is for
+**class-level private attributes only**.
+
+#### Per-instance (`PrivateObjSuper`)
+
+`PrivateObjSuper` reads the value a **parent class** stored on a particular
+instance. It does not look at class attributes, and it cannot assign or delete.
+
+```python
+import private_attribute
+
+class Parent(private_attribute.PrivateAttrBase):
+    __private_attrs__ = ["_secret"]
+
+    def __init__(self):
+        self._secret = 1
+
+    def get_secret(self):
+        return self._secret
+
+class Child(Parent):
+    __private_attrs__ = ["_secret"]
+
+    def __init__(self):
+        super().__init__()
+        self._secret = 99          # Child's own storage
+
+    def read_own(self):
+        return self._secret
+
+    def read_parent(self):
+        # now_class=Child, parent_class=Parent, obj=this instance
+        return private_attribute.PrivateObjSuper(Child, Parent, self)._secret
+
+obj = Child()
+obj.get_secret()     # 1  — parent code sees the parent's value
+obj.read_own()       # 99 — child code sees its own value
+obj.read_parent()    # 1  — parent's per-instance value, explicitly
+```
+
+- `now_class` — the private-attribute type whose code is running. Access from
+  any other code raises `AttributeError`.
+- `parent_class` — a private-attribute **parent** of `now_class` (not
+  `now_class` itself). The value is read from that class's storage for `obj`.
+- `obj` — an instance of `now_class`. An instance of a further subclass is
+  accepted; an instance of a sibling or of the parent is not.
+
+The name must be a private attribute of `parent_class` (or of one of its
+private-attribute ancestors). The lookup does **not** fall back to a class
+attribute, to a descriptor on the class, or to an ancestor's own instance
+storage — pass the class that actually stored the value. A normal instance
+returns the stored object unchanged. When `obj` is itself a class and the
+stored value defines `__get__`, `__get__(None, obj)` is called. Keyword
+arguments are rejected. See the [guide](docs/guide/cross-class-access.md) for
+the error cases.
 
 ---
 
@@ -317,6 +377,7 @@ private attributes only** — it is not for instance-attribute cross-type access
 | `_PrivateWrap` | class | Returned by `PrivateWrapProxy`; exposes `.result` and `.funcs`. |
 | `PrivateSuper(A, B, C, obj)` | class | Read a parent class's class-level private attribute defined for another class; calls `__get__(obj, A)`. |
 | `PrivateClassSuper(A, B, C, cls)` | class | Classmethod flavour of `PrivateSuper`; calls `__get__(None, cls)`. |
+| `PrivateObjSuper(now_class, parent_class, obj)` | class | Read a parent class's per-instance private attribute from subclass code. Read-only; no class-level fallback. |
 | `create_new(func=None)` | function | Register and control a custom metaclass automatically; placed in the metaclass body (or used as a decorator). |
 | `create_meta_slot(name)` | function | Create the final slot (e.g. `__setattr__`) for a registered metaclass; empty slot or decorator. |
 | `create_slot(name)` | function | Create the final slot for a private-attribute class; empty slot or decorator. |
@@ -418,6 +479,12 @@ class MyClass(private_attribute.PrivateAttrBase):
   `__getattribute__` / `__setattr__`). Use `ensure_type` (or
   `ensure_metaclass`) to re-inject them, and avoid setting those methods on
   private-attribute classes directly.
+- **unreleased (after 3.0.4)** — `PrivateObjSuper(now_class, parent_class, obj)`
+  reads a parent class's per-instance private attribute from `now_class`'s
+  code. It is read-only and does not see class-level private attributes
+  (`PrivateSuper` / `PrivateClassSuper` remain the class-level helpers).
+  The private-class cache now drops a type's answer when that type is
+  collected, so a new type allocated at the same address is classified again.
 - **v3** — private attribute interception is implemented through C-struct
   descriptors installed as `__getattribute__` / `__getattr__` / `__setattr__` /
   `__delattr__` / `__del__` (and `__call__` on registered metaclasses), rather
@@ -463,7 +530,8 @@ python -m pytest tests/ -v
 ```
 
 The test suite covers attribute hiding, private methods, class-level private
-state, decorator wrapping, inheritance semantics (`use_parents`), ABC/metaclass
+state, decorator wrapping, inheritance semantics (`use_parents`), cross-class
+access (`PrivateSuper`, `PrivateClassSuper`, `PrivateObjSuper`), ABC/metaclass
 integration, `__slots__`, and GC/cycle-collection regressions.
 
 ---

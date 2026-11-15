@@ -34,6 +34,12 @@ obj = Child()
 obj.get_secret()              # 1  — parent code sees parent value
 ```
 
+That rule is about ordinary attribute access. To read the parent's
+**per-instance** value on purpose, from the subclass, use
+[`PrivateObjSuper`](cross-class-access.md#per-instance-privateobjsuper). It is
+read-only and does not expose the parent's class attributes; those still go
+through [`PrivateSuper`](cross-class-access.md).
+
 ## Re-declaring the same name
 
 When a subclass re-declares a name in its own `__private_attrs__`, the two are

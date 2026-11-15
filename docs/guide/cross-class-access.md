@@ -1,19 +1,20 @@
 # Cross-class access
 
 `private_attribute` hides each private attribute from every class except the one
-that declared it. Since **v3.0.0**, two helpers let you *explicitly* reach a
-parent class's **class-level** private attribute from a subclass — including the
-value the parent stored "for" an intermediate class in the hierarchy.
+that declared it. Two helpers let you *explicitly* reach a parent's private
+value from a subclass. They read different storage:
 
-- `PrivateSuper` — the instance flavour; resolves the attribute and calls
-  `__get__(obj, A)`.
-- `PrivateClassSuper` — the `@classmethod` flavour; resolves the same storage and
-  calls `__get__(None, cls)`.
+- **Class-level** — `PrivateSuper` and `PrivateClassSuper` (since **v3.0.0**).
+  `PrivateSuper` resolves the attribute and calls `__get__(obj, A)`.
+  `PrivateClassSuper` is the `@classmethod` flavour and calls `__get__(None, cls)`.
+- **Per-instance** — `PrivateObjSuper`. It reads the value `parent_class` stored
+  on one object. It does not read class attributes.
 
 !!! warning
 
-    These are for **class-level private attributes only**. They do **not** give
-    cross-type access to instance attributes.
+    `PrivateSuper` and `PrivateClassSuper` are for **class-level** private
+    attributes only. Instance values go through `PrivateObjSuper`, and that
+    helper is read-only.
 
 ## Signatures
 
@@ -127,3 +128,126 @@ class C(P, use_parents=True):
 C.set_n(11)
 C().read()   # 11
 ```
+
+## Per-instance (`PrivateObjSuper`)
+
+`PrivateObjSuper` is how subclass code reads a **parent's per-instance** private
+attribute without touching the subclass's own storage for the same name.
+Re-declaring the name, or opting in with `use_parents=True`, still stores the
+subclass's writes separately; this helper reaches the parent's map on purpose.
+
+### Signature
+
+```python
+private_attribute.PrivateObjSuper(now_class, parent_class, obj).name
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `now_class` | The private-attribute type whose code is currently running. |
+| `parent_class` | A private-attribute parent of `now_class`, not `now_class` itself. The value is read from this class's instance storage. |
+| `obj` | An instance of `now_class`. An instance of a further subclass is accepted. |
+
+Exactly three positional arguments. Keyword arguments raise `TypeError`.
+
+### Example
+
+```python
+import private_attribute
+
+class Parent(private_attribute.PrivateAttrBase):
+    __private_attrs__ = ["_secret"]
+
+    def __init__(self):
+        self._secret = 1
+
+    def get_secret(self):
+        return self._secret
+
+class Child(Parent):
+    __private_attrs__ = ["_secret"]
+
+    def __init__(self):
+        super().__init__()
+        self._secret = 99
+
+    def read_own(self):
+        return self._secret
+
+    def read_parent(self):
+        return private_attribute.PrivateObjSuper(Child, Parent, self)._secret
+
+obj = Child()
+obj.get_secret()     # 1
+obj.read_own()       # 99
+obj.read_parent()    # 1
+```
+
+The same split holds with `use_parents=True`: the child's `self._secret = 99`
+does not overwrite the value `Parent.__init__` stored.
+
+### What is read
+
+The storage key is the one `parent_class` itself uses for that instance: the
+object id plus the attribute name, passed through `parent_class`'s
+`private_func` when the parent defines one, otherwise the default generator.
+Only `parent_class`'s own per-instance map is consulted.
+
+- A name that is not private on `parent_class` or on any of its
+  private-attribute ancestors raises
+  `AttributeError: '<Parent>' has no private attribute '<name>'`.
+- A private name that `parent_class` never stored on this instance raises
+  `AttributeError: 'PrivateObjSuper' object has no attribute '<name>'`.
+  That includes a name that exists only as a **class** attribute (read it with
+  `PrivateSuper`) and a name stored by an **ancestor** of `parent_class`.
+  Pass the class that wrote the value. An intermediate class is a valid
+  `parent_class`, but it does not forward the read to its parents.
+- For a normal instance the stored object is returned as-is. A descriptor
+  object sitting in the instance slot is not bound, and a data descriptor on
+  the class does not take precedence over the instance value.
+- When `obj` is itself a class (`now_class` is a metaclass) and the stored
+  value has `__get__`, it is called as `__get__(None, obj)`. That call can
+  re-enter private-attribute access on the same class.
+
+`hasattr` from inside `now_class` reports whether the instance slot is present.
+Outside `now_class` it is `False`. `dir()` does not list the private names.
+
+### Ownership and validation
+
+The proxy may be constructed anywhere the three arguments are valid. Reading an
+attribute is allowed only while the running code object belongs to `now_class`:
+a method, a function or lambda nested inside one, a property, a classmethod, a
+staticmethod, or a `PrivateWrapProxy` wrapper defined in that class. From
+anywhere else — module level, the parent's methods, a function defined outside
+the class and then called or assigned onto it — resolution raises
+`AttributeError: cannot use 'PrivateObjSuper' outside the class`.
+
+Construction checks, in order:
+
+- `now_class` and `parent_class` must be types
+  (`TypeError: now_class must be a type` / `parent_class must be a type`).
+- Both must be private-attribute classes
+  (`TypeError: now_class must be private class` /
+  `parent_class must be private class`).
+- `parent_class` must appear in `now_class`'s private-attribute parents
+  (`TypeError: parent_class must be parent of now_class`). Passing
+  `now_class` itself fails this check.
+- `obj` must be an instance of `now_class`
+  (`TypeError: obj must be an instance of now_class`).
+
+The type cannot be subclassed, and a `PrivateObjSuper` instance cannot be
+weak-referenced. It participates in cyclic GC, so a cycle that runs through an
+ordinary instance `__dict__` is collectable.
+
+### Writes
+
+There is no setter. `proxy.name = ...` and `del proxy.name` raise
+`AttributeError` (`'private_attribute.PrivateObjSuper' object has no attribute
+'...'`) and do not modify the parent's value.
+
+### `private_func`
+
+A `private_func` on `parent_class` is used to build the storage key, with the
+**instance** id (not the class id). If that callable raises, the exception
+propagates. If it returns a non-string, the result is
+`TypeError: private_func function must return a string, not '...'`.

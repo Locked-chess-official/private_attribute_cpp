@@ -99,6 +99,36 @@ The classmethod flavour of `PrivateSuper`. `A`, `B` and `C` are as above;
 `cls` is a subclass of `A`. The attribute is resolved from the same storage and
 its `__get__(None, cls)` is invoked.
 
+### `PrivateObjSuper`
+
+```python
+class PrivateObjSuper:
+    def __init__(self, now_class, parent_class, obj, /): ...
+```
+
+Read-only access to a parent class's **per-instance** private attribute.
+Counterpart of `PrivateSuper`, which reads class-level storage only.
+
+- `now_class`: the private-attribute type whose code is currently running.
+- `parent_class`: a private-attribute parent of `now_class` (not `now_class`
+  itself).
+- `obj`: an instance of `now_class`.
+
+At attribute access the running code must belong to `now_class`. The name must
+be private on `parent_class` or on one of its private-attribute ancestors. The
+value is then loaded from `parent_class`'s per-instance map for `obj`
+(`all_object_attr[parent_class][obj]`). The storage key is
+`parent_class`'s `private_func(id(obj), name)` when the parent has one,
+otherwise the default generator. There is no fallback to class-level storage,
+to a class descriptor, or to an ancestor's instance map.
+
+A normal instance returns the stored object directly, without calling
+`__get__`. When `obj` is itself a type and the stored value has `__get__`,
+`__get__(None, obj)` is invoked. Assignment and deletion raise `AttributeError`.
+Keyword arguments raise `TypeError`. See
+[Cross-class access](guide/cross-class-access.md#per-instance-privateobjsuper)
+for the construction errors and the ownership rule.
+
 ## Functions
 
 ### `create_new`
