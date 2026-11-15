@@ -544,6 +544,7 @@ struct PrivateAttrCreationData
 };
 
 static bool PrivateAttrType_preprocess(PyObject* args, PyObject* kwds, PrivateAttrCreationData& data, const std::string& func_name) noexcept;
+
 static bool
 try_install_pending_creation(PyObject* new_type) noexcept
 {
@@ -2527,6 +2528,201 @@ PrivateSuper_New(PyTypeObject* type, PyObject* args, PyObject* kwds) noexcept
     return (PyObject*)self;
 }
 
+// PrivateObjSuper
+typedef struct {
+    PyObject_HEAD
+    PyObject* now_class;
+    PyObject* parent_class;
+    PyObject* obj;
+} PrivateObjSuperObject;
+
+static PyObject*
+PrivateObjSuper_New(PyTypeObject* cls, PyObject* args, PyObject* kwds) noexcept
+{
+    PyObject *now_class, *parent_class, *obj;
+    if (!PyArg_ParseTuple(args, "OOO:private_attribute.PrivateObjClass", &now_class, &parent_class, &obj)) {
+        return NULL;
+    }
+    // all class must be private class
+    AnalyseStatus check_now_class = need_analyse_type(now_class);
+    if (check_now_class == AnalyseStatus::Error) {return NULL;}
+    if (check_now_class == AnalyseStatus::No) {
+        PyErr_SetString(PyExc_TypeError, "now_class must be private class");
+        return NULL;
+    }
+    AnalyseStatus check_parent_class = need_analyse_type(parent_class);
+    if (check_parent_class == AnalyseStatus::Error) {return NULL;}
+    if (check_parent_class == AnalyseStatus::No) {
+        PyErr_SetString(PyExc_TypeError, "parent_class must be private class");
+        return NULL;
+    }
+    ParentIdsResult now_class_parent_id = type_get_parent_ids((uintptr_t)now_class);
+    if (!now_class_parent_id.ok) {return NULL;}
+    uintptr_t parent_id = (uintptr_t)parent_class;
+    Py_ssize_t find_result = mro_index_of(*now_class_parent_id.ids, parent_id);
+    if (find_result < 0) {
+        PyErr_SetString(PyExc_TypeError, "parent_class must be parent of now_class");
+        return NULL;
+    }
+    // obj must be an instance of now_class
+    if (!PyObject_IsInstance(obj, (PyObject*)now_class)) {
+        PyErr_SetString(PyExc_TypeError, "obj must be an instance of now_class");
+        return NULL;
+    }
+
+    PrivateObjSuperObject* self = (PrivateObjSuperObject*)cls->tp_alloc(cls, 0);
+    if (!self) {
+        return NULL;
+    }
+    self->now_class = now_class;
+    self->parent_class = parent_class;
+    self->obj = obj;
+    Py_INCREF(now_class);
+    Py_INCREF(parent_class);
+    Py_INCREF(obj);
+    return (PyObject*)self;
+}
+
+static void
+PrivateObjSuper_dealloc(PrivateObjSuperObject* self) noexcept
+{
+    PyObject_GC_UnTrack(self);
+    Py_XDECREF(self->now_class);
+    Py_XDECREF(self->parent_class);
+    Py_XDECREF(self->obj);
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static int
+PrivateObjSuper_traverse(PrivateObjSuperObject* self, visitproc visit, void* arg) noexcept
+{
+    Py_VISIT(self->now_class);
+    Py_VISIT(self->parent_class);
+    Py_VISIT(self->obj);
+    return 0;
+}
+
+static int
+PrivateObjSuper_clear(PrivateObjSuperObject* self) noexcept
+{
+    Py_CLEAR(self->now_class);
+    Py_CLEAR(self->parent_class);
+    Py_CLEAR(self->obj);
+    return 0;
+}
+
+static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
+
+static PyObject*
+PrivateObjSuper_getattro(PrivateObjSuperObject* self, PyObject* name) noexcept
+{
+    if (!PyUnicode_Check(name)) {
+        PyErr_SetString(PyExc_TypeError, "attribute name must be a string");
+        return NULL;
+    }
+    const char* name_cstr = PyUnicode_AsUTF8(name);
+    if (!name_cstr) {
+        return NULL;
+    }
+    std::string attr_name(name_cstr);
+
+    // The running code must belong to A.
+    PyObjectStorage now_code = PyObjectStorage::from_new_ref(get_now_code());
+    if (!now_code) {
+        PyErr_SetString(PyExc_AttributeError, "cannot use 'PrivateObjSuper' outside the class");
+        return NULL;
+    }
+    if (!is_class_code((uintptr_t)self->now_class, (PyCodeObject*)now_code.get())) {
+        PyErr_SetString(PyExc_AttributeError, "cannot use 'PrivateObjSuper' outside the class");
+        return NULL;
+    }
+    uintptr_t parent_class_id = (uintptr_t)self->parent_class;
+    uintptr_t target_id = (uintptr_t)self->obj;
+    TypePrivateAttrResult pa = type_private_attr(parent_class_id, attr_name);
+    if (!pa.ok) {
+        return NULL;
+    }
+    if (!pa.is_private) {
+        const char* tn = get_name_from_tp_name((PyTypeObject*)self->parent_class);
+        if (!tn) {
+            return NULL;
+        }
+        PyErr_Format(PyExc_AttributeError, "'%s' has no private attribute '%s'", tn, attr_name.c_str());
+        return NULL;
+    }
+    std::string key;
+    PyObject* need_call = get_type_need_call(parent_class_id);
+    if (need_call) {
+        auto r = custom_random_string(target_id, attr_name, need_call);
+        if (!r.ok) {
+            return NULL;
+        }
+        key = r.value;
+    } else {
+        key = default_random_string(target_id, attr_name);
+    }
+    PrivateAttr_object_init_private_dict(target_id, parent_class_id);
+    object_create_mutex(parent_class_id, target_id);
+    {
+        std::shared_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[parent_class_id][target_id]);
+        auto it = ::AllData::all_object_attr[parent_class_id][target_id].find(key);
+        if (it != ::AllData::all_object_attr[parent_class_id][target_id].end()) {
+            PyObject* result = it->second.get();
+            if (PyType_Check(self->obj)) {
+                descrgetfunc d = Py_TYPE(result)->tp_descr_get;
+                if (d) {
+                    return d(result, Py_None, (PyObject*)self->obj);
+                }
+            }
+            Py_INCREF(result);
+            return result;
+        }
+    }
+    PyErr_Format(PyExc_AttributeError, "'PrivateObjSuper' object has no attribute '%s'", attr_name.c_str());
+    return NULL;
+}
+
+static PyTypeObject PrivateObjSuperType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "private_attribute.PrivateObjSuper",
+    sizeof(PrivateObjSuperObject),
+    0,
+    (destructor)PrivateObjSuper_dealloc,
+    0, // PyBaseObject_Type.tp_print
+    0, // PyBaseObject_Type.tp_getattr
+    0, // PyBaseObject_Type.tp_setattr
+    0, // PyBaseObject_Type.tp_compare
+    0, // PyBaseObject_Type.tp_repr
+    0, // PyBaseObject_Type.tp_as_number
+    0, // PyBaseObject_Type.tp_as_sequence
+    0, // PyBaseObject_Type.tp_as_mapping
+    0, // PyBaseObject_Type.tp_hash
+    0, // PyBaseObject_Type.tp_call
+    0, // PyBaseObject_Type.tp_str
+    (getattrofunc)PrivateObjSuper_getattro, // PyBaseObject_Type.tp_getattro
+    0, // PyBaseObject_Type.tp_setattro
+    0, // PyBaseObject_Type.tp_as_buffer
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    "PrivateObjSuper objects",
+    (traverseproc)PrivateObjSuper_traverse,
+    (inquiry)PrivateObjSuper_clear,
+    0, // PyBaseObject_Type.tp_richcompare
+    0, // PyBaseObject_Type.tp_weaklistoffset
+    0, // PyBaseObject_Type.tp_iter
+    0, // PyBaseObject_Type.tp_iternext
+    0, // PyBaseObject_Type.tp_methods
+    0, // PyBaseObject_Type.tp_members
+    0, // PyBaseObject_Type.tp_getset
+    0, // PyBaseObject_Type.tp_base
+    0, // PyBaseObject_Type.tp_dict
+    0, // PyBaseObject_Type.tp_descr_get
+    0, // PyBaseObject_Type.tp_descr_set
+    0, // PyBaseObject_Type.tp_dictoffset
+    0, // PyBaseObject_Type.tp_init
+    0, // PyBaseObject_Type.tp_alloc
+    PrivateObjSuper_New, // PyBaseObject_Type.tp_new
+};
+
 // ===============================================================
 // v3: special-method slot structs
 // ===============================================================
@@ -2562,7 +2758,6 @@ typedef struct {
 
 static void PrivateAttrType_finalize(PyObject* cls) noexcept;
 static void clear_object_related(uintptr_t id_self, uintptr_t typ_id) noexcept;
-static void PrivateAttr_object_init_private_dict(uintptr_t obj_id, uintptr_t type_id) noexcept;
 static bool try_install_pending_creation(PyObject* new_type) noexcept;
 
 static PyMemberDef PrivateAttrSlot_members[] = {
@@ -6204,6 +6399,14 @@ PrivateModule_get_PrivateClassSuper(PyObject* /*self*/, void* /*closure*/) noexc
     return o;
 }
 
+static PyObject*
+PrivateModule_get_PrivateObjSuper(PyObject* /*self*/, void* /*closure*/) noexcept
+{
+    PyObject* o = (PyObject*)&PrivateObjSuperType;
+    Py_INCREF(o);
+    return o;
+}
+
 // type PrivateAttrType
 static PyObject*
 PrivateModule_get_PrivateAttrType(PyObject* /*self*/, void* /*closure*/) noexcept
@@ -6240,12 +6443,13 @@ PrivateModule_dir(PyObject* self, PyObject* /*args*/) noexcept
 {
     PyObjectStorage parent_dir = PyObjectStorage::from_new_ref(PyObject_CallMethod((PyObject*)&PyModule_Type, "__dir__", "O", self));
     if (!parent_dir) return NULL;
-    PyObjectStorage attr_list = PyObjectStorage::from_new_ref(Py_BuildValue("[ssssssssss]",
+    PyObjectStorage attr_list = PyObjectStorage::from_new_ref(Py_BuildValue("[sssssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
         "PrivateAttrBase",
         "PrivateSuper",
         "PrivateClassSuper",
+        "PrivateObjSuper",
         "ensure_type",
         "ensure_metaclass",
         "create_new",
@@ -6282,9 +6486,12 @@ PrivateModule_setattro(PyObject* self, PyObject* name, PyObject* value) noexcept
             "PrivateAttrBase",
             "PrivateSuper",
             "PrivateClassSuper",
+            "PrivateObjSuper",
             "ensure_type",
             "ensure_metaclass",
             "create_new",
+            "create_meta_slot",
+            "create_slot",
             NULL
         };
         for (size_t i = 0; unsetable_attrs[i]; ++i) {
@@ -6429,6 +6636,7 @@ static PyGetSetDef PrivateModule_getsetters[] = {
     {"PrivateAttrBase", (getter)PrivateModule_get_PrivateAttrBase, NULL, NULL, NULL},
     {"PrivateSuper", (getter)PrivateModule_get_PrivateSuper, NULL, NULL, NULL},
     {"PrivateClassSuper", (getter)PrivateModule_get_PrivateClassSuper, NULL, NULL, NULL},
+    {"PrivateObjSuper", (getter)PrivateModule_get_PrivateObjSuper, NULL, NULL, NULL},
     {"ensure_type", (getter)PrivateModule_get_ensure_type, NULL, NULL, NULL},
     {"ensure_metaclass", (getter)PrivateModule_get_ensure_metaclass, NULL, NULL, NULL},
     {"create_new", (getter)PrivateModule_get_create_new, NULL, NULL, NULL},
@@ -6458,6 +6666,7 @@ PrivateModule_getattro(PyObject* self, PyObject* name) noexcept
     PrivateModule_GETATTRO_CASE(PrivateAttrBase);
     PrivateModule_GETATTRO_CASE(PrivateSuper);
     PrivateModule_GETATTRO_CASE(PrivateClassSuper);
+    PrivateModule_GETATTRO_CASE(PrivateObjSuper);
     PrivateModule_GETATTRO_CASE(ensure_type);
     PrivateModule_GETATTRO_CASE(ensure_metaclass);
     PrivateModule_GETATTRO_CASE(create_new);
@@ -6615,12 +6824,13 @@ PrivateModule_exec(PyObject* m) noexcept
     if (PyModule_AddType(m, &PrivateWrapType) < 0) {
         return -1;
     }
-    PyObject* all = Py_BuildValue("[ssssssssss]",
+    PyObject* all = Py_BuildValue("[sssssssssss]",
         "PrivateWrapProxy",
         "PrivateAttrType",
         "PrivateAttrBase",
         "PrivateSuper",
         "PrivateClassSuper",
+        "PrivateObjSuper",
         "ensure_type",
         "ensure_metaclass",
         "create_new",
@@ -6660,6 +6870,7 @@ PyInit_private_attribute(void) noexcept
         PyType_Ready(&PrivateWrapProxyType) < 0 ||
         PyType_Ready(&PrivateSuperType) < 0 ||
         PyType_Ready(&PrivateClassSuperType) < 0 ||
+        PyType_Ready(&PrivateObjSuperType) < 0 ||
         PyType_Ready(&PrivateAttrType) < 0 ||
         PyType_Ready(&PrivateModuleType) < 0) {
         return NULL;
