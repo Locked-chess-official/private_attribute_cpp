@@ -251,4 +251,3 @@ A `private_func` on `parent_class` is used to build the storage key, with the
 **instance** id (not the class id). If that callable raises, the exception
 propagates. If it returns a non-string, the result is
 `TypeError: private_func function must return a string, not '...'`.
-
