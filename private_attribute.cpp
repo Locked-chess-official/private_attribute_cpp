@@ -26,6 +26,11 @@
 
 static const auto module_running_time = std::chrono::system_clock::now();
 
+// Set at the start of interpreter-shutdown cleanup, before the metaclass
+// registry and the private-attribute tables are cleared. Finalizers that run
+// after that point must not call back into metaclass lookup.
+static bool g_storage_torn_down = false;
+
 static std::string
 time_to_string() noexcept
 {
@@ -646,6 +651,9 @@ type_parenttype_create_mutex(uintptr_t final_id, uintptr_t typ_id) noexcept
 static inline void
 clean_all_storages() noexcept
 {
+    // Finalizers may run while these tables are being destroyed. Mark that
+    // before dropping anything so __del__ does not re-enter metaclass lookup.
+    g_storage_torn_down = true;
     AllData::cache.clear();
     AllData::all_exist_name.clear();
     AllData::obj_attr_keys.clear();
@@ -3489,23 +3497,27 @@ slot_delattr_impl(PrivateAttrSlot* self, PyObject* obj, PyObject* name) noexcept
     Py_RETURN_NONE;
 }
 
+// Private-class __del__ (instances, including classes created by a private
+// class that is itself used as a metaclass). This is not the registered-
+// metaclass finalizer: that one lives in meta_slot_del.
 static PyObject*
-slot_del_impl(PrivateAttrSlot* self, PyObject* obj) noexcept
+class_slot_del(PrivateAttrSlot* self, PyObject* obj) noexcept
 {
-    if (self->is_metaclass) {
-        if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
-            PyErr_SetString(PyExc_TypeError,
-                "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
-            return NULL;
-        }
-    } else {
-        auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
-        if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
-        if (check_need_analyse == AnalyseStatus::No) {
-            PyErr_SetString(PyExc_TypeError,
-                "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
-            return NULL;
-        }
+    // Shutdown drops the metaclass registry before the last class objects are
+    // finalized. Checking need_analyse_type from here used to call
+    // PyObject_IsInstance, which looks up __class__ and re-enters the
+    // metaclass slot, raising "not a register type" as an ignored exception.
+    if (g_storage_torn_down) {
+        // clean_all_storages is already destroying the tables. Do not touch
+        // them again from inside a destructor it triggered.
+        Py_RETURN_NONE;
+    }
+    auto check_need_analyse = need_analyse_type((PyObject*)Py_TYPE(obj));
+    if (check_need_analyse == AnalyseStatus::Error) {return NULL;}
+    if (check_need_analyse == AnalyseStatus::No) {
+        PyErr_SetString(PyExc_TypeError,
+            "The class is not an instance of register type or the PrivateAttrType! You may put it on a wrong place");
+        return NULL;
     }
     bool should_return_null = false;
     auto original_refcnt = Py_REFCNT(obj);
@@ -3534,13 +3546,57 @@ slot_del_impl(PrivateAttrSlot* self, PyObject* obj) noexcept
             }
         }
     }
-    if (Py_REFCNT(obj) > original_refcnt) goto final_return;
-    if (self->is_metaclass) {
-        PrivateAttrType_finalize(obj);
-    } else {
-        clear_object_related((uintptr_t)obj, (uintptr_t)Py_TYPE(obj));
+    if (Py_REFCNT(obj) > original_refcnt) {
+        if (should_return_null) return NULL;
+        Py_RETURN_NONE;
     }
-final_return:
+    clear_object_related((uintptr_t)obj, (uintptr_t)Py_TYPE(obj));
+    if (should_return_null) return NULL;
+    Py_RETURN_NONE;
+}
+
+// Registered-metaclass __del__. Runs for the metaclass object itself and for
+// classes whose type is that metaclass. Separate from class_slot_del so a
+// private class used as a metaclass does not share this check.
+static PyObject*
+meta_slot_del(PrivateAttrSlot* self, PyObject* obj) noexcept
+{
+    if (g_storage_torn_down) {
+        Py_RETURN_NONE;
+    }
+    if (!is_private_meta_type((PyObject*)Py_TYPE(obj))) {
+        PyErr_SetString(PyExc_TypeError,
+            "The metaclass is not a register type or a subclass of the PrivateAttrType! You may put it on a wrong place");
+        return NULL;
+    }
+    bool should_return_null = false;
+    auto original_refcnt = Py_REFCNT(obj);
+    if (self->callback) {
+        PyObjectStorage r = PyObjectStorage::from_new_ref(PyObject_CallFunction(self->callback, "O", obj));
+        if (!r) should_return_null = true;
+    } else {
+        PyObjectStorage super_obj = PyObjectStorage::from_new_ref(
+            PyObject_CallFunction((PyObject*)&PySuper_Type, "OO", self->owner_type, obj));
+        if (super_obj) {
+            int has = PyObject_HasAttrString(super_obj, "__del__");
+            if (has > 0) {
+                PyObjectStorage method = PyObjectStorage::from_new_ref(
+                    PyObject_GetAttrString(super_obj, "__del__"));
+                if (method) {
+                    PyObjectStorage empty = PyObjectStorage::from_new_ref(PyTuple_New(0));
+                    if (empty) {
+                        PyObjectStorage r = PyObjectStorage::from_new_ref(PyObject_Call(method, empty, NULL));
+                        if (!r) should_return_null = true;
+                    }
+                }
+            }
+        }
+    }
+    if (Py_REFCNT(obj) > original_refcnt) {
+        if (should_return_null) return NULL;
+        Py_RETURN_NONE;
+    }
+    PrivateAttrType_finalize(obj);
     if (should_return_null) return NULL;
     Py_RETURN_NONE;
 }
@@ -3602,7 +3658,11 @@ slot_call(PrivateAttrSlot* self, PyObject* args, PyObject* kwds) noexcept
         PyObject *obj;
         std::string format = "O:" + std::string(type_name) + "." + std::string(sn);
         if (!PyArg_ParseTuple(args, format.c_str(), &obj)) return NULL;
-        return slot_del_impl(self, obj);
+        // Private classes and registered metaclasses do not share a finalizer.
+        if (self->is_metaclass) {
+            return meta_slot_del(self, obj);
+        }
+        return class_slot_del(self, obj);
     }
     if (strcmp(sn, "__call__") == 0) {
         return slot_call_impl(self, args, kwds);
@@ -5192,11 +5252,11 @@ need_analyse_type(PyObject* type) noexcept
     bool result = false;
 
     // (1) Types created through PrivateAttrType always need analysis.
-    int is_private_attr = PyObject_IsInstance(type, (PyObject*)&PrivateAttrType);
-    if (is_private_attr < 0) {
-        return AnalyseStatus::Error;
-    }
-    if (is_private_attr) {
+    // PyObject_TypeCheck, not PyObject_IsInstance: IsInstance falls back to
+    // looking up __class__, which re-enters a metaclass __getattribute__ slot.
+    // That re-entry is what made finalizing a class created by a private
+    // metaclass raise "not a register type" once the registry was gone.
+    if (PyObject_TypeCheck(type, &PrivateAttrType)) {
         result = true;
     } else {
         // (2) Types whose metaclass is a registered metaclass need analysis.
@@ -5211,11 +5271,7 @@ need_analyse_type(PyObject* type) noexcept
             if (!metaclass.get() || metaclass.get() == Py_None || type == metaclass.get()) {
                 continue;
             }
-            int is_instance = PyObject_IsInstance(type, metaclass.get());
-            if (is_instance < 0) {
-                return AnalyseStatus::Error;
-            }
-            if (is_instance) {
+            if (PyObject_TypeCheck(type, (PyTypeObject*)metaclass.get())) {
                 result = true;
                 break;
             }
@@ -5225,11 +5281,7 @@ need_analyse_type(PyObject* type) noexcept
                 if (type == metaclass.get()) {
                     continue;
                 }
-                int is_instance = PyObject_IsInstance(type, metaclass.get());
-                if (is_instance < 0) {
-                    return AnalyseStatus::Error;
-                }
-                if (is_instance) {
+                if (PyObject_TypeCheck(type, (PyTypeObject*)metaclass.get())) {
                     result = true;
                     break;
                 }
