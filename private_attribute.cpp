@@ -2716,7 +2716,7 @@ PrivateObjSuper_getattro(PrivateObjSuperObject* self, PyObject* name) noexcept
         std::shared_lock<std::shared_mutex> lock(*::AllData::all_object_mutex[parent_class_id][target_id]);
         auto it = ::AllData::all_object_attr[parent_class_id][target_id].find(key);
         if (it != ::AllData::all_object_attr[parent_class_id][target_id].end()) {
-            PyObject* result = it->second.get();
+            PyObjectStorage result = it->second;
             if (!result) {
                 PyErr_Format(PyExc_SystemError, "%s (%d): attribute is NULL", __FILE__, __LINE__);
                 return NULL;
@@ -2728,10 +2728,8 @@ PrivateObjSuper_getattro(PrivateObjSuperObject* self, PyObject* name) noexcept
             if (PyType_Check(self->obj)) {
                 descrgetfunc d = Py_TYPE(result)->tp_descr_get;
                 if (d) {
-                    Py_INCREF(result);
                     lock.unlock();
                     PyObject* bound = d(result, Py_None, (PyObject*)self->obj);
-                    Py_DECREF(result);
                     return bound;
                 }
             }
