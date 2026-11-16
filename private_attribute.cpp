@@ -3171,7 +3171,6 @@ slot_new_impl(PrivateAttrSlot* self, PyObject* cls, PyObject* args, PyObject* kw
     //   - otherwise forward the whole class-creation flow to the parent slot
     //     (the same `parent_new` object we already resolved).
     if (is_meta_new_slot(parent_new)) {
-call_straight:
         if (self->callback) {
             PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(
                 4, cls,
@@ -3185,7 +3184,16 @@ call_straight:
     }
     PyObjectStorage now_dict = PyTuple_GET_ITEM(args, 2);
     if (PyAnyDict_Check(now_dict) && is_handling_dict(now_dict)) {
-        goto call_straight;
+        PyObjectStorage type_args = PyObjectStorage::from_new_ref(PyTuple_Pack(
+            4, cls,
+            PyTuple_GET_ITEM(args, 0),
+            PyTuple_GET_ITEM(args, 1),
+            PyTuple_GET_ITEM(args, 2)));
+        if (!type_args) return NULL;
+        if (self->callback) {
+            return PyObject_Call(self->callback, type_args, kwds);
+        }
+        return PyObject_Call(parent_new, type_args, kwds);
     }
     PrivateAttrCreationData data;
     PyTypeObject* typ = (PyTypeObject*)cls;
