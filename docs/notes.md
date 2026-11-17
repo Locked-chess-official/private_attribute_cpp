@@ -30,6 +30,7 @@
 | 3.0.0 | Interception moved from the `tp_getattro`/`tp_setattro`/`tp_finalize` slots to C-struct slot descriptors; added `PrivateSuper`/`PrivateClassSuper`. |
 | unreleased (after 3.0.4) | Added `PrivateObjSuper` for read-only per-instance cross-class access. Fixed stale private-class cache entries left behind after a type is collected. |
 | unreleased (after 3.0.4) | Collecting a class created by a private class used as a metaclass no longer prints an ignored `TypeError` from `__del__`. |
+| unreleased (after 3.1.0) | Exit cleanup collects cycles before clearing private tables, so cyclic `__del__` still sees private attributes. `gc.disable()` does not skip it. |
 
 ## CPython slot caveats
 

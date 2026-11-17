@@ -6872,9 +6872,33 @@ static PyModuleDef def = {
     NULL
 };
 
+/* Collect cyclic garbage while the private-attribute tables are still intact.
+   PyGC_Collect() returns immediately when the user has called gc.disable();
+   gc.collect() does not, so use the Python function. Objects referenced only
+   from these tables are invisible to the collector and stay until
+   clean_all_storages() drops them. */
+static void
+collect_cycles_before_cleanup(void) noexcept
+{
+    PyObjectStorage gcmod = PyObjectStorage::from_new_ref(PyImport_ImportModule("gc"));
+    if (!gcmod) {
+        PyErr_Clear();
+        if (PyGC_IsEnabled()) {
+            PyGC_Collect();
+        }
+        return;
+    }
+    PyObjectStorage result = PyObjectStorage::from_new_ref(
+        PyObject_CallMethod(gcmod, "collect", NULL));
+    if (!result) {
+        PyErr_WriteUnraisable(gcmod);
+    }
+}
+
 static PyObject*
 AtExit_clean_storage(PyObject* /*self*/, PyObject* /*obj*/) noexcept
 {
+    collect_cycles_before_cleanup();
     clean_all_storages();
     Py_RETURN_NONE;
 }
