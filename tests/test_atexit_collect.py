@@ -6,19 +6,53 @@ invoked. Collecting first lets a cycle's __del__ read private attributes.
 gc.collect() still runs when gc.disable() is in effect; PyGC_Collect() would
 not.
 """
+import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import unittest
 
 
 def _run(script):
-    return subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
+    """Run *script* and return ``(returncode, stderr_text)``.
+
+    Do not pass ``stdout``/``stderr`` pipes. On Windows, ``subprocess`` reads
+    pipes with a helper thread. CPython 3.13's free-threaded build then
+    immortalizes every later deferred object, including heap types, so the
+    class-collection tests in this process can never observe them dying.
+    The child dup2s its own stderr to a file instead.
+    """
+    fd, path = tempfile.mkstemp(prefix="atexit-collect-")
+    os.close(fd)
+    wrapped = (
+        "import os, sys\n"
+        "_fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC)\n"
+        "os.dup2(_fd, 1)\n"
+        "os.dup2(_fd, 2)\n"
+        "os.close(_fd)\n"
+        + script
     )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", wrapped, path],
+            check=False,
+        )
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            err = fh.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    class Result:
+        pass
+
+    result = Result()
+    result.returncode = proc.returncode
+    result.stderr = err
+    return result
 
 
 _CYCLE = textwrap.dedent(
